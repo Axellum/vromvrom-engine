@@ -22,8 +22,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copie du reste du code source
 COPY . .
 
+# Rendre le script d'entrée exécutable
+RUN chmod +x docker-entrypoint.sh
+
 # Exposition du port FastAPI
 EXPOSE 8000
 
-# Lancement du serveur
+# Point d'entrée pour initialiser les DBs vides puis lancer le serveur
+ENTRYPOINT ["./docker-entrypoint.sh"]
 CMD ["python", "gui_server.py"]

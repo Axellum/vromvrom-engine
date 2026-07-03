@@ -7,12 +7,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./config.json:/app/config.json
-      - ./memory.db:/app/memory.db
-      - ./models_registry.db:/app/models_registry.db
-      - ./chroma_db:/app/chroma_db
-      - ./plugins:/app/plugins
-      - ./workflows:/app/workflows
+      - ./:/app
     env_file:
       - .env
     restart: unless-stopped

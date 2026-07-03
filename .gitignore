@@ -118,3 +118,7 @@ CLAUDE.md
 
 # ── Modèles locaux Ollama/LLM (plusieurs Go) ──
 models/
+
+# Benchmark Results
+*_results.txt
+*_results.md

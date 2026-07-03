@@ -41,7 +41,6 @@ async def sse_stream():
 
     async with state.sse_lock:
         state.sse_clients.add(queue)
-        state.sse_clients_list.append(queue)  # Compatibilité code legacy
 
     async def event_generator():
         try:
@@ -55,10 +54,6 @@ async def sse_stream():
         finally:
             async with state.sse_lock:
                 state.sse_clients.discard(queue)
-                try:
-                    state.sse_clients_list.remove(queue)
-                except ValueError:
-                    pass
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 

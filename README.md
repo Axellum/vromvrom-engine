@@ -20,6 +20,11 @@
 
 ---
 
+> **Stop configuring. Start learning.**
+> vromvrom-engine routes your tasks to the right LLM automatically —
+> using Elo scoring that adapts from your own usage history.
+> Async, cost-aware, self-healing. Built on a Raspberry Pi budget.
+
 ## 🎯 What is it?
 
 **vromvrom-engine** is a fully asynchronous (`asyncio`) multi-agent orchestration engine that coordinates multiple LLMs to solve complex tasks. It was born from the need to drive a home automation display ([M5Stack Tab5](https://docs.m5stack.com/en/core/tab5)) through Home Assistant — but its architecture is generic and reusable for any project.

@@ -14,6 +14,9 @@
 
 *Built for Home Assistant · Works with any project*
 
+> ⚠️ **Project Status: Active Development**
+> This engine is a personal tool being shared with the community. While the core backend architecture (DAG, async, Elo routing) is robust and used daily, the **Web Dashboard (HMI) is currently under construction**. Expect rough edges. It is highly experimental and built for makers.
+
 🇫🇷 **[Version française disponible → README.fr.md](README.fr.md)** &nbsp;·&nbsp; 🗺️ **[Which LLMs to use? → STRATEGIES.md](STRATEGIES.md)**
 
 </div>
@@ -29,8 +32,8 @@
 
 **vromvrom-engine** is a fully asynchronous (`asyncio`) multi-agent orchestration engine that coordinates multiple LLMs to solve complex tasks. It was born from the need to drive a home automation display ([M5Stack Tab5](https://docs.m5stack.com/en/core/tab5)) through Home Assistant — but its architecture is generic and reusable for any project.
 
-> 💡 **Free GPT-4o & Llama 3.3 70B**
-> Out of the box, the engine connects to [GitHub Models](https://github.com/marketplace/models), allowing you to run frontier models like **GPT-4o** and **Llama 70B** completely for free using just your standard GitHub account.
+> 💡 **Experiment with GPT-4o & Llama 70B for free**
+> The engine comes pre-configured to connect to the [GitHub Models](https://github.com/marketplace/models) API, offering free access (subject to rate limits) to models like **GPT-4o** and **Llama 70B** for your tests using your standard GitHub account.
 
 ### What makes it different
 

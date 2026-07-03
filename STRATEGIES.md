@@ -45,6 +45,14 @@
 > OpenRouter offers massive free models (like `qwen/qwen-2.5-72b-instruct:free` and `nvidia/llama-3.1-nemotron-70b-instruct:free`). Their only downside is strict rate-limiting during peak hours.
 > By putting them in your `config.json` with Gemini Flash as a fallback, vromvrom-engine's **Circuit Breaker** will automatically catch any `429 Rate Limit` errors and silently fall back to Gemini without failing your task. You get huge open-source power for free, with 100% uptime.
 
+> 🔑 **Pro Tip: The Gemini KeyPool Trick**
+> The Google AI Studio free tier limits you to 15 Requests Per Minute (RPM) per account. To bypass this for heavy multi-agent workflows:
+> 1. Create multiple free Google accounts (or use different Google Workspace users).
+> 2. Generate one free API key per account.
+> 3. List them sequentially in your `.env` as `GEMINI_API_KEY`, `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, etc.
+> 
+> The engine's internal `key_pool.py` will automatically load all of them and round-robin your requests, effectively multiplying your free quota by the number of keys.
+
 ### `.env` setup
 
 ```env

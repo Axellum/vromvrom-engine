@@ -28,6 +28,7 @@
 ### How it works
 - **Gemini free tier** (Google AI Studio): up to 5 API keys in rotation → 5× the quota
 - **GitHub Models**: GPT-4o-mini + Llama 3.3 70B for free with any GitHub account
+- **OpenRouter Free Tier**: top open-source models (Qwen 72B, Llama 3.1 70B) for free, backed by our Circuit Breaker
 - **LM Studio or Ollama**: local inference on your GPU/CPU for heavy lifting
 
 ### Recommended models
@@ -39,6 +40,10 @@
 | Reviewer | `gpt-4o-mini` | GitHub Models | Free |
 | Compression / summarize | `qwen2.5-14b-instruct` | LM Studio (local) | Free |
 | Embeddings (RAG) | `nomic-embed-text` | Ollama (local) | Free |
+
+> 💡 **Pro Tip: The OpenRouter + Circuit Breaker Combo**
+> OpenRouter offers massive free models (like `qwen/qwen-2.5-72b-instruct:free` and `nvidia/llama-3.1-nemotron-70b-instruct:free`). Their only downside is strict rate-limiting during peak hours.
+> By putting them in your `config.json` with Gemini Flash as a fallback, vromvrom-engine's **Circuit Breaker** will automatically catch any `429 Rate Limit` errors and silently fall back to Gemini without failing your task. You get huge open-source power for free, with 100% uptime.
 
 ### `.env` setup
 

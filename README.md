@@ -47,6 +47,7 @@
 | 🔍 **Local hybrid RAG** | TF-IDF + BM25 + ChromaDB Embeddings fused via RRF (k=60) — zero cloud cost |
 | 👁️ **HITL** | Human-In-The-Loop: pause/resume orchestration for human validation |
 | 📊 **FastAPI dashboard** | Glassmorphism HTML/JS UI with real-time SSE, workflow editor, Elo charts |
+| 🔌 **Drop-in Proxy API** | 100% OpenAI-compatible API (`/v1/chat/completions`). Plug Cursor, Cline, or Continue.dev directly into the engine |
 | 🌐 **Distributed Swarm** | Dispatch tasks to remote workers (Raspberry Pi, VMs, etc.) |
 | 🔌 **Plugin system** | Add custom agents via `plugins/<name>/agent.py` + `plugin.json` |
 
@@ -198,7 +199,7 @@ The dashboard exposes:
 - **Swarm tab**: distributed worker monitoring
 - **Data tab**: SQLite database explorer
 
-### REST API
+### Via the REST API
 
 ```python
 import httpx
@@ -211,7 +212,15 @@ response = httpx.post(
 print(response.json()["result"])
 ```
 
-### CLI
+### As a Drop-in Proxy for IDEs (Cursor, Cline, Continue)
+
+vromvrom-engine exposes a standard OpenAI-compatible endpoint. You can point your favorite AI coding assistant to the engine to benefit from free routing and the circuit breaker:
+
+- **Base URL**: `http://localhost:8000/v1`
+- **API Key**: `<MOTEUR_API_KEY>` (from your `.env`)
+- **Model**: `gemini-2.0-flash` (or any model available in your routing)
+
+### Via the CLI
 
 ```bash
 python main.py "Explain hexagonal architecture in 3 key points"

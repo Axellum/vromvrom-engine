@@ -47,6 +47,7 @@
 | 🔍 **RAG hybride local** | TF-IDF + BM25 + ChromaDB Embeddings fusionnés par RRF (k=60) — sans appel cloud |
 | 👁️ **HITL** | Pause/reprise de l'orchestration pour validation humaine |
 | 📊 **Dashboard FastAPI** | Interface glassmorphism HTML/JS avec SSE temps-réel, éditeur de workflows, graphiques Elo |
+| 🔌 **API Proxy Drop-in** | API 100% compatible OpenAI (`/v1/chat/completions`). Branchez Cursor, Cline ou Continue.dev directement sur le moteur |
 | 🌐 **Swarm distribué** | Dispatch de tâches vers des workers distants (Raspberry Pi, VM, etc.) |
 | 🔌 **Système de plugins** | Ajout d'agents custom via `plugins/<nom>/agent.py` + `plugin.json` |
 
@@ -210,6 +211,14 @@ response = httpx.post(
 )
 print(response.json()["result"])
 ```
+
+### Comme Proxy pour IDEs (Cursor, Cline, Continue)
+
+vromvrom-engine expose un point d'accès standard compatible OpenAI. Vous pouvez y brancher votre assistant de code favori pour bénéficier du routage gratuit et du disjoncteur (Circuit Breaker) :
+
+- **Base URL** : `http://localhost:8000/v1`
+- **API Key** : `<MOTEUR_API_KEY>` (celle de votre `.env`)
+- **Model** : `gemini-2.0-flash` (ou n'importe quel modèle de votre routage)
 
 ### Via la CLI
 

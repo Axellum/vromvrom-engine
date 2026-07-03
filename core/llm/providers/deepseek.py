@@ -172,7 +172,7 @@ class OllamaDeckProvider(LLMProvider):
     Compatible API OpenAI (format identique à LMStudioProvider).
     """
 
-    DECK_HOSTS = ["${OLLAMA_HOST:-localhost}", "192.168.0.139"]  # Ethernet prioritaire, Wi-Fi fallback
+    DECK_HOSTS = ["${OLLAMA_HOST:-localhost}", "${DECK_IP_2:-localhost}"]  # Ethernet prioritaire, Wi-Fi fallback
 
     def __init__(
         self,

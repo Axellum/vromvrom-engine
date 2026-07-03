@@ -1,4 +1,4 @@
-"""
+﻿"""
 core/key_pool.py — Pool de clés API Gemini avec rotation automatique.
 
 [Phase 1] Gère N clés API Free Tier Gemini avec rotation intelligente
@@ -64,7 +64,7 @@ class GeminiKeyPool:
             ("GEMINI_API_KEY_2", "Gemini Project"),
             ("GEMINI_API_KEY_3", "Default Gemini Project"),
             ("GEMINI_API_KEY_4", "home-assistant-aeb75"),
-            ("GEMINI_API_KEY_5", "ha-delta"),
+            ("GEMINI_API_KEY_5", "${GCP_PROJECT_NAME:-your-gcp-project}"),
         ]
         
         for env_var, project_name in free_key_configs:

@@ -56,8 +56,8 @@ class TestOllamaDeckProvider:
     def test_init_url_custom(self):
         """Vérifie qu'on peut surcharger l'hôte et le modèle."""
         from core.llm_gateway import OllamaDeckProvider
-        p = OllamaDeckProvider(host="192.168.0.139", port=11434, model_name="gemma2:2b")
-        assert "192.168.0.139" in p.base_url
+        p = OllamaDeckProvider(host="localhost", port=11434, model_name="gemma2:2b")
+        assert "localhost" in p.base_url
         assert p.model_name == "gemma2:2b"
 
     def test_ping_available_deck_joignable(self, ollama_provider, mock_tags_ok):
@@ -92,7 +92,7 @@ class TestOllamaDeckProvider:
 
         assert result is True
         # Vérifier que l'IP a bien basculé vers le Wi-Fi
-        assert "192.168.0.139" in p.base_url
+        assert "localhost" in p.base_url
 
     def test_generate_reponse_ok(self, ollama_provider, mock_response_ok):
         """Test generate() avec une réponse Ollama valide."""

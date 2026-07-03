@@ -51,7 +51,7 @@ async def _simulate_ping(returncode: int) -> bool:
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
         proc = await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-W", "2", "192.168.0.155",
+            "ping", "-c", "1", "-W", "2", "192.168.1.100",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -186,9 +186,9 @@ async def test_sqlite_sync_queues_on_failure(tmp_antigrav):
             client = paramiko.SSHClient()
             with patch.object(paramiko.SSHClient, "connect",
                               side_effect=paramiko.ssh_exception.NoValidConnectionsError(
-                                  {("192.168.0.155", 22): Exception("Refusé")}
+                                  {("192.168.1.100", 22): Exception("Refusé")}
                               )):
-                client.connect("192.168.0.155", port=22, username="deck",
+                client.connect("192.168.1.100", port=22, username="deck",
                                password="popydeck", timeout=5)
             return True
         except Exception:

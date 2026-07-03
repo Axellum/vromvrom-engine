@@ -425,7 +425,7 @@ sequenceDiagram
 |---------|-------|--------|
 | LM Studio (${LMSTUDIO_HOST:-localhost}:1234) | Inférence locale (RTX 5070Ti) | `LMStudioProvider` |
 | Ollama Deck (${OLLAMA_HOST:-localhost}/139:11434) | Inférence Edge (Steam Deck RDNA2) | `OllamaDeckProvider` |
-| Home Assistant (192.168.0.10:8123) | Domotique REST API | `ha_agent.py`, `tab5_pusher.py` |
+| Home Assistant (192.168.x.x:8123) | Domotique REST API | `ha_agent.py`, `tab5_pusher.py` |
 | Gemini API | LLM Cloud + embeddings + grounding | `gemini_native.py`, `GeminiProvider` |
 | Anthropic (Claude CLI) | LLM Cloud via CLI local | `ClaudeCLIProvider` |
 | ChromaDB (local) | Vectorstore persistant | `memory/chroma_memory.py` |

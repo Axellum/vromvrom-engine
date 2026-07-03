@@ -167,13 +167,13 @@ class ContextSelfHealer:
         # Ajouter les IPs de l'infrastructure (DHCP statiques / PC / HA) pour éviter les faux positifs
         known_infra_ips = {
             "${LMSTUDIO_HOST:-localhost}",  # Host PC de dev (LM Studio)
-            "192.168.0.155", # PC Ethernet primaire
-            "192.168.0.159", # PC Ethernet secondaire
+            "192.168.1.100", # PC Ethernet primaire
+            "192.168.1.101", # PC Ethernet secondaire
             "${TAB5_HOST:-192.168.1.x}",  # M5Stack Tab5 V2 (DHCP lease)
-            "192.168.0.74",  # MicHA AtomS3R (DHCP lease)
+            "192.168.1.102",  # MicHA AtomS3R (DHCP lease)
             "192.168.1.10",  # HA VM Local IP (NGINX proxy)
             "${HA_HOST:-192.168.1.x}",  # VM Freebox (Worker Sentinelle)
-            "192.168.0.254", # Passerelle Freebox Delta
+            "192.168.1.254", # Passerelle Freebox Delta
         }
         all_known_ips = esphome_ips | workers_ips | known_infra_ips
 

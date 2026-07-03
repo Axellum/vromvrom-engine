@@ -373,7 +373,7 @@ class MLRouter:
             },
             {
                 "type": "ollama",
-                "url": "http://192.168.0.139:11434/api/embeddings",
+                "url": "http://${OLLAMA_HOST:-localhost}:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
@@ -450,7 +450,7 @@ class MLRouter:
             },
             {
                 "type": "ollama",
-                "url": "http://192.168.0.139:11434/api/embeddings",
+                "url": "http://${OLLAMA_HOST:-localhost}:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },

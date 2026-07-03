@@ -57,7 +57,7 @@ class FailoverManager:
 
     def __init__(
         self,
-        mqtt_host: str = "192.168.0.155",  # PC écoute en tant que broker
+        mqtt_host: str = "192.168.1.100",  # PC écoute en tant que broker
         mqtt_port: int = 1883,
         client_id: str = "moteur_failover_manager",
     ):

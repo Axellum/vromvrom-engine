@@ -341,4 +341,30 @@ Week 3: Your personal routing matrix is optimized for YOUR tasks
 
 ---
 
+## 🎁 "Bons Plans" & Free Cloud Credits (The Cloud Hustle)
+
+Want to run massive workloads for free? You can combine your `vromvrom-engine` with these generous cloud trial programs. Because the engine supports Vertex AI and Google Cloud natively, you can easily tap into these:
+
+### 1. Google Cloud Platform (GCP) $300 Free Trial
+- **What it is:** The standard GCP welcome offer.
+- **How to get it:** Create a new billing account on Google Cloud with a credit card.
+- **What you get:** **$300 in credits** valid for 90 days.
+- **How to use it here:** You can use this to call `Gemini 1.5/2.0 Pro` and even `Claude 3.5 Sonnet` (via Vertex AI Model Garden) without paying a cent until the $300 or 90 days run out.
+
+### 2. Dialogflow CX $600 Free Trial
+- **What it is:** A specific credit for building conversational AI agents.
+- **How to get it:** Automatically activated the first time you use Dialogflow CX in a GCP project.
+- **What you get:** **$600 in credits** valid for 12 months.
+- **How to use it here:** While `vromvrom-engine` builds its own DAG agents, if you decide to delegate some conversational routing or intent recognition to a Dialogflow CX agent, those API calls will be covered by this specific credit.
+
+### 3. Vertex AI Agent Builder (Search & Conversation) $1,000 Free Trial
+- **What it is:** A massive credit strictly reserved for Vertex AI Search and Conversation.
+- **How to get it:** Automatically applied to new users trying out Agent Builder / Vertex AI Search.
+- **What you get:** **$1,000 in credits** valid for 1 year.
+- **How to use it here:** If you want to index thousands of personal PDFs or enterprise documents without building the vector DB locally, you can create a Data Store in Vertex AI Search, and have `vromvrom-engine` query it via the Google Cloud API. The indexing and querying costs are covered by this $1k credit (note: it does *not* cover general Gemini API calls, only Search/Conversation usage).
+
+*Mix these with the Free & Local Strategy, and you have enterprise-grade infrastructure running for $0.*
+
+---
+
 *Last updated: 2026-07 — Model landscape evolves fast. The Elo router adapts automatically.*

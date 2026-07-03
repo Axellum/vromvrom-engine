@@ -344,4 +344,30 @@ Semaine 3 : votre matrice de routage personnelle est optimisée POUR VOS tâches
 
 ---
 
+## 🎁 "Bons Plans" & Crédits Cloud Gratuits (The Cloud Hustle)
+
+Vous voulez lancer des charges de travail massives gratuitement ? Vous pouvez combiner `vromvrom-engine` avec ces généreux programmes d'essai. Comme le moteur gère nativement Google Cloud et Vertex AI, c'est très facile à exploiter :
+
+### 1. Essai gratuit Google Cloud Platform (GCP) de 300 $
+- **Ce que c'est :** L'offre de bienvenue standard de GCP.
+- **Comment l'obtenir :** Créer un nouveau compte de facturation sur Google Cloud (nécessite une CB).
+- **Ce que vous obtenez :** **300 $ de crédits** valables 90 jours.
+- **Application :** Vous pouvez utiliser cela pour appeler `Gemini 1.5/2.0 Pro` et même `Claude 3.5 Sonnet` (via Vertex AI) sans payer un centime jusqu'à épuisement des crédits ou des 90 jours.
+
+### 2. Essai gratuit Dialogflow CX de 600 $
+- **Ce que c'est :** Un crédit spécifique pour la création d'agents conversationnels.
+- **Comment l'obtenir :** Activé automatiquement la première fois que vous utilisez Dialogflow CX dans un projet.
+- **Ce que vous obtenez :** **600 $ de crédits** valables 12 mois.
+- **Application :** Bien que `vromvrom-engine` gère ses propres agents, si vous décidez de déléguer la reconnaissance d'intention ou le NLP pur à Dialogflow CX via API, ces appels seront couverts par ce crédit spécifique.
+
+### 3. Essai gratuit Vertex AI Agent Builder (Search & Conversation) de 1 000 $
+- **Ce que c'est :** Un crédit massif strictement réservé à la recherche sémantique (anciennement GenAI App Builder).
+- **Comment l'obtenir :** Appliqué automatiquement aux nouveaux utilisateurs de Vertex AI Search.
+- **Ce que vous obtenez :** **1 000 $ de crédits** valables 1 an.
+- **Application :** Si vous voulez indexer des milliers de documents (PDFs, manuels) sans gérer la base vectorielle locale, vous pouvez créer un "Data Store" dans Vertex AI Search et laisser `vromvrom-engine` l'interroger. Les coûts d'indexation et de recherche sont couverts par ces 1000$ (attention : cela ne couvre pas les requêtes Gemini classiques, uniquement la partie Search).
+
+*Mélangez ça avec la stratégie "Gratuit & Local" ou "OpenRouter Free", et vous obtenez une infrastructure de niveau entreprise pour 0 €.*
+
+---
+
 *Dernière mise à jour : juillet 2026 — Le paysage des modèles évolue vite. Le routeur Elo s'adapte automatiquement.*

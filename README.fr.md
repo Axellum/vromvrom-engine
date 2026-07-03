@@ -29,6 +29,9 @@
 
 **vromvrom-engine** est un moteur d'orchestration multi-agents entièrement asynchrone (`asyncio`) qui coordonne plusieurs LLMs pour résoudre des tâches complexes. Il est né du besoin de piloter un écran domotique [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) via Home Assistant — mais son architecture est générique et réutilisable pour tout projet.
 
+> 💡 **GPT-4o & Llama 3.3 70B Gratuits**
+> Le moteur intègre nativement [GitHub Models](https://github.com/marketplace/models), ce qui vous permet de faire tourner des modèles de pointe comme **GPT-4o** et **Llama 70B** de manière totalement gratuite en utilisant simplement votre compte GitHub standard.
+
 ### Ce qui le distingue
 
 | Fonctionnalité | Description |

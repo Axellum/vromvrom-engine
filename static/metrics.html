@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Métriques — tab5-engine</title>
+    <meta name="description" content="Dashboard de télémétrie temps réel du tab5-engine — Elo, Routage, Tokens, Budget">
+    
+    <!-- Chart.js + Plugin datalabels -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-primary: #0f0f1a;
+            --bg-secondary: #1a1a2e;
+            --bg-card: #16213e;
+            --bg-card-hover: #1e2d4f;
+            --accent-primary: #7c3aed;
+            --accent-secondary: #3b82f6;
+            --accent-success: #10b981;
+            --accent-warning: #f59e0b;
+            --accent-danger: #ef4444;
+            --text-primary: #e2e8f0;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --border-color: rgba(124, 58, 237, 0.2);
+            --glass-bg: rgba(22, 33, 62, 0.7);
+            --glass-border: rgba(124, 58, 237, 0.15);
+            --gradient-1: linear-gradient(135deg, #7c3aed, #3b82f6);
+            --gradient-2: linear-gradient(135deg, #10b981, #06b6d4);
+            --gradient-3: linear-gradient(135deg, #f59e0b, #ef4444);
+            --gradient-4: linear-gradient(135deg, #ec4899, #8b5cf6);
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Fond avec grille subtile */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: 
+                radial-gradient(circle at 20% 20%, rgba(124, 58, 237, 0.08) 0%, transparent 50%),
+                radial-gradient(circle at 80% 80%, rgba(59, 130, 246, 0.06) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .dashboard {
+            position: relative;
+            z-index: 1;
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Header */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+            padding-bottom: 1.5rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .header h1 {
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: var(--gradient-1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        .header-actions {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+        }
+        .period-select {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--glass-border);
+            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+        .period-select:hover { border-color: var(--accent-primary); }
+        .refresh-btn {
+            background: var(--gradient-1);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 0.5rem 1rem;
+            font-family: 'Inter', sans-serif;
+            font-size: 0.875rem;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+        }
+        .refresh-btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .refresh-btn:active { transform: translateY(0); }
+        .status-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--accent-success);
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* KPI Cards */
+        .kpi-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .kpi-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .kpi-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 32px rgba(124, 58, 237, 0.15);
+        }
+        .kpi-card .kpi-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.5rem;
+        }
+        .kpi-card .kpi-value {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+        .kpi-card .kpi-trend {
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+            color: var(--text-secondary);
+        }
+        .kpi-card:nth-child(1) .kpi-value { color: #7c3aed; }
+        .kpi-card:nth-child(2) .kpi-value { color: #3b82f6; }
+        .kpi-card:nth-child(3) .kpi-value { color: #10b981; }
+        .kpi-card:nth-child(4) .kpi-value { color: #f59e0b; }
+
+        /* Charts Grid */
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+        .chart-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            transition: box-shadow 0.2s;
+        }
+        .chart-card:hover {
+            box-shadow: 0 8px 32px rgba(124, 58, 237, 0.1);
+        }
+        .chart-card h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .chart-card h3 .icon {
+            width: 24px; height: 24px;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+        }
+        .chart-card canvas {
+            width: 100% !important;
+            max-height: 280px;
+        }
+
+        /* Tables */
+        .table-card {
+            background: var(--glass-bg);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--glass-border);
+            border-radius: 16px;
+            padding: 1.5rem;
+            overflow-x: auto;
+        }
+        .table-card h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 0.75rem 1rem;
+            text-align: left;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        th {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+        td {
+            font-size: 0.875rem;
+        }
+        tr:hover td { background: rgba(124, 58, 237, 0.05); }
+
+        /* Elo Badge */
+        .elo-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .elo-expert { background: rgba(16, 185, 129, 0.15); color: #10b981; }
+        .elo-competent { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
+        .elo-novice { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+        .elo-unreliable { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--text-muted);
+        }
+        .loading .spinner {
+            width: 40px; height: 40px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--accent-primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1rem;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* Bottom grid */
+        .bottom-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+        @media (max-width: 900px) {
+            .charts-grid, .bottom-grid { grid-template-columns: 1fr; }
+            .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
+        /* Heatmap Styles */
+        .heatmap-cell {
+            padding: 0.75rem 1rem !important;
+            border: 1px solid rgba(255, 255, 255, 0.03);
+            transition: all 0.15s ease;
+        }
+        .heatmap-cell:hover {
+            transform: scale(1.02);
+            z-index: 10;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            border-color: rgba(255, 255, 255, 0.15);
+        }
+        .heatmap-expert {
+            background: rgba(16, 185, 129, 0.12) !important;
+            color: #10b981;
+            border-left: 3px solid #10b981 !important;
+        }
+        .heatmap-competent {
+            background: rgba(59, 130, 246, 0.12) !important;
+            color: #3b82f6;
+            border-left: 3px solid #3b82f6 !important;
+        }
+        .heatmap-novice {
+            background: rgba(245, 158, 11, 0.12) !important;
+            color: #f59e0b;
+            border-left: 3px solid #f59e0b !important;
+        }
+        .heatmap-unreliable {
+            background: rgba(239, 68, 68, 0.12) !important;
+            color: #ef4444;
+            border-left: 3px solid #ef4444 !important;
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard">
+        <!-- Header -->
+        <header class="header">
+            <h1>⚡ tab5-engine — Dashboard Métriques</h1>
+            <div class="header-actions">
+                <div class="status-dot" title="Connecté"></div>
+                <select class="period-select" id="periodSelect" onchange="loadAll()">
+                    <option value="1h">Dernière heure</option>
+                    <option value="6h">6 heures</option>
+                    <option value="24h" selected>24 heures</option>
+                    <option value="7d">7 jours</option>
+                    <option value="30d">30 jours</option>
+                </select>
+                <button class="refresh-btn" onclick="loadAll()">⟳ Rafraîchir</button>
+            </div>
+        </header>
+
+        <!-- KPI Cards -->
+        <div class="kpi-grid">
+            <div class="kpi-card">
+                <div class="kpi-label">Tokens Totaux</div>
+                <div class="kpi-value" id="kpiTokens">—</div>
+                <div class="kpi-trend" id="kpiTokensTrend"></div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Sessions</div>
+                <div class="kpi-value" id="kpiSessions">—</div>
+                <div class="kpi-trend" id="kpiSessionsTrend"></div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Coût Total (USD)</div>
+                <div class="kpi-value" id="kpiCost">—</div>
+                <div class="kpi-trend" id="kpiCostTrend"></div>
+            </div>
+            <div class="kpi-card">
+                <div class="kpi-label">Projection 7j</div>
+                <div class="kpi-value" id="kpiForecast">—</div>
+                <div class="kpi-trend" id="kpiForecastTrend"></div>
+            </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="charts-grid">
+            <div class="chart-card">
+                <h3><span class="icon" style="background:var(--gradient-1)">📊</span> Tokens par heure</h3>
+                <canvas id="tokensChart"></canvas>
+            </div>
+            <div class="chart-card">
+                <h3><span class="icon" style="background:var(--gradient-2)">💰</span> Coûts par heure (USD)</h3>
+                <canvas id="costsChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Bottom Grid : Elo + Routing -->
+        <div class="bottom-grid">
+            <!-- Elo Leaderboard -->
+            <div class="table-card">
+                <h3>🏆 Classement Elo par Domaine</h3>
+                <div id="eloContent">
+                    <div class="loading"><div class="spinner"></div>Chargement des scores Elo...</div>
+                </div>
+            </div>
+
+            <!-- Routing Stats -->
+            <div class="chart-card">
+                <h3><span class="icon" style="background:var(--gradient-4)">🔀</span> Répartition du Routage</h3>
+                <canvas id="routingChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Heatmap Elo (Modèles ✕ Domaines) -->
+        <div class="table-card" style="margin-top: 1.5rem;">
+            <h3>🗺️ Heatmap des Performances Elo (Modèles ✕ Domaines)</h3>
+            <div id="eloHeatmap" style="margin-top: 1rem; overflow-x: auto;">
+                <div class="loading"><div class="spinner"></div>Chargement de la heatmap...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Références des graphiques Chart.js (pour destruction/recréation)
+        let tokensChart, costsChart, routingChart;
+
+        // Configuration partagée Chart.js (thème sombre)
+        const chartDefaults = {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { color: '#94a3b8', font: { family: 'Inter' } } }
+            },
+            scales: {
+                x: { ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+                y: { ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } }
+            }
+        };
+
+        // Formatage des nombres
+        function fmt(n) {
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return String(n);
+        }
+
+        // Rang Elo → CSS class
+        function eloRank(score) {
+            if (score >= 1600) return ['expert', '⭐'];
+            if (score >= 1500) return ['competent', '🟢'];
+            if (score >= 1400) return ['novice', '🟡'];
+            return ['unreliable', '🔴'];
+        }
+
+        // Chargement principal
+        async function loadAll() {
+            const period = document.getElementById('periodSelect').value;
+            
+            // Requêtes parallèles
+            const [telemetry, elo] = await Promise.all([
+                fetch(`/api/metrics/telemetry?period=${period}`).then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch('/api/metrics/elo').then(r => r.ok ? r.json() : null).catch(() => null),
+            ]);
+
+            if (telemetry) {
+                updateKPIs(telemetry.kpis, telemetry.budget_forecast);
+                updateTokensChart(telemetry.time_series);
+                updateCostsChart(telemetry.time_series);
+                updateRoutingChart(telemetry.routing_stats);
+            }
+
+            if (elo) {
+                updateEloTable(elo);
+                updateEloHeatmap(elo);
+            }
+        }
+
+        // Mise à jour des KPIs
+        function updateKPIs(kpis, forecast) {
+            if (kpis) {
+                document.getElementById('kpiTokens').textContent = fmt(kpis.total_tokens || 0);
+                document.getElementById('kpiSessions').textContent = kpis.total_sessions || 0;
+                document.getElementById('kpiCost').textContent = '$' + (kpis.total_cost_usd || 0).toFixed(4);
+            }
+            if (forecast) {
+                document.getElementById('kpiForecast').textContent = '$' + (forecast.projected_7d || 0).toFixed(2);
+                document.getElementById('kpiForecastTrend').textContent = 
+                    `Moy. jour: $${(forecast.avg_daily_cost || 0).toFixed(4)} — Proj. 30j: $${(forecast.projected_30d || 0).toFixed(2)}`;
+            }
+        }
+
+        // Graphique Tokens/heure
+        function updateTokensChart(ts) {
+            const ctx = document.getElementById('tokensChart').getContext('2d');
+            if (tokensChart) tokensChart.destroy();
+            
+            const labels = (ts?.labels || []).map(l => l.split(' ')[1] || l);
+            tokensChart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Tokens',
+                        data: ts?.tokens || [],
+                        backgroundColor: 'rgba(124, 58, 237, 0.5)',
+                        borderColor: '#7c3aed',
+                        borderWidth: 1,
+                        borderRadius: 4,
+                    }]
+                },
+                options: { ...chartDefaults }
+            });
+        }
+
+        // Graphique Coûts/heure
+        function updateCostsChart(ts) {
+            const ctx = document.getElementById('costsChart').getContext('2d');
+            if (costsChart) costsChart.destroy();
+
+            const labels = (ts?.labels || []).map(l => l.split(' ')[1] || l);
+            costsChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Coût USD',
+                        data: ts?.costs || [],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 2,
+                    }]
+                },
+                options: { ...chartDefaults }
+            });
+        }
+
+        // Graphique Routage (Doughnut)
+        function updateRoutingChart(routing) {
+            const ctx = document.getElementById('routingChart').getContext('2d');
+            if (routingChart) routingChart.destroy();
+
+            const cats = routing?.categories || [];
+            const labels = cats.map(c => c.dominant_category || 'inconnu');
+            const data = cats.map(c => c.count || 0);
+            const colors = ['#7c3aed', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4', '#8b5cf6'];
+
+            routingChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels,
+                    datasets: [{
+                        data,
+                        backgroundColor: colors.slice(0, data.length),
+                        borderWidth: 0,
+                        hoverOffset: 8,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '65%',
+                    plugins: {
+                        legend: {
+                            position: 'right',
+                            labels: { color: '#94a3b8', font: { family: 'Inter', size: 11 }, padding: 12 }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Table Elo
+        function updateEloTable(eloData) {
+            const container = document.getElementById('eloContent');
+            const domains = eloData?.domains || [];
+            const leaderboards = eloData?.leaderboards || {};
+
+            if (domains.length === 0) {
+                container.innerHTML = `<div class="loading" style="padding:2rem"><p style="color:var(--text-muted)">Aucun score Elo enregistré.<br>Les scores apparaîtront après quelques exécutions du moteur.</p></div>`;
+                return;
+            }
+
+            let html = '';
+            for (const domain of domains) {
+                const lb = leaderboards[domain] || [];
+                if (lb.length === 0) continue;
+
+                html += `<h4 style="margin:1rem 0 0.5rem;color:var(--accent-secondary);font-size:0.85rem;text-transform:capitalize">${domain}</h4>`;
+                html += `<table><thead><tr><th>#</th><th>Modèle</th><th>Elo</th><th>W/L</th><th>Win%</th><th>Rang</th></tr></thead><tbody>`;
+
+                lb.forEach((entry, i) => {
+                    const [rankClass, rankIcon] = eloRank(entry.elo);
+                    html += `<tr>
+                        <td style="color:var(--text-muted)">${i + 1}</td>
+                        <td style="font-weight:500">${entry.model}</td>
+                        <td><strong>${entry.elo}</strong></td>
+                        <td>${entry.wins}/${entry.losses}</td>
+                        <td>${entry.win_rate}%</td>
+                        <td><span class="elo-badge elo-${rankClass}">${rankIcon} ${rankClass}</span></td>
+                    </tr>`;
+                });
+
+                html += '</tbody></table>';
+            }
+
+            container.innerHTML = html;
+        }
+
+        // Heatmap Elo
+        function updateEloHeatmap(eloData) {
+            const container = document.getElementById('eloHeatmap');
+            const scores = eloData?.scores || {};
+            const domains = eloData?.domains || [];
+            
+            // Extraire tous les modèles uniques de l'ensemble des scores
+            const models = Object.keys(scores).sort();
+
+            if (models.length === 0 || domains.length === 0) {
+                container.innerHTML = `<div class="loading" style="padding:2rem"><p style="color:var(--text-muted)">Aucun score disponible pour générer la heatmap.</p></div>`;
+                return;
+            }
+
+            let html = '<table><thead><tr><th>Modèle</th>';
+            domains.forEach(d => {
+                html += `<th style="text-align:center;text-transform:capitalize;">${d.replace('_', ' ')}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+
+            models.forEach(model => {
+                html += `<tr><td style="font-weight:600;white-space:nowrap;">${model}</td>`;
+                domains.forEach(domain => {
+                    const entry = scores[model]?.[domain];
+                    if (entry) {
+                        const elo = Math.round(entry.elo);
+                        const matches = entry.matches || 0;
+                        const [rankClass, rankIcon] = eloRank(elo);
+                        html += `<td style="text-align:center;" class="heatmap-cell heatmap-${rankClass}" title="Matches: ${matches} | Win rate: ${entry.win_rate}% | Latence moy: ${entry.avg_latency_ms ? entry.avg_latency_ms + 'ms' : '–'}">
+                            <span class="elo-badge elo-${rankClass}" style="background:transparent;padding:0;font-size:0.85rem;"><strong>${elo}</strong></span>
+                            <div style="font-size:0.6rem;color:var(--text-muted);margin-top:2px;">${matches} match${matches > 1 ? 'es' : ''}</div>
+                        </td>`;
+                    } else {
+                        html += `<td style="text-align:center;color:var(--text-muted);opacity:0.3;background:rgba(255,255,255,0.01)">–</td>`;
+                    }
+                });
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        // Auto-refresh toutes les 60s
+        setInterval(loadAll, 60000);
+
+        // Chargement initial
+        loadAll();
+    </script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+    "name": "example_weather",
+    "version": "0.1.0",
+    "description": "Plugin exemple : agent météo pour démontrer le système de plugins.",
+    "author": "AuxFilsDesIdees",
+    "enabled": true,
+    "tags": ["météo", "demo"],
+    "config": {
+        "default_city": "Paris"
+    }
+}

@@ -1,0 +1,45 @@
+# Pre-commit hooks pour le moteur multi-agents Tab5
+# Installation : pip install pre-commit && pre-commit install
+# Exécution manuelle : pre-commit run --all-files
+
+repos:
+  # Ruff — Linting + formatting ultra-rapide (remplace flake8, isort, black)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        name: "🔍 Ruff Linter"
+      - id: ruff-format
+        name: "🎨 Ruff Formatter"
+
+  # Vérifications standard (trailing whitespace, merge conflicts, etc.)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        name: "🧹 Trailing Whitespace"
+      - id: end-of-file-fixer
+        name: "📄 End of File Fix"
+      - id: check-yaml
+        name: "✅ YAML Syntax"
+      - id: check-json
+        name: "✅ JSON Syntax"
+      - id: check-merge-conflict
+        name: "⚠️ Merge Conflicts"
+      - id: detect-private-key
+        name: "🔒 Private Key Detection"
+
+  # Détection de secrets (clés API, tokens)
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ['--baseline', '.secrets.baseline']
+        name: "🔑 Secret Detection"
+        exclude: >
+          (?x)^(
+            \.env\.example|
+            token_usage\.json|
+            pricing_strategy\.json
+          )$

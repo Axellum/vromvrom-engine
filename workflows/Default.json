@@ -1,0 +1,217 @@
+{
+  "name": "Default",
+  "version": "1.0",
+  "created_at": "2026-05-25T12:00:00.000Z",
+  "nodes": [
+    {
+      "id": "node-1",
+      "type": "start",
+      "label": "Requête Utilisateur",
+      "icon": "▶️",
+      "x": 40,
+      "y": 550,
+      "tier": null,
+      "agentName": null,
+      "conditionExpr": null
+    },
+    {
+      "id": "node-2",
+      "type": "agent",
+      "label": "Router",
+      "icon": "🔀",
+      "x": 290,
+      "y": 550,
+      "tier": "—",
+      "agentName": "router",
+      "conditionExpr": null
+    },
+    {
+      "id": "node-3",
+      "type": "agent",
+      "label": "Planner",
+      "icon": "🧠",
+      "x": 540,
+      "y": 550,
+      "tier": "fort",
+      "agentName": "planner",
+      "conditionExpr": null
+    },
+    {
+      "id": "node-4",
+      "type": "agent",
+      "label": "Executor",
+      "icon": "🔧",
+      "x": 820,
+      "y": 200,
+      "tier": "leger",
+      "agentName": "executor",
+      "conditionExpr": null
+    },
+    {
+      "id": "node-5",
+      "type": "agent",
+      "label": "Antigravity",
+      "icon": "🚀",
+      "x": 820,
+      "y": 550,
+      "tier": "fort",
+      "agentName": "antigravity_agent",
+      "conditionExpr": null
+    },
+    {
+      "id": "node-6",
+      "type": "agent",
+      "label": "HA Agent",
+      "icon": "🏠",
+      "x": 820,
+      "y": 900,
+      "tier": "moyen",
+      "agentName": "ha_agent",
+      "conditionExpr": null
+    },
+    {
+      "id": "node-7",
+      "type": "condition",
+      "label": "Succès ?",
+      "icon": "❓",
+      "x": 1120,
+      "y": 520,
+      "tier": null,
+      "agentName": null,
+      "conditionExpr": "result.status === \"success\""
+    },
+    {
+      "id": "node-8",
+      "type": "end",
+      "label": "Résultat Final",
+      "icon": "🏁",
+      "x": 1350,
+      "y": 520,
+      "tier": null,
+      "agentName": null,
+      "conditionExpr": null
+    },
+    {
+      "id": "node-9",
+      "type": "agent",
+      "label": "Self-Healing (Re-Plan)",
+      "icon": "🔄",
+      "x": 820,
+      "y": 1200,
+      "tier": "fort",
+      "agentName": "planner",
+      "conditionExpr": null
+    },
+    {
+      "id": "node-10",
+      "type": "agent",
+      "label": "Reviewer",
+      "icon": "✅",
+      "x": 1120,
+      "y": 200,
+      "tier": "moyen",
+      "agentName": "reviewer",
+      "conditionExpr": null
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-1",
+      "from": "node-1",
+      "fromPort": "out",
+      "to": "node-2",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-2",
+      "from": "node-2",
+      "fromPort": "out",
+      "to": "node-3",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-3",
+      "from": "node-3",
+      "fromPort": "out",
+      "to": "node-4",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-4",
+      "from": "node-3",
+      "fromPort": "out",
+      "to": "node-5",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-5",
+      "from": "node-3",
+      "fromPort": "out",
+      "to": "node-6",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-6",
+      "from": "node-4",
+      "fromPort": "out",
+      "to": "node-10",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-7",
+      "from": "node-5",
+      "fromPort": "out",
+      "to": "node-10",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-8",
+      "from": "node-6",
+      "fromPort": "out",
+      "to": "node-10",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-12",
+      "from": "node-10",
+      "fromPort": "out",
+      "to": "node-7",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-9",
+      "from": "node-7",
+      "fromPort": "out-true",
+      "to": "node-8",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-10",
+      "from": "node-7",
+      "fromPort": "out-false",
+      "to": "node-9",
+      "toPort": "in"
+    },
+    {
+      "id": "conn-11",
+      "from": "node-9",
+      "fromPort": "out",
+      "to": "node-4",
+      "toPort": "in"
+    }
+  ],
+  "metadata": {
+    "totalNodes": 10,
+    "totalConnections": 12,
+    "agents": [
+      "router",
+      "planner",
+      "executor",
+      "antigravity_agent",
+      "ha_agent",
+      "reviewer",
+      "planner"
+    ],
+    "hasConditions": true
+  }
+}

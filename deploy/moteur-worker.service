@@ -1,0 +1,25 @@
+[Unit]
+Description=Moteur V6 — Worker Swarm Standalone (Freebox)
+Documentation=https://github.com/AuxFilsDesIdees/moteur_agents
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/moteur-worker
+ExecStart=/usr/bin/python3 /opt/moteur-worker/worker_standalone.py --name worker-freebox --port 8780
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Variables d'environnement (alternative au .env)
+EnvironmentFile=/opt/moteur-worker/.env
+
+# Sécurité : limiter les ressources (la VM Freebox est limitée)
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

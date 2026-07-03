@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "antigravity": {
+      "command": "python",
+      "args": [
+        "-m",
+        "moteur_agents.mcp_server"
+      ],
+      "env": {
+        "GITHUB_TOKEN": "ton_token_ici",
+        "ANTIGRAVITY_HOME": "e:\\AuxFilsDesIdees\\moteur_agents"
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}

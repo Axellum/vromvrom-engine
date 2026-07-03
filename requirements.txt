@@ -1,0 +1,48 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Moteur Multi-Agents V12 — Dépendances runtime
+# Versions plancher alignées sur l'environnement validé (2026-06-16).
+# Dépendances dev/test : voir requirements-dev.txt
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Core / API ──
+fastapi>=0.136.0
+uvicorn>=0.40.0
+starlette>=0.52.0
+pydantic>=2.13.0
+jinja2>=3.1.0
+python-dotenv>=1.2.0
+
+# ── Clients HTTP (sync + async) ──
+requests>=2.33.0
+httpx>=0.28.0
+aiohttp>=3.13.0
+
+# ── Persistance ──
+aiosqlite>=0.22.0          # accès SQLite async (DAG runner)
+
+# ── MCP (serveurs Tab5-Engine, Workspace) ──
+mcp>=1.27.0
+
+# ── Mémoire vectorielle / RAG ──
+chromadb>=1.5.0
+numpy>=2.4.0
+scikit-learn>=1.5.0        # ML Router (couche 2 du routage) — installé sur le Deck 2026-06-17
+onnxruntime>=1.26.0        # backend embeddings ChromaDB (all-MiniLM-L6-v2)
+
+# ── Utilitaires ──
+cachetools>=7.1.0
+jsonschema>=4.26.0
+PyYAML>=6.0.0
+paho-mqtt>=1.6.0,<2.0      # failover_manager (MQTT)
+filelock>=3.12             # verrous sur fichiers partagés (config.json, BDD)
+
+# ─────────────────────────────────────────────────────────────────────────
+# Dépendances OPTIONNELLES (le moteur dégrade gracieusement si absentes)
+# Décommenter selon les fonctionnalités souhaitées.
+# ─────────────────────────────────────────────────────────────────────────
+# langfuse>=2.60,<3.0      # tracing/observabilité (core/langfuse_bridge.py)
+# opentelemetry-api>=1.20  # Tracing OTLP — API légère (no-op si SDK absent)
+# opentelemetry-sdk>=1.20  # SDK complet (requis pour exporter vers Langfuse/Phoenix)
+# opentelemetry-exporter-otlp-proto-http>=1.20  # Export OTLP/HTTP
+# anthropic>=0.40.0        # SDK Anthropic direct (sinon accès via Claude CLI)
+google-cloud-logging

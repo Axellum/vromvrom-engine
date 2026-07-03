@@ -1,0 +1,49 @@
+﻿version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: langfuse-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: langfuse-secure-password-2026
+      POSTGRES_DB: langfuse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: langfuse-server
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      # URL de la base de données PostgreSQL
+      - DATABASE_URL=postgresql://langfuse:langfuse-secure-password-2026@postgres:5432/langfuse
+      
+      # Clé de chiffrement des données (générer une clé aléatoire forte en production)
+      - NEXTAUTH_SECRET=langfuse-nextauth-encryption-key-secret-2026
+      
+      # URL publique ou locale d'accès (à adapter avec l'IP de la VM Freebox)
+      - NEXTAUTH_URL=http://${LMSTUDIO_HOST:-localhost}:3000
+      
+      # Désactiver la télémétrie externe si souhaité
+      - TELEMETRY_ENABLED=false
+      
+      # Autoriser l'enregistrement de nouveaux comptes (à désactiver après création du compte admin)
+      - LANGFUSE_ENABLE_SIGNUP=true
+
+volumes:
+  pgdata:
+    driver: local

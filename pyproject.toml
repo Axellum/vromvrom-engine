@@ -1,0 +1,54 @@
+[project]
+name = "moteur_agents"
+version = "12.1.0"
+description = "Moteur Multi-Agents"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# [FIX C3] Limité à tests/ — auparavant ["tests", "."] collectait scratch/ et ses
+# imports morts (core.circuit_breaker), cassant la collecte.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+# [FIX C3] La couverture n'est plus imposée par défaut (pytest-cov est une dépendance
+# DEV optionnelle). Pour lancer avec couverture :
+#   pip install -r requirements-dev.txt
+#   pytest --cov=core --cov=agents --cov=tools --cov=memory --cov-report=term-missing --cov-fail-under=35
+addopts = "--tb=short -q"
+
+[tool.coverage.run]
+source = ["core", "agents", "tools", "memory"]
+
+[tool.ruff]
+# Règles de linting pour le moteur multi-agents
+target-version = "py311"
+line-length = 120
+# [P2-3.1] Exclure les dossiers jetables/archives du lint (snapshots prod, brouillons).
+extend-exclude = ["scratch", "backups_prod", "backups"]
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort (tri des imports)
+    "B",     # flake8-bugbear (bugs courants)
+    "S",     # flake8-bandit (sécurité)
+    "UP",    # pyupgrade (modernisation Python)
+]
+ignore = [
+    "E501",  # Longueur de ligne (géré par line-length)
+    "S101",  # Assertions dans les tests OK
+    "S603",  # subprocess appel sans shell=True (notre usage est sûr)
+    "S607",  # subprocess partial path (notre usage est sûr)
+    "B008",  # function-call-in-default-argument (Pydantic Field() pattern)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = ["S101", "S106"]  # Assertions et mots de passe de test OK
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+check_untyped_defs = false

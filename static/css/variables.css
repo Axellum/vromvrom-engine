@@ -1,0 +1,95 @@
+/* ============================================================
+   DESIGN TOKENS — Tab5 Multi-Agent Engine HMI V2
+   Palette sombre glassmorphism, couleurs HSL harmonisées
+   ============================================================ */
+
+:root {
+    /* ─── Backgrounds ─── */
+    --bg-color: #0b0d13;
+    --bg-elevated: #10131c;
+    --panel-bg: rgba(18, 22, 33, 0.7);
+    --panel-bg-solid: #121621;
+    --panel-bg-hover: rgba(24, 28, 42, 0.8);
+
+    /* ─── Borders ─── */
+    --border-color: rgba(255, 255, 255, 0.08);
+    --border-hover: rgba(255, 255, 255, 0.16);
+    --border-active: rgba(129, 140, 248, 0.4);
+
+    /* ─── Texte ─── */
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-muted: #6b7280;
+    --text-dim: #4b5563;
+
+    /* ─── Couleurs d'accent (Indigo / Violet) ─── */
+    --accent-primary: #818cf8;
+    --accent-primary-rgb: 129, 140, 248;
+    --accent-secondary: #a78bfa;
+    --accent-secondary-rgb: 167, 139, 250;
+
+    /* ─── Couleurs sémantiques ─── */
+    --success: #10b981;
+    --success-rgb: 16, 185, 129;
+    --warning: #f59e0b;
+    --warning-rgb: 245, 158, 11;
+    --error: #ef4444;
+    --error-rgb: 239, 68, 68;
+    --info: #3b82f6;
+    --info-rgb: 59, 130, 246;
+
+    /* ─── Couleurs des providers ─── */
+    --color-claude: #d97757;
+    --color-gemini: #4285f4;
+    --color-deepseek: #00d4aa;
+    --color-local: #a3e635;
+
+    /* ─── Typographie ─── */
+    --font-display: 'Outfit', sans-serif;
+    --font-body: 'Inter', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', 'Courier New', monospace;
+
+    /* ─── Spacing ─── */
+    --space-xs: 0.25rem;
+    --space-sm: 0.5rem;
+    --space-md: 0.75rem;
+    --space-lg: 1rem;
+    --space-xl: 1.5rem;
+    --space-2xl: 2rem;
+    --space-3xl: 3rem;
+
+    /* ─── Radius ─── */
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-full: 9999px;
+
+    /* ─── Shadows ─── */
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.15);
+    --shadow-md: 0 8px 32px rgba(0, 0, 0, 0.2);
+    --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.35);
+    --shadow-glow-primary: 0 0 16px rgba(var(--accent-primary-rgb), 0.3);
+    --shadow-glow-success: 0 0 16px rgba(var(--success-rgb), 0.3);
+
+    /* ─── Jauges ─── */
+    --gauge-track: rgba(255, 255, 255, 0.06);
+    --gauge-size-sm: 80px;
+    --gauge-size-md: 110px;
+    --gauge-size-lg: 140px;
+    --gauge-stroke: 8;
+
+    /* ─── Layout ─── */
+    --nav-height: 56px;
+    --container-max: 1400px;
+
+    /* ─── Transitions ─── */
+    --transition-fast: 0.15s ease;
+    --transition-base: 0.3s ease;
+    --transition-slow: 0.5s ease;
+
+    /* ─── Z-index ─── */
+    --z-tooltip: 9999;
+    --z-modal: 10000;
+    --z-toast: 10001;
+}

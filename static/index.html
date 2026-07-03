@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tab5 Engine — Dashboard Multi-Agents</title>
+    <meta name="description" content="Dashboard de contrôle du tab5-engine Tab5 : orchestration, monitoring API, jauges temps réel et gestion des modèles LLM.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <!-- Design System CSS -->
+    <link rel="stylesheet" href="css/variables.css">
+    <link rel="stylesheet" href="css/layout.css">
+    <link rel="stylesheet" href="css/components.css">
+    <link rel="stylesheet" href="css/gauges.css">
+    <link rel="stylesheet" href="css/workflow-editor.css">
+    <link rel="stylesheet" href="css/catalog.css">
+    <link rel="stylesheet" href="css/context.css">
+    <link rel="stylesheet" href="css/chat.css">
+    <link rel="stylesheet" href="css/db-explorer.css">
+    <link rel="stylesheet" href="css/metrics.css">
+    <!-- Chart.js pour l'onglet métriques -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+    <div class="app-shell">
+
+        <!-- ═══════════════ HEADER ═══════════════ -->
+        <header class="app-header">
+            <div class="app-logo">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="12 2 22 8.5 22 15.5 12 22 2 15.5 2 8.5 12 2"></polygon>
+                    <line x1="12" y1="22" x2="12" y2="15.5"></line>
+                    <polyline points="22 8.5 12 15.5 2 8.5"></polyline>
+                    <polyline points="2 15.5 12 8.5 22 15.5"></polyline>
+                    <line x1="12" y1="2" x2="12" y2="8.5"></line>
+                </svg>
+                Tab5 Multi-tab5-engine
+            </div>
+
+            <div class="header-badges">
+                <!-- Statut du moteur -->
+                <div class="status-badge" id="engine-status-badge">
+                    <span class="status-dot idle" id="engine-status-dot"></span>
+                    <span id="engine-status-text">Moteur inactif</span>
+                </div>
+
+                <!-- Modèles actifs -->
+                <div class="status-badge" style="gap:0.35rem;">
+                    <span style="font-size:0.625rem;color:var(--text-muted);">P:</span>
+                    <span id="badge-planner" style="color:var(--accent-secondary);font-weight:600;">–</span>
+                    <span style="font-size:0.625rem;color:var(--text-muted);">E:</span>
+                    <span id="badge-executor" style="color:var(--success);font-weight:600;">–</span>
+                    <span style="font-size:0.625rem;color:var(--text-muted);">X:</span>
+                    <span id="badge-expert" style="color:var(--accent-primary);font-weight:600;">–</span>
+                </div>
+
+                <!-- Connexion SSE/Polling -->
+                <div class="status-badge" id="connection-badge">
+                    <span class="status-dot idle"></span>
+                    <span data-label>Mode Polling</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- ═══════════════ NAVIGATION ═══════════════ -->
+        <nav class="nav-tabs" id="nav-tabs">
+            <!-- Rendu dynamiquement par app.js -->
+        </nav>
+
+        <!-- ═══════════════ CONTENU ═══════════════ -->
+        <main class="tab-content" id="tab-content">
+            <!-- Rendu dynamiquement par app.js -->
+        </main>
+
+    </div>
+
+    <!-- ═══════════════ SCRIPTS ═══════════════ -->
+    <!-- Ordre de chargement important : dépendances → composants → tabs → app -->
+    <!-- [P0-1.1] auth.js EN PREMIER : patche fetch/EventSource/WebSocket avec le Bearer/token. -->
+    <script src="js/auth.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/components/toast.js"></script>
+    <script src="js/components/gauge.js"></script>
+    <script src="js/components/sparkline.js"></script>
+    <script src="js/components/model-tooltip.js"></script>
+    <script src="js/components/timeline.js"></script>
+    <script src="js/sse.js"></script>
+    <script src="js/ws.js"></script>
+    <script src="js/workflow/canvas.js"></script>
+    <script src="js/workflow/drag-drop.js"></script>
+    <script src="js/workflow/serializer.js"></script>
+    <script src="js/tabs/dashboard.js"></script>
+    <script src="js/tabs/metrics.js"></script>
+    <script src="js/tabs/execution.js"></script>
+    <script src="js/tabs/agents.js"></script>
+    <script src="js/tabs/tiers-config.js"></script>
+    <script src="js/tabs/persistent.js"></script>
+    <script src="js/tabs/swarm.js"></script>
+    <script src="js/tabs/supervision.js"></script>
+    <script src="js/tabs/events.js"></script>
+    <script src="js/tabs/tokens.js"></script>
+    <script src="js/tabs/pricing.js"></script>
+    <script src="js/tabs/apis-quotas.js"></script>
+    <script src="js/tabs/catalog.js"></script>
+    <script src="js/tabs/context.js"></script>
+    <script src="js/tabs/chat.js"></script>
+    <script src="js/tabs/db-explorer.js"></script>
+    <script src="js/app.js"></script>
+
+</body>
+</html>

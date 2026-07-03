@@ -1,0 +1,62 @@
+/* ============================================================
+   DB-EXPLORER.CSS — Styles pour l'explorateur de BDD
+   ============================================================ */
+
+/* Navigation interne DB Explorer */
+.db-nav-btn {
+    transition: all 0.2s ease;
+    position: relative;
+}
+
+.db-nav-btn.active {
+    background: rgba(129, 140, 248, 0.12) !important;
+    color: var(--accent-primary) !important;
+    border-color: rgba(129, 140, 248, 0.3) !important;
+}
+
+.db-nav-btn:hover:not(.active) {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+/* Table améliorée pour DB Explorer */
+#db-models-table-wrap .data-table {
+    font-size: 0.78rem;
+}
+
+#db-models-table-wrap .data-table th {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.2s;
+}
+
+#db-models-table-wrap .data-table th:hover {
+    color: var(--accent-primary);
+}
+
+#db-models-table-wrap .data-table tr {
+    transition: background 0.15s;
+}
+
+#db-models-table-wrap .data-table tr:hover {
+    background: rgba(129, 140, 248, 0.04) !important;
+}
+
+/* Input search DB */
+#db-model-search {
+    transition: border-color 0.2s;
+}
+
+#db-model-search:focus {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.1);
+}
+
+/* Select filter */
+#db-provider-filter {
+    cursor: pointer;
+}
+
+#db-provider-filter option {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+}

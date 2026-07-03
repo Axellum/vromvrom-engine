@@ -10,7 +10,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-54%20fichiers%20pytest-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-60%20fichiers%20pytest-brightgreen)](tests/)
 
 *Construit pour Home Assistant · Fonctionne avec n'importe quel projet*
 
@@ -42,8 +42,8 @@
 | 🧠 **Routage hybride 4 niveaux** | Regex → ML (sklearn) → LLM → Elo scoring — 0ms à 200ms selon la complexité |
 | 🏆 **Elo scoring dynamique** | Chaque modèle gagne/perd des points Elo par domaine de tâche. Le meilleur est sélectionné automatiquement |
 | 🔄 **DAG parallèle async** | Les tâches indépendantes s'exécutent en parallèle via `asyncio.gather()` |
-| 🛡️ **Self-Healing** | Circuit breaker + retry avec backoff jitter + fallback automatique entre providers |
-| 💰 **Cost-aware** | Cascade Elo+Coût : commence par le provider le moins cher, escalade si nécessaire |
+| 🛡️ **Self-Healing** | Circuit breaker + retry avec backoff exponentiel + fallback automatique entre providers |
+| 💰 **Cost-aware** | Cascade par disponibilité/budget : bascule vers le provider suivant configuré s'il est indisponible, limité en débit ou hors budget — ce n'est pas une escalade par qualité |
 | 🔍 **RAG hybride local** | TF-IDF + BM25 + ChromaDB Embeddings fusionnés par RRF (k=60) — sans appel cloud |
 | 👁️ **HITL** | Pause/reprise de l'orchestration pour validation humaine |
 | 📊 **Dashboard FastAPI** | Interface glassmorphism HTML/JS avec SSE temps-réel, éditeur de workflows, graphiques Elo |
@@ -98,8 +98,9 @@ vromvrom-engine/
 ├── services/              # Logique métier découplée du HTTP
 ├── plugins/               # Plugins custom (chargement dynamique)
 ├── workflows/             # Définitions de workflows JSON (graphes)
-├── static/                # IHM HTML/JS/CSS (glassmorphism)
-├── tests/                 # 54 fichiers de tests pytest
+├── static/                # IHM HTML/JS/CSS (glassmorphism, legacy)
+├── ihm-v2/                # Nouvelle IHM React/Vite/TS (en cours, remplacera static/)
+├── tests/                 # 60 fichiers de tests pytest
 └── docs/                  # Documentation architecture
 ```
 
@@ -236,12 +237,15 @@ python main.py "Explique l'architecture hexagonale en 3 points"
 | **GitHub Models** | ✅ | GPT-4o, Llama 3.3 70B via token GitHub |
 | **DeepSeek** | 💰 | Excellent rapport qualité/prix (~$0.14/M tokens) |
 | **Anthropic Claude** | 💰 | Via API ou Claude Code CLI (abonnement Pro) |
-| **Mistral** | 💰 | Modèles européens RGPD-friendly |
+| **Mistral** | ✅ | Modèles européens RGPD-friendly — free tier |
 | **OpenRouter** | 💰 | Agrégateur (200+ modèles) |
 | **LM Studio** | ✅ | Inférence locale (Qwen, Llama, Mistral...) |
 | **Ollama** | ✅ | Inférence locale alternative |
 | **MiniMax** | 💰 | Raisonnement avec `<think>` intégré |
-| **Cohere, Cerebras, xAI...** | 💰 | Providers additionnels configurables |
+| **Cohere** | ✅ | Modèles gratuits en trial (Command R / R+) |
+| **Cerebras** | ✅ | 100% gratuit — inférence ultra-rapide (GPT-OSS 120B, GLM 4.7) |
+| **Zhipu AI (GLM)** | 💰 | 8 modèles GLM, excellents en code/agentique |
+| **xAI (Grok)** | 💰 | Payant uniquement |
 
 ---
 

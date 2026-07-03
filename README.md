@@ -2,40 +2,42 @@
 
 # ⚡ vromvrom-engine
 
-**Moteur d'orchestration multi-agents LLM — asynchrone, hybride, auto-optimisant**
+**Async multi-agent LLM orchestrator — hybrid routing, Elo scoring, self-healing**
 
-*Vroom Vroom — ça tourne à plein régime 🏁*
+*Vroom Vroom — running at full throttle 🏁*
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-54%20fichiers%20pytest-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-54%20pytest%20files-brightgreen)](tests/)
 
-*Construit pour Home Assistant · Fonctionne avec n'importe quel projet*
+*Built for Home Assistant · Works with any project*
+
+🇫🇷 **[Version française disponible → README.fr.md](README.fr.md)**
 
 </div>
 
 ---
 
-## 🎯 C'est quoi ?
+## 🎯 What is it?
 
-**vromvrom-engine** est un moteur d'orchestration multi-agents entièrement asynchrone (`asyncio`) qui coordonne plusieurs LLMs pour résoudre des tâches complexes. Il est né du besoin de piloter un écran domotique [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) via Home Assistant — mais son architecture est générique et réutilisable pour tout projet.
+**vromvrom-engine** is a fully asynchronous (`asyncio`) multi-agent orchestration engine that coordinates multiple LLMs to solve complex tasks. It was born from the need to drive a home automation display ([M5Stack Tab5](https://docs.m5stack.com/en/core/tab5)) through Home Assistant — but its architecture is generic and reusable for any project.
 
-### Ce qui le distingue
+### What makes it different
 
-| Fonctionnalité | Description |
+| Feature | Description |
 |---|---|
-| 🧠 **Routage hybride 4 niveaux** | Regex → ML (sklearn) → LLM → Elo scoring — 0ms à 200ms selon la complexité |
-| 🏆 **Elo scoring dynamique** | Chaque modèle gagne/perd des points Elo par domaine de tâche. Le meilleur modèle est sélectionné automatiquement |
-| 🔄 **DAG parallèle async** | Les tâches indépendantes s'exécutent en parallèle via `asyncio.gather()` |
-| 🛡️ **Self-Healing** | Circuit breaker + retry avec backoff + fallback automatique entre providers |
-| 💰 **Cost-aware** | Cascade Elo+Coût : commence par le provider le moins cher, escalade si nécessaire |
-| 🔍 **RAG hybride local** | TF-IDF + BM25 + ChromaDB Embeddings fusionnés par RRF (k=60) — sans appel cloud |
-| 👁️ **HITL** | Pause/reprise de l'orchestration pour validation humaine via l'IHM |
-| 📊 **IHM FastAPI** | Dashboard glassmorphism HTML/JS avec SSE temps-réel, éditeur de workflows |
-| 🌐 **Swarm distribué** | Dispatch de tâches vers des workers distants (Raspberry Pi, VM, etc.) |
-| 🔌 **Plugin system** | Ajout d'agents custom via `plugins/<nom>/agent.py` + `plugin.json` |
+| 🧠 **4-level hybrid routing** | Regex → ML (sklearn) → LLM → Elo scoring — 0ms to 200ms depending on complexity |
+| 🏆 **Dynamic Elo scoring** | Each model gains/loses Elo points per task domain. Best model selected automatically |
+| 🔄 **Async parallel DAG** | Independent tasks run concurrently via `asyncio.gather()` |
+| 🛡️ **Self-Healing** | Circuit breaker + retry with backoff jitter + automatic provider fallback |
+| 💰 **Cost-aware routing** | Elo+Cost cascade: starts with cheapest provider, escalates only when needed |
+| 🔍 **Local hybrid RAG** | TF-IDF + BM25 + ChromaDB Embeddings fused via RRF (k=60) — zero cloud cost |
+| 👁️ **HITL** | Human-In-The-Loop: pause/resume orchestration for human validation |
+| 📊 **FastAPI dashboard** | Glassmorphism HTML/JS UI with real-time SSE, workflow editor, Elo charts |
+| 🌐 **Distributed Swarm** | Dispatch tasks to remote workers (Raspberry Pi, VMs, etc.) |
+| 🔌 **Plugin system** | Add custom agents via `plugins/<name>/agent.py` + `plugin.json` |
 
 ---
 
@@ -43,231 +45,229 @@
 
 ```
 vromvrom-engine/
-├── gui_server.py          # Point d'entrée FastAPI (lifespan + 15 routeurs)
-├── main.py                # CLI — lancement direct sans HTTP
+├── gui_server.py          # FastAPI entry point (lifespan + 15 routers)
+├── main.py                # CLI — direct launch without HTTP
 │
-├── core/                  # Cœur du moteur
-│   ├── engine.py          # Orchestrateur principal (DAG → Agents)
-│   ├── llm_gateway.py     # Gateway multi-providers (18+ providers)
-│   ├── router.py          # Routage hybride (fast-path + ML + LLM + Elo)
-│   ├── dag_runner.py      # Exécution parallèle async par stages
-│   ├── factory.py         # Instanciation des agents (Planner/Executor/Reviewer)
-│   ├── state.py           # GlobalState Pydantic thread-safe
-│   ├── checkpoint.py      # Snapshots ACID (SQLite WAL)
+├── core/                  # Engine core
+│   ├── engine.py          # Main orchestrator (DAG → Agents)
+│   ├── llm_gateway.py     # Multi-provider gateway (18+ providers)
+│   ├── router.py          # Hybrid routing (fast-path + ML + LLM + Elo)
+│   ├── dag_runner.py      # Async parallel execution by stages
+│   ├── factory.py         # Agent instantiation (Planner/Executor/Reviewer)
+│   ├── state.py           # Thread-safe Pydantic GlobalState
+│   ├── checkpoint.py      # ACID snapshots (SQLite WAL)
 │   ├── healing.py         # Self-healing + retry
-│   ├── review_loop.py     # Boucle Reviewer → Correction
-│   ├── elo_scorer.py      # Elo des modèles par domaine
-│   ├── elo_router.py      # Elo des types de routage
-│   ├── circuit_breaker.py # Disjoncteur async (CLOSED/OPEN/HALF_OPEN)
+│   ├── review_loop.py     # Reviewer → Correction loop
+│   ├── elo_scorer.py      # Per-domain model Elo scoring
+│   ├── elo_router.py      # Routing type Elo scoring
+│   ├── circuit_breaker.py # Async circuit breaker (CLOSED/OPEN/HALF_OPEN)
 │   ├── hitl.py            # Human-In-The-Loop (asyncio.Event)
-│   ├── models_db.py       # SSOT SQLite catalogue modèles/tarifs/quotas
+│   ├── models_db.py       # SQLite SSOT — model catalog, pricing, quotas
 │   └── ...
 │
-├── agents/                # Agents spécialisés
-│   ├── planner_agent.py   # Découpe la tâche en DAG JSON
-│   ├── executor_agent.py  # Exécute les tâches (ReAct loop + outils)
-│   ├── reviewer_agent.py  # Vérifie la qualité du résultat
-│   ├── antigravity_agent.py # Agent expert avec accès IDE
-│   └── tool_maker_agent.py  # Génère de nouveaux outils Python
+├── agents/                # Specialized agents
+│   ├── planner.py         # Breaks task into a JSON DAG
+│   ├── executor.py        # Executes tasks (ReAct loop + tools)
+│   ├── reviewer.py        # Validates result quality
+│   └── tool_maker_agent.py  # Generates new Python tools automatically
 │
-├── memory/                # Mémoire sémantique + RAG
-│   ├── rag.py             # RAG hybride (TF-IDF + BM25 + Embeddings + RRF)
-│   ├── facts.py           # Base de faits (FTS5 BM25 SQLite)
-│   ├── episodes.py        # Mémoire épisodique (Jaccard similarity)
-│   ├── embeddings.py      # ChromaDB vectoriel
-│   └── skills.py          # Mémoire procédurale (séquences d'outils réussies)
+├── memory/                # Semantic memory + RAG
+│   ├── rag.py             # Hybrid RAG (TF-IDF + BM25 + Embeddings + RRF)
+│   ├── facts.py           # Fact store (SQLite FTS5 BM25)
+│   ├── episodes.py        # Episodic memory (Jaccard similarity)
+│   ├── embeddings.py      # ChromaDB vector store
+│   └── skills.py          # Procedural memory (successful tool sequences)
 │
-├── tools/                 # Outils utilisables par les agents
-│   ├── tool_registry.py   # Registre avec timeouts ciblés
-│   └── sanitizer.py       # Masquage des secrets (6 patterns)
+├── tools/                 # Agent-usable tools
+│   ├── tool_registry.py   # Registry with per-tool timeouts
+│   └── sanitizer.py       # Secret masking (6 patterns)
 │
-├── api/routes/            # 15 modules de routes FastAPI
-├── services/              # Logique métier découplée du HTTP
-├── plugins/               # Plugins custom (chargement dynamique)
-├── workflows/             # Définitions de workflows JSON (graphes)
-├── static/                # IHM HTML/JS/CSS (glassmorphism)
-├── tests/                 # 54 fichiers de tests pytest
-└── docs/                  # Documentation architecture
+├── api/routes/            # 15 FastAPI route modules
+├── services/              # Business logic decoupled from HTTP
+├── plugins/               # Custom plugins (dynamic loading)
+├── workflows/             # JSON workflow definitions (graphs)
+├── static/                # HTML/JS/CSS UI (glassmorphism)
+├── tests/                 # 54 pytest files
+└── docs/                  # Architecture documentation
 ```
 
-### Pipeline de routage hybride
+### Hybrid routing pipeline
 
 ```
-Requête utilisateur
-       │
-       ▼
+User request
+      │
+      ▼
 ┌─────────────────────┐
-│ 1. Fast-Path Regex  │ ──→ 0ms   (commandes simples détectées par pattern)
+│ 1. Regex Fast-Path  │ ──→ 0ms    (simple commands detected by pattern)
 └─────────────────────┘
-       │ ambiguïté
-       ▼
+      │ ambiguous
+      ▼
 ┌─────────────────────┐
-│ 2. ML Router sklearn│ ──→ 0ms   (classificateur local, seuil 75%)
+│ 2. ML Router sklearn│ ──→ 0ms    (local classifier, 75% confidence threshold)
 └─────────────────────┘
-       │ confiance < 75%
-       ▼
+      │ confidence < 75%
+      ▼
 ┌─────────────────────┐
-│ 3. LLM Slow-Path    │ ──→ ~200ms (Gemini Flash pour lever l'ambiguïté)
+│ 3. LLM Slow-Path    │ ──→ ~200ms (Gemini Flash to resolve ambiguity)
 └─────────────────────┘
-       │
-       ▼
+      │
+      ▼
 ┌─────────────────────┐
-│ 4. Elo Scoring      │ ──→ sélection du meilleur modèle pour la tâche
+│ 4. Elo Scoring      │ ──→ selects the best model for the task domain
 └─────────────────────┘
-       │
-       ▼
-  Planner → DAG → Executor(s) parallèles → Reviewer → Réponse
+      │
+      ▼
+  Planner → DAG → Parallel Executor(s) → Reviewer → Response
 ```
 
 ---
 
-## ⚙️ Installation rapide
+## ⚙️ Quick Start
 
-### Prérequis
+### Requirements
 - Python 3.11+
-- Au moins **une clé API LLM** (Gemini gratuit fonctionne, voir `.env.example`)
+- At least **one LLM API key** (free Gemini tier works, see `.env.example`)
 
-### Étapes
+### Setup
 
 ```bash
-# 1. Cloner le repo
-git clone https://github.com/<ton-username>/vromvrom-engine.git
+# 1. Clone the repo
+git clone https://github.com/Axellum/vromvrom-engine.git
 cd vromvrom-engine
 
-# 2. Environnement virtuel
+# 2. Virtual environment
 python -m venv .venv
-# Windows :
+# Windows:
 .venv\Scripts\activate
-# Linux/Mac :
+# Linux/Mac:
 source .venv/bin/activate
 
-# 3. Dépendances
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Configuration
+# 4. Configure
 cp .env.example .env
-# Éditer .env et renseigner au minimum GEMINI_API_KEY (gratuit sur aistudio.google.com)
+# Edit .env — at minimum set GEMINI_API_KEY (free at aistudio.google.com)
 
-# 5. Config du moteur
+# 5. Engine config
 cp config.example.json config.json
-# Optionnel : ajuster les modèles par défaut
+# Optional: adjust default models
 
-# 6. Lancer
+# 6. Launch
 python gui_server.py
-# → IHM disponible sur http://localhost:8000
+# → Dashboard available at http://localhost:8000
 ```
 
-### Configuration minimale (`.env`)
+### Minimal configuration (`.env`)
 
-Le moteur fonctionne avec **une seule clé gratuite** :
+The engine works with **a single free key**:
 
 ```env
-# Clé Gemini AI Studio (gratuite) : https://aistudio.google.com/apikey
+# Free Gemini key: https://aistudio.google.com/apikey
 GEMINI_API_KEY=AIza...
 
-# Clé d'authentification de l'API locale (générer une valeur aléatoire)
-MOTEUR_API_KEY=changez-moi-avec-secrets-token-urlsafe-32
+# Local API authentication key (generate a random value)
+MOTEUR_API_KEY=change-me-with-secrets-token-urlsafe-32
 ```
 
-Tous les autres providers (DeepSeek, Anthropic, Mistral...) sont **optionnels** — le moteur se dégrade gracieusement.
+All other providers (DeepSeek, Anthropic, Mistral...) are **optional** — the engine degrades gracefully.
 
 ---
 
-## 🚀 Utilisation
+## 🚀 Usage
 
-### Via l'IHM Web
+### Web Dashboard
 
-Ouvrir `http://localhost:8000` après `python gui_server.py`.
+Open `http://localhost:8000` after `python gui_server.py`.
 
-L'IHM expose :
-- **Onglet Chat** : interface conversationnelle avec streaming token-par-token
-- **Onglet Workflows** : éditeur visuel des graphes d'exécution
-- **Onglet Modèles** : catalogue des LLMs avec scores Elo temps-réel
-- **Onglet Supervision** : monitoring des workers Swarm
-- **Onglet Données** : exploration des bases SQLite
+The dashboard exposes:
+- **Chat tab**: conversational interface with token-by-token streaming
+- **Workflows tab**: visual workflow graph editor
+- **Models tab**: LLM catalog with real-time Elo scores
+- **Swarm tab**: distributed worker monitoring
+- **Data tab**: SQLite database explorer
 
-### Via l'API REST
+### REST API
 
 ```python
 import httpx
 
-# Exécuter une tâche
 response = httpx.post(
     "http://localhost:8000/api/execute",
-    json={"message": "Analyse ce code Python et propose des améliorations"},
+    json={"message": "Analyze this Python code and suggest improvements"},
     headers={"Authorization": "Bearer <MOTEUR_API_KEY>"}
 )
 print(response.json()["result"])
 ```
 
-### Via la CLI
+### CLI
 
 ```bash
-python main.py "Explique l'architecture hexagonale en 3 points"
+python main.py "Explain hexagonal architecture in 3 key points"
 ```
 
 ---
 
-## 🔌 Providers LLM supportés
+## 🔌 Supported LLM Providers
 
-| Provider | Gratuit | Commentaire |
+| Provider | Free tier | Notes |
 |---|---|---|
-| **Gemini** (Google AI Studio) | ✅ | Recommandé pour démarrer — free tier généreux |
-| **GitHub Models** | ✅ | GPT-4o, Llama 3.3 70B via token GitHub |
-| **DeepSeek** | 💰 | Excellent rapport qualité/prix (~$0.14/M tokens) |
-| **Anthropic Claude** | 💰 | Via API ou Claude Code CLI (abonnement Pro) |
-| **Mistral** | 💰 | Modèles européens RGPD-friendly |
-| **OpenRouter** | 💰 | Agrégateur (accès à 200+ modèles) |
-| **LM Studio** | ✅ | Inférence locale (Qwen, Llama, Mistral...) |
-| **Ollama** | ✅ | Inférence locale alternative |
-| **MiniMax** | 💰 | Raisonnement avec `<think>` intégré |
-| **Cohere, Cerebras, xAI...** | 💰 | Providers additionnels configurables |
+| **Gemini** (Google AI Studio) | ✅ | Recommended to start — generous free tier |
+| **GitHub Models** | ✅ | GPT-4o, Llama 3.3 70B via GitHub token |
+| **DeepSeek** | 💰 | Excellent price/quality ratio (~$0.14/M tokens) |
+| **Anthropic Claude** | 💰 | Via API or Claude Code CLI (Pro subscription) |
+| **Mistral** | 💰 | European GDPR-friendly models |
+| **OpenRouter** | 💰 | Aggregator (200+ models) |
+| **LM Studio** | ✅ | Local inference (Qwen, Llama, Mistral...) |
+| **Ollama** | ✅ | Alternative local inference |
+| **MiniMax** | 💰 | Built-in `<think>` reasoning |
+| **Cohere, Cerebras, xAI...** | 💰 | Additional configurable providers |
 
 ---
 
 ## 🧪 Tests
 
 ```bash
-# Installer les dépendances de dev
+# Install dev dependencies
 pip install -r requirements-dev.txt
 
-# Lancer tous les tests
+# Run all tests
 pytest
 
-# Avec couverture
+# With coverage report
 pytest --cov=. --cov-report=html
 ```
 
 ---
 
-## 🤝 Contribution
+## 🤝 Contributing
 
-Les contributions sont les bienvenues ! Voir [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-**Axes prioritaires :**
-- 🐳 Dockerisation (image minimale)
-- 📖 Documentation des APIs
-- 🧪 Augmentation de la couverture de tests
-- 🌍 Support de nouveaux providers LLM
-- 🎨 Améliorations de l'IHM
+**Priority areas:**
+- 🐳 Dockerization (minimal image)
+- 📖 API documentation
+- 🧪 Increased test coverage
+- 🌍 Support for additional LLM providers
+- 🎨 UI improvements
 
 ---
 
-## 📄 Licence
+## 📄 License
 
-MIT — Voir [LICENSE](LICENSE).
+MIT — See [LICENSE](LICENSE).
 
 ---
 
 ## 🙏 Inspirations
 
-- [LangChain](https://github.com/langchain-ai/langchain) — patterns d'orchestration
-- [CrewAI](https://github.com/crewAIInc/crewAI) — coordination multi-agents
-- [Home Assistant](https://github.com/home-assistant/core) — écosystème domotique
-- [FastAPI](https://github.com/tiangolo/fastapi) — framework API
+- [LangChain](https://github.com/langchain-ai/langchain) — orchestration patterns
+- [CrewAI](https://github.com/crewAIInc/crewAI) — multi-agent coordination
+- [Home Assistant](https://github.com/home-assistant/core) — home automation ecosystem
+- [FastAPI](https://github.com/tiangolo/fastapi) — API framework
 
 ---
 
 <div align="center">
-<sub>Construit avec ❤️ pour la communauté domotique et IA open-source</sub>
+<sub>Built with ❤️ for the home automation and open-source AI community</sub>
 </div>

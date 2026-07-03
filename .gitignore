@@ -22,10 +22,14 @@ build/
 .ruff_cache/
 .pytest_cache/
 
-# ── Secrets et credentials ──
-client_secret*.json
-google_token*.json
+# ── OAuth2 GCP — fichiers sensibles ──
+client_secret.json
+client_secret_*.json
+google_token.json
+google_token_*.json
+gcp_oauth*.json
 *_service_account*.json
+*_sa_key*.json
 *.pem
 *.key
 *.p12

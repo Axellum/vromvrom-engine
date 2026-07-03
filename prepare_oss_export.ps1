@@ -1,6 +1,6 @@
-<#
+﻿<#
 .SYNOPSIS
-    Prépare le dossier OSS tab5-engine à partir du repo privé.
+    Prépare le dossier OSS vromvrom-engine à partir du repo privé.
     Copie le code source en excluant les données personnelles et secrets.
     
 .USAGE
@@ -12,10 +12,10 @@
 
 param(
     [string]$Source = "H:\AuxFilsDesIdees\moteur_agents",
-    [string]$Dest   = "H:\tab5-engine-oss"
+    [string]$Dest   = "H:\vromvrom-engine-oss"
 )
 
-Write-Host "=== Préparation export OSS tab5-engine ===" -ForegroundColor Cyan
+Write-Host "=== Préparation export OSS vromvrom-engine ===" -ForegroundColor Cyan
 Write-Host "Source : $Source"
 Write-Host "Dest   : $Dest"
 Write-Host ""
@@ -214,7 +214,7 @@ Write-Host "   Taille totale  : $sizeKB KB"
 Write-Host ""
 Write-Host "Prochaines étapes :" -ForegroundColor Cyan
 Write-Host "  1. Vérifier le scan de sécurité ci-dessus"
-Write-Host "  2. cd H:\tab5-engine-oss"
+Write-Host "  2. cd H:\vromvrom-engine-oss"
 Write-Host "  3. git init && git remote add origin <URL_DU_REPO_GITHUB>"
 Write-Host "  4. git add -p   (revue patch par patch)"
 Write-Host "  5. git commit -m 'feat: initial OSS release — moteur multi-agents V12'"

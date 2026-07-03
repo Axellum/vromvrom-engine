@@ -1,4 +1,4 @@
-# Contribuer à tab5-engine
+﻿# Contribuer à vromvrom-engine
 
 Merci de vouloir contribuer ! Ce projet est né d'un besoin personnel en domotique et a évolué vers quelque chose de potentiellement utile pour la communauté. Toute aide est bienvenue.
 
@@ -11,8 +11,8 @@ Merci de vouloir contribuer ! Ce projet est né d'un besoin personnel en domotiq
 
 ```bash
 # Forker le repo, puis :
-git clone https://github.com/<votre-username>/tab5-engine.git
-cd tab5-engine
+git clone https://github.com/<votre-username>/vromvrom-engine.git
+cd vromvrom-engine
 
 # Créer une branche dédiée
 git checkout -b feat/nom-de-la-fonctionnalite

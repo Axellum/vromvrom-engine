@@ -1,8 +1,10 @@
 <div align="center">
 
-# ⚡ tab5-engine
+# ⚡ vromvrom-engine
 
 **Moteur d'orchestration multi-agents LLM — asynchrone, hybride, auto-optimisant**
+
+*Vroom Vroom — ça tourne à plein régime 🏁*
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
@@ -18,7 +20,7 @@
 
 ## 🎯 C'est quoi ?
 
-**tab5-engine** est un moteur d'orchestration multi-agents entièrement asynchrone (`asyncio`) qui coordonne plusieurs LLMs pour résoudre des tâches complexes. Il est né du besoin de piloter un écran domotique [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) via Home Assistant — mais son architecture est générique et réutilisable pour tout projet.
+**vromvrom-engine** est un moteur d'orchestration multi-agents entièrement asynchrone (`asyncio`) qui coordonne plusieurs LLMs pour résoudre des tâches complexes. Il est né du besoin de piloter un écran domotique [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) via Home Assistant — mais son architecture est générique et réutilisable pour tout projet.
 
 ### Ce qui le distingue
 
@@ -40,7 +42,7 @@
 ## 🏗️ Architecture
 
 ```
-tab5-engine/
+vromvrom-engine/
 ├── gui_server.py          # Point d'entrée FastAPI (lifespan + 15 routeurs)
 ├── main.py                # CLI — lancement direct sans HTTP
 │
@@ -129,8 +131,8 @@ Requête utilisateur
 
 ```bash
 # 1. Cloner le repo
-git clone https://github.com/<ton-username>/tab5-engine.git
-cd tab5-engine
+git clone https://github.com/<ton-username>/vromvrom-engine.git
+cd vromvrom-engine
 
 # 2. Environnement virtuel
 python -m venv .venv

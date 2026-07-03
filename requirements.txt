@@ -1,4 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────────
+﻿# ─────────────────────────────────────────────────────────────────────────
 # Moteur Multi-Agents V12 — Dépendances runtime
 # Versions plancher alignées sur l'environnement validé (2026-06-16).
 # Dépendances dev/test : voir requirements-dev.txt
@@ -20,7 +20,7 @@ aiohttp>=3.13.0
 # ── Persistance ──
 aiosqlite>=0.22.0          # accès SQLite async (DAG runner)
 
-# ── MCP (serveurs Tab5-Engine, Workspace) ──
+# ── MCP (serveurs vromvrom-engine, Workspace) ──
 mcp>=1.27.0
 
 # ── Mémoire vectorielle / RAG ──

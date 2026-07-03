@@ -1,58 +1,60 @@
-# 📖 Référence de l'API vromvrom-engine
+# 📖 vromvrom-engine API Reference
 
-Le moteur `vromvrom-engine` expose deux types d'API : une API REST native propulsée par FastAPI, et un Proxy compatible OpenAI pour une intégration universelle.
+The `vromvrom-engine` exposes two types of APIs: a native REST API powered by FastAPI, and an OpenAI-compatible Proxy for universal integration.
 
-## 1. Documentation Interactive (Swagger)
+🇫🇷 **[Version française disponible → API_REFERENCE.fr.md](API_REFERENCE.fr.md)**
 
-L'intégralité des endpoints natifs du moteur est documentée de manière interactive grâce à FastAPI.
-Une fois le moteur lancé (`python gui_server.py`), ouvrez votre navigateur à l'adresse suivante :
+## 1. Interactive Documentation (Swagger)
+
+All native engine endpoints are interactively documented thanks to FastAPI.
+Once the engine is running (`python gui_server.py`), open your browser to:
 
 👉 **[http://localhost:8000/docs](http://localhost:8000/docs)**
 
-Vous y trouverez :
-- L'interface pour tester chaque endpoint.
-- Les schémas JSON attendus en entrée et en sortie.
-- Les codes d'erreur.
+You will find:
+- The interface to test each endpoint.
+- Expected JSON schemas for inputs and outputs.
+- Error codes.
 
 ---
 
-## 2. Le Proxy OpenAI-Compatible (`/v1`)
+## 2. The OpenAI-Compatible Proxy (`/v1`)
 
-C'est l'une des fonctionnalités les plus puissantes du moteur. Il expose un endpoint 100% compatible avec l'API OpenAI, vous permettant d'utiliser `vromvrom-engine` comme backend LLM pour n'importe quel IDE (Cursor, Cline, Aider) ou interface tierce.
+This is one of the most powerful features of the engine. It exposes a 100% OpenAI API compatible endpoint, allowing you to use `vromvrom-engine` as an LLM backend for any IDE (Cursor, Cline, Aider) or third-party interface.
 
-**Endpoint :** `POST /v1/chat/completions`
+**Endpoint:** `POST /v1/chat/completions`
 
-### Configuration dans un IDE (ex: Cursor)
-- **Base URL** : `http://localhost:8000/v1`
-- **API Key** : La valeur de votre `MOTEUR_API_KEY` définie dans votre `.env`.
-- **Model** : Utilisez n'importe quel modèle configuré dans votre `config.json` (ex: `gemini-2.5-pro`, `github/gpt-4o`, ou `auto` pour laisser le moteur choisir via le système Elo).
+### IDE Configuration (e.g., Cursor)
+- **Base URL**: `http://localhost:8000/v1`
+- **API Key**: The value of your `MOTEUR_API_KEY` defined in your `.env`.
+- **Model**: Use any model configured in your `config.json` (e.g., `gemini-2.5-pro`, `github/gpt-4o`, or `auto` to let the engine choose via the Elo system).
 
-### Comment ça marche sous le capot
-Même si votre IDE croit parler à OpenAI, le moteur intercepte la requête, applique le **Routage Elo**, utilise ses propres clés (via le KeyPool), et déclenche le **Circuit Breaker** en cas d'erreur du fournisseur, puis renvoie la réponse formattée comme OpenAI.
+### How it works under the hood
+Even though your IDE thinks it's talking to OpenAI, the engine intercepts the request, applies **Elo Routing**, uses its own keys (via the KeyPool), and triggers the **Circuit Breaker** in case of a provider error, then returns the response formatted as OpenAI.
 
 ---
 
-## 3. L'API Native du Moteur (`/api/*`)
+## 3. The Native Engine API (`/api/*`)
 
-Voici un aperçu des routes principales spécifiques au moteur :
+Here is an overview of the main engine-specific routes:
 
-### Exécution Générale
-- `POST /api/execute` : Envoie une tâche complexe au moteur (Routage -> Planificateur -> Exécuteur -> Reviewer).
-- `POST /api/execute/stream` : Identique mais retourne la réponse en Server-Sent Events (SSE) pour du temps réel.
+### General Execution
+- `POST /api/execute`: Sends a complex task to the engine (Routing -> Planner -> Executor -> Reviewer).
+- `POST /api/execute/stream`: Same but returns the response as Server-Sent Events (SSE) for real-time streaming.
 
-### Intégration Home Assistant (Domotique)
-- `GET /api/ha/state/{entity_id}` : Récupère l'état actuel d'un capteur (ex: `sensor.temperature_salon`).
-- `POST /api/ha/control` : Exécute un service (ex: allumer une lumière).
+### Home Assistant Integration (Home Automation)
+- `GET /api/ha/state/{entity_id}`: Retrieves the current state of a sensor (e.g., `sensor.living_room_temperature`).
+- `POST /api/ha/control`: Executes a service (e.g., turning on a light).
   ```json
   {
-    "entity_id": "light.salon",
+    "entity_id": "light.living_room",
     "service": "turn_on",
     "service_data": {"brightness": 255}
   }
   ```
 
-### Gestion des Workflows & Modèles
-- `GET /api/workflows` : Liste les graphes d'exécution DAG disponibles.
-- `GET /api/models` : Liste les LLMs disponibles et leurs scores Elo actuels.
+### Workflows & Models Management
+- `GET /api/workflows`: Lists available DAG execution graphs.
+- `GET /api/models`: Lists available LLMs and their current Elo scores.
 
-> *Pour la spécification complète, consultez le Swagger UI à `http://localhost:8000/docs`.*
+> *For the full specification, check the Swagger UI at `http://localhost:8000/docs`.*

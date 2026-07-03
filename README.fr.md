@@ -292,7 +292,7 @@ Les contributions sont les bienvenues ! Voir [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Axes prioritaires :**
 - [x] 🐳 Dockerisation (image minimale + docker-compose)
-- [x] 📖 Documentation des APIs (voir [docs/API_REFERENCE.md](docs/API_REFERENCE.md))
+- [x] 📖 Documentation des APIs (voir [docs/API_REFERENCE.fr.md](docs/API_REFERENCE.fr.md))
 - [ ] 🧪 Augmentation de la couverture de tests
 - [ ] 🌍 Support de nouveaux providers LLM
 - [ ] 🎨 Améliorations de l'interface

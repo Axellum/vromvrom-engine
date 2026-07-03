@@ -291,11 +291,11 @@ See **[STRATEGIES.md](STRATEGIES.md)** for 4 ready-to-use configurations:
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Priority areas:**
-- 🐳 Dockerization (minimal image)
-- 📖 API documentation
-- 🧪 Increased test coverage
-- 🌍 Support for additional LLM providers
-- 🎨 UI improvements
+- [x] 🐳 Dockerization (minimal image + docker-compose)
+- [x] 📖 API documentation (see [docs/API_REFERENCE.md](docs/API_REFERENCE.md))
+- [ ] 🧪 Increased test coverage
+- [ ] 🌍 Support for additional LLM providers
+- [ ] 🎨 UI improvements
 
 ---
 

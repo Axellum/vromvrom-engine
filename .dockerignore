@@ -1,0 +1,38 @@
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment files
+.env
+.env.*
+
+# SQLite databases (volumes should be used instead)
+*.db
+*.sqlite3
+
+# ChromaDB
+chroma_db/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tests
+.pytest_cache/
+htmlcov/
+.coverage
+
+# MacOS
+.DS_Store

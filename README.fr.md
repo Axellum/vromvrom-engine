@@ -291,11 +291,11 @@ Consultez **[STRATEGIES.fr.md](STRATEGIES.fr.md)** pour 4 configurations prêtes
 Les contributions sont les bienvenues ! Voir [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Axes prioritaires :**
-- 🐳 Dockerisation (image minimale)
-- 📖 Documentation des APIs
-- 🧪 Augmentation de la couverture de tests
-- 🌍 Support de nouveaux providers LLM
-- 🎨 Améliorations de l'interface
+- [x] 🐳 Dockerisation (image minimale + docker-compose)
+- [x] 📖 Documentation des APIs (voir [docs/API_REFERENCE.md](docs/API_REFERENCE.md))
+- [ ] 🧪 Augmentation de la couverture de tests
+- [ ] 🌍 Support de nouveaux providers LLM
+- [ ] 🎨 Améliorations de l'interface
 
 ---
 

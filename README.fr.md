@@ -14,7 +14,7 @@
 
 *Construit pour Home Assistant · Fonctionne avec n'importe quel projet*
 
-🇬🇧 **[English version → README.md](README.md)**
+🇬🇧 **[English version → README.md](README.md)** &nbsp;·&nbsp; 🗺️ **[Quels LLMs utiliser ? → STRATEGIES.fr.md](STRATEGIES.fr.md)**
 
 </div>
 
@@ -237,6 +237,16 @@ pytest
 # Avec couverture
 pytest --cov=. --cov-report=html
 ```
+
+---
+
+## 🗺️ Quels LLMs utiliser ?
+
+Consultez **[STRATEGIES.fr.md](STRATEGIES.fr.md)** pour 4 configurations prêtes à l'emploi :
+- 🆓 Gratuit & Local uniquement — 0 €/mois
+- 🐉 Modèles chinois — ~5–15 €/mois, qualité proche de l'état de l'art
+- ⚡ API/CLI Claude — coût additionnel quasi nul avec un abonnement Pro
+- 🚀 Pleine puissance + coût optimisé — état de l'art à un coût ~10× moindre
 
 ---
 

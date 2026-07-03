@@ -1,0 +1,116 @@
+# ─────────────────────────────────────────────────────────────────────────
+# tab5-engine — .gitignore
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.env
+!.env.example
+.venv/
+venv/
+env/
+ENV/
+.coverage
+*.egg-info/
+dist/
+build/
+*.whl
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# ── Secrets et credentials ──
+client_secret*.json
+google_token*.json
+*_service_account*.json
+*.pem
+*.key
+*.p12
+ha_logger_key.json
+
+# ── Bases de données SQLite (données runtime/personnelles) ──
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db.lock
+
+# ── Stockage vectoriel ChromaDB ──
+chroma_db/
+chromadb_data/
+
+# ── Données et fichiers runtime personnels ──
+token_usage*.json
+daemon_context.json
+workers.json
+pricing_strategy.json
+config.json
+!config.example.json
+ha_commands.json
+mcp_activation_rules.json
+agents_workflows.json
+!workflows/
+vertex_jobs_collect_state.json
+faits_distilles.json
+skills.json
+
+# ── Datasets et fine-tuning (volumineux, personnels) ──
+*.jsonl
+*.gguf
+lora_domotique*/
+tts_samples*/
+ha_corpus_src/
+corpus_*.txt
+*_input.txt
+finetune_run.log
+merge_run.log
+ollama_*.log
+
+# ── Logs et rapports runtime ──
+*.log
+*.log.err
+*.err
+reports/
+test_output/
+scratch/
+backups_prod/
+
+# ── Node.js ──
+node_modules/
+
+# ── Checkpoints et états de session ──
+checkpoints/
+memory/episodes/
+
+# ── Captures d'écran Visual-QA ──
+static/screenshots/
+
+# ── Profils Chrome (scraper/debug) ──
+.chrome_scraper_profile/
+.chrome_debug_profile/
+
+# ── Fichiers Anthropic CLI ──
+.claude/
+
+# ── Batch jobs ──
+batch_jobs/
+
+# ── IDE ──
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Fichiers de contexte personnel (architecture privée) ──
+contexte_ia/
+CLAUDE.md
+
+# ── Modèles locaux Ollama/LLM (plusieurs Go) ──
+models/

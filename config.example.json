@@ -1,0 +1,51 @@
+{
+  "_commentaire": "Copier ce fichier en config.json et ajuster selon vos besoins.",
+  "_doc": "Les tiers abstraits (leger/moyen/fort) permettent de changer de modèle sans toucher au code.",
+
+  "planner_model": "moyen",
+  "executor_model": "leger",
+  "reviewer_model": "leger",
+
+  "tiers": {
+    "leger":  ["local", "gemini-flash", "github-gpt4o-mini"],
+    "moyen":  ["gemini-flash", "deepseek-chat", "github-gpt4o"],
+    "fort":   ["gemini-pro", "deepseek-reasoner", "github-llama-70b"],
+    "automatique": ["local", "gemini-flash", "deepseek-chat", "gemini-pro"]
+  },
+
+  "timeout_global_s": 120,
+  "max_retries": 3,
+  "max_dag_stages": 10,
+
+  "fast_path_enabled": true,
+  "fast_path_cache_ttl_s": 15,
+
+  "semantic_cache": {
+    "enabled": false,
+    "similarity_threshold": 0.92
+  },
+
+  "swarm": {
+    "enabled": false,
+    "workers": []
+  },
+
+  "hitl": {
+    "enabled": false,
+    "timeout_s": 300
+  },
+
+  "visual_qa": {
+    "enabled": false,
+    "puppeteer_url": "http://localhost:3000"
+  },
+
+  "local_llm": {
+    "lmstudio_url": "http://localhost:1234",
+    "ollama_url": "http://localhost:11434",
+    "model": "qwen2.5-14b-instruct"
+  },
+
+  "context_compression_threshold": 1500,
+  "max_tool_output_chars": 4000
+}

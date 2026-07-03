@@ -48,6 +48,7 @@
 | 👁️ **HITL** | Pause/reprise de l'orchestration pour validation humaine |
 | 📊 **Dashboard FastAPI** | Interface glassmorphism HTML/JS avec SSE temps-réel, éditeur de workflows, graphiques Elo |
 | 🔌 **API Proxy Drop-in** | API 100% compatible OpenAI (`/v1/chat/completions`). Branchez Cursor, Cline ou Continue.dev directement sur le moteur |
+| 🏠 **Home Assistant Natif** | Routes `/api/ha` et outils d'ingestion intégrés pour permettre aux LLMs de voir et contrôler votre maison connectée |
 | 🌐 **Swarm distribué** | Dispatch de tâches vers des workers distants (Raspberry Pi, VM, etc.) |
 | 🔌 **Système de plugins** | Ajout d'agents custom via `plugins/<nom>/agent.py` + `plugin.json` |
 
@@ -220,6 +221,17 @@ vromvrom-engine expose un point d'accès standard compatible OpenAI. Vous pouvez
 - **Base URL** : `http://localhost:8000/v1`
 - **API Key** : `<MOTEUR_API_KEY>` (celle de votre `.env`)
 - **Model** : `gemini-2.0-flash` (ou n'importe quel modèle de votre routage)
+
+### 🏠 Intégration Home Assistant (Optionnelle mais Native)
+
+vromvrom-engine intègre nativement des outils (`ha_entity_ingest.py`) et des routes (`/api/ha/*`) pour interagir "out of the box" avec votre instance Home Assistant.
+
+Ajoutez simplement ceci à votre `.env` :
+```env
+HASS_URL=http://192.168.1.X:8123
+HASS_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+```
+Vos agents peuvent désormais instantanément lire vos capteurs, vérifier les états et contrôler vos appareils sans que vous n'ayez à écrire la moindre ligne de YAML supplémentaire !
 
 ### Via la CLI
 

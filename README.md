@@ -10,7 +10,7 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-54%20pytest%20files-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-60%20pytest%20files-brightgreen)](tests/)
 
 *Built for Home Assistant · Works with any project*
 
@@ -42,8 +42,8 @@
 | 🧠 **4-level hybrid routing** | Regex → ML (sklearn) → LLM → Elo scoring — 0ms to 200ms depending on complexity |
 | 🏆 **Dynamic Elo scoring** | Each model gains/loses Elo points per task domain. Best model selected automatically |
 | 🔄 **Async parallel DAG** | Independent tasks run concurrently via `asyncio.gather()` |
-| 🛡️ **Self-Healing** | Circuit breaker + retry with backoff jitter + automatic provider fallback |
-| 💰 **Cost-aware routing** | Elo+Cost cascade: starts with cheapest provider, escalates only when needed |
+| 🛡️ **Self-Healing** | Circuit breaker + exponential backoff retry + automatic provider fallback |
+| 💰 **Cost-aware routing** | Availability/budget cascade: falls back to the next configured provider when one is unavailable, rate-limited, or over budget — not a quality-based escalation |
 | 🔍 **Local hybrid RAG** | TF-IDF + BM25 + ChromaDB Embeddings fused via RRF (k=60) — zero cloud cost |
 | 👁️ **HITL** | Human-In-The-Loop: pause/resume orchestration for human validation |
 | 📊 **FastAPI dashboard** | Glassmorphism HTML/JS UI with real-time SSE, workflow editor, Elo charts |
@@ -98,8 +98,9 @@ vromvrom-engine/
 ├── services/              # Business logic decoupled from HTTP
 ├── plugins/               # Custom plugins (dynamic loading)
 ├── workflows/             # JSON workflow definitions (graphs)
-├── static/                # HTML/JS/CSS UI (glassmorphism)
-├── tests/                 # 54 pytest files
+├── static/                # HTML/JS/CSS UI (glassmorphism, legacy dashboard)
+├── ihm-v2/                # New React/Vite/TS dashboard (in progress, will replace static/)
+├── tests/                 # 60 pytest files
 └── docs/                  # Architecture documentation
 ```
 
@@ -236,12 +237,15 @@ python main.py "Explain hexagonal architecture in 3 key points"
 | **GitHub Models** | ✅ | GPT-4o, Llama 3.3 70B via GitHub token |
 | **DeepSeek** | 💰 | Excellent price/quality ratio (~$0.14/M tokens) |
 | **Anthropic Claude** | 💰 | Via API or Claude Code CLI (Pro subscription) |
-| **Mistral** | 💰 | European GDPR-friendly models |
+| **Mistral** | ✅ | European GDPR-friendly models — free tier |
 | **OpenRouter** | 💰 | Aggregator (200+ models) |
 | **LM Studio** | ✅ | Local inference (Qwen, Llama, Mistral...) |
 | **Ollama** | ✅ | Alternative local inference |
 | **MiniMax** | 💰 | Built-in `<think>` reasoning |
-| **Cohere, Cerebras, xAI...** | 💰 | Additional configurable providers |
+| **Cohere** | ✅ | Free trial models (Command R / R+) |
+| **Cerebras** | ✅ | 100% free — ultra-fast inference (GPT-OSS 120B, GLM 4.7) |
+| **Zhipu AI (GLM)** | 💰 | 8 GLM models, strong in code/agentic tasks |
+| **xAI (Grok)** | 💰 | Paid only |
 
 ---
 

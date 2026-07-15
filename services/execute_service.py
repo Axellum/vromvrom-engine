@@ -28,10 +28,7 @@ logger = logging.getLogger(__name__)
 
 HA_MODE_FAILURE_RESPONSE = "Je n'ai pas compris la commande domotique."
 CHAT_MODE_FAILURE_RESPONSE = "Désolé, je n'ai pas su répondre. Peux-tu reformuler ?"
-_HA_COMMANDS_CANDIDATES = (
-    Path(__file__).resolve().parents[1] / "ha_commands.json",
-    Path(__file__).resolve().parents[1] / "ha_commands.json.example",
-)
+_HA_COMMANDS_PATH = Path(__file__).resolve().parents[1] / "ha_commands.json"
 _HA_COMMAND_FUZZY_THRESHOLD = 0.82
 
 _ACTION_ON_MARKERS = frozenset({
@@ -47,15 +44,15 @@ _VOLET_OFF_MARKERS = frozenset({"descend", "descends", "baisse", "ferme", "ferme
 _VOLET_ON_MARKERS = frozenset({"monte", "ouvre", "ouvrir", "leve"})
 # Écho TTS / phrases d'état — ne pas interpréter comme commande
 _VOLET_STATUS_MARKERS = frozenset({"sont", "est", "ete", "etait", "etaient", "seront", "deja", "maintenant"})
-_VOLET_COVER_ENTITY = "cover.living_room_blind"
-_VOLET_SCRIPT = "script.blind_action"
-_VOLET_MOVING_ENTITY = "input_boolean.blind_moving"
+_VOLET_COVER_ENTITY = "cover.volet_serre_rideau"
+_VOLET_SCRIPT = "script.tab5_volet_action"
+_VOLET_MOVING_ENTITY = "input_boolean.volet_serre_mouvement"
 _VOLET_STOP_WORDS = frozenset({"stop", "stoppe", "arrete", "arret", "arreter"})
-_SALON_LIGHT_GROUP = "light.living_room"
+_SALON_LIGHT_GROUP = "light.salon"
 _SALON_LIGHT_MEMBERS = (
-    "light.living_room_spot_a",
-    "light.hallway",
-    "light.bedside",
+    "light.sonoff_1001601d46",
+    "light.h600c",
+    "light.h6008",
 )
 
 
@@ -68,7 +65,7 @@ class HACommandMatch:
 
 
 def _volet_script(action: str, phrase: str) -> HACommandMatch:
-    """Toutes les commandes volet passent par script.blind_action (suivi écran HA)."""
+    """Toutes les commandes volet passent par script.tab5_volet_action (suivi écran HA)."""
     return HACommandMatch(
         service=_VOLET_SCRIPT,
         entity_id="",
@@ -78,7 +75,7 @@ def _volet_script(action: str, phrase: str) -> HACommandMatch:
 
 
 def ensure_volet_via_script(match: HACommandMatch) -> HACommandMatch:
-    """Convertit cover.living_room_blind → script avec suivi mouvement."""
+    """Convertit cover.volet_serre_rideau → script avec suivi mouvement."""
     if match.service == _VOLET_SCRIPT:
         return match
     if match.entity_id != _VOLET_COVER_ENTITY:
@@ -134,35 +131,26 @@ def prompt_has_domotic_action(text: str) -> bool:
 
 
 @lru_cache(maxsize=1)
-def _resolve_ha_commands_path() -> Path | None:
-    for candidate in _HA_COMMANDS_CANDIDATES:
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-@lru_cache(maxsize=1)
 def load_ha_commands() -> list[dict[str, Any]]:
-    path = _resolve_ha_commands_path()
-    if path is None:
+    if not _HA_COMMANDS_PATH.is_file():
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(_HA_COMMANDS_PATH.read_text(encoding="utf-8"))
         return list(data.get("commands", []))
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("[HA CMD] Impossible de charger %s : %s", path.name, exc)
+        logger.warning("[HA CMD] Impossible de charger ha_commands.json : %s", exc)
         return []
 
 
 # Pièce → (entity_id, services on/off)
 _ROOM_ENTITIES: dict[str, tuple[str, dict[str, str]]] = {
-    "salon": ("light.living_room", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "chambre": ("light.bedroom", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "chevet": ("light.bedside", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "cuisine": ("light.kitchen", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
-    "volet serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
-    "clim salon": ("climate.living_room", {"on": "climate.turn_on", "off": "climate.turn_off"}),
+    "salon": ("light.salon", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "chambre": ("light.h6008_2", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "chevet": ("light.h6008", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "cuisine": ("light.sonoff_1000f18da8", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "serre": ("cover.volet_serre_rideau", {"on": "cover.open_cover", "off": "cover.close_cover"}),
+    "volet serre": ("cover.volet_serre_rideau", {"on": "cover.open_cover", "off": "cover.close_cover"}),
+    "clim salon": ("climate.salon_daikinap71273_clim", {"on": "climate.turn_on", "off": "climate.turn_off"}),
 }
 
 
@@ -184,7 +172,7 @@ def match_ha_volet_stop(prompt: str) -> HACommandMatch | None:
 
 def match_ha_volet_keywords(prompt: str) -> HACommandMatch | None:
     """
-    Volet (cover.living_room_blind — alias vocal « volets du salon »).
+    Volet (unique cover volet_serre_rideau — alias vocal « volets du salon »).
     Prioritaire sur le match lumière salon quand « volet » est présent.
     """
     norm = normalize_ha_command_prompt(prompt)
@@ -205,7 +193,7 @@ def match_ha_volet_keywords(prompt: str) -> HACommandMatch | None:
 def match_ha_room_keywords(prompt: str) -> HACommandMatch | None:
     """
     Match pièce + action quand STT est trop bruité pour ha_commands exact/fuzzy.
-    Ex: « et tel les lumières du salon » → éteindre light.living_room
+    Ex: « et tel les lumières du salon » → éteindre light.salon
     """
     norm = normalize_ha_command_prompt(prompt)
     if not norm:
@@ -488,7 +476,7 @@ async def execute_ha_service(
     service_data = volet_match.service_data
 
     if ha_service == _VOLET_SCRIPT and not (service_data or {}).get("action"):
-        logger.warning("[HA EXEC] script.blind_action sans action — refus")
+        logger.warning("[HA EXEC] script.tab5_volet_action sans action — refus")
         return False, "Je n'ai pas pu exécuter la commande volet."
 
     ha_token, ha_url = _read_ha_credentials()
@@ -525,7 +513,7 @@ async def execute_ha_service(
                 ha_service, payload, resp.status, resp_text[:120],
             )
 
-    # Fallback : groupe light.living_room → membres individuels
+    # Fallback : groupe light.salon → membres individuels
     if ha_entity == _SALON_LIGHT_GROUP and "turn_" in ha_service:
         action = ha_service.split(".", 1)[-1]
         any_ok = False

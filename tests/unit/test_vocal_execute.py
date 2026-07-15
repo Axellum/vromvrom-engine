@@ -9,7 +9,7 @@ import pytest
 
 from core.ha_fuzzy_matcher import HAFuzzyMatcher, FUZZY_AMBIGUITY_DELTA, FUZZY_MATCH_THRESHOLD, FUZZY_MATCH_THRESHOLD_EMB
 from core.runtime_db import get_connection, override_db_path
-from core.source_router import ModeType, RequestSource
+from core.source_router import ModeType, RequestSource, SourceType
 from core.vocal_audit import get_recent_vocal_logs, is_vocal_request, log_vocal_request, log_vocal_response
 from services.execute_service import (
     build_ha_mode_failure_response,
@@ -74,10 +74,13 @@ def test_vocal_audit_persistence(temp_runtime_db):
 
 
 def test_ha_mode_should_block_pipeline():
-    ha = RequestSource(type="tab5", mode=ModeType.HA, tts_enabled=True)
-    chat = RequestSource(type="voice", mode=ModeType.CHAT, tts_enabled=True)
+    """HA et Discussion (chat) bloquent le Planner/DAG — vocal_host / fast paths uniquement."""
+    ha = RequestSource(type=SourceType.TAB5, mode=ModeType.HA, tts_enabled=True)
+    chat = RequestSource(type=SourceType.VOICE, mode=ModeType.CHAT, tts_enabled=True)
+    ide = RequestSource(type=SourceType.IDE, mode=ModeType.DEFAULT, tts_enabled=False)
     assert should_block_full_pipeline(ha)
     assert should_block_full_pipeline(chat)
+    assert not should_block_full_pipeline(ide)
 
 
 def test_ha_mode_failure_response_shape():

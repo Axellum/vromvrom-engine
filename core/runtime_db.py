@@ -431,6 +431,48 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_vocal_audit_created ON vocal_audit_log(created_at DESC)"
     )
 
+    # ─── Historique vocal Discussion multi-tour (Sprint A3) ───
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS vocal_conversation_turns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            turn_index INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            source_mode TEXT DEFAULT 'chat',
+            device_id TEXT,
+            created_at REAL NOT NULL,
+            UNIQUE(conversation_id, turn_index)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vocal_conv_turns ON vocal_conversation_turns(conversation_id, turn_index)"
+    )
+
+    # ─── Jobs vocaux Discussion async (Sprint B) ───
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS vocal_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id TEXT UNIQUE NOT NULL,
+            intent TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            user_prompt TEXT NOT NULL,
+            conversation_id TEXT,
+            device_id TEXT,
+            session_id TEXT,
+            result_text TEXT,
+            error_message TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vocal_jobs_status ON vocal_jobs(status, created_at DESC)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vocal_jobs_conv ON vocal_jobs(conversation_id, created_at DESC)"
+    )
+
     conn.commit()
 
 

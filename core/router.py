@@ -142,7 +142,7 @@ class Router:
                 "weight": 1.2
             },
             "sysadmin": {
-                "keywords": ["ssh", "deck", "steamdeck", "remote-host", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
+                "keywords": ["ssh", "deck", "steamdeck", "popydeck", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
                 "weight": 1.5
             },
             # Catégorie deck_edge : requêtes de tâches légères à router vers Ollama sur le Deck

@@ -20,5 +20,5 @@ def test_resolve_phrase_id_from_catalog():
 
 
 def test_canonical_text_for_ha_action():
-    text = canonical_text_for_ha_action("light.living_room", "light.turn_on")
+    text = canonical_text_for_ha_action("light.salon", "light.turn_on")
     assert text == "Lumière du salon allumée."

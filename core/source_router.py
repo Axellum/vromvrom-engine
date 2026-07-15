@@ -11,9 +11,8 @@ Date : 2026-06-06
 """
 
 import logging
-from enum import Enum
 from dataclasses import dataclass
-from typing import Optional
+from enum import Enum
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +60,8 @@ class RequestSource:
     type: SourceType = SourceType.UNKNOWN
     mode: ModeType   = ModeType.DEFAULT
     tts_enabled: bool = False          # Adapter la longueur/style pour TTS
-    device_id: Optional[str] = None    # Identifiant unique du device (futur multi-Tab5)
+    device_id: str | None = None    # Identifiant unique du device (futur multi-Tab5)
+    conversation_id: str | None = None  # Session HA Assist multi-tour (Sprint A3)
 
     @classmethod
     def from_dict(cls, data: dict) -> "RequestSource":
@@ -81,6 +81,7 @@ class RequestSource:
             mode=mode,
             tts_enabled=bool(data.get("tts_enabled", False)),
             device_id=data.get("device_id"),
+            conversation_id=data.get("conversation_id"),
         )
 
     def get_response_style(self) -> ResponseStyle:
@@ -95,7 +96,7 @@ class RequestSource:
         """Timeout en secondes selon le mode (recommandation DeepSeek)."""
         timeouts = {
             ModeType.HA:      2.0,   # Ultra-rapide : déterministe ou abort
-            ModeType.CHAT:   15.0,   # Conversationnel fluide
+            ModeType.CHAT:   20.0,   # Discussion vocale (LLM léger)
             ModeType.FILES:   5.0,   # Délégation PC
             ModeType.DEFAULT: 120.0, # Pipeline complet
         }
@@ -130,10 +131,12 @@ class RequestSource:
                 "Aucune explication, aucun titre, aucune liste."
             ),
             ResponseStyle.NATURAL: (
-                "\n\n[MODE VOCAL CONVERSATIONNEL] "
-                "Tu parles à quelqu'un via une dalle tactile avec synthèse vocale (TTS). "
-                "Réponds de façon naturelle, chaleureuse, sans formatage markdown. "
-                "Phrases courtes et fluides. Pas de listes à puces, pas de titres, pas d'emojis."
+                "\n\n[MODE VOCAL CONVERSATION — DISCUSSION] "
+                "Tu es l'assistant vocal sur sa tablette Tab5, en conversation libre. "
+                "Réponds en français, naturellement et brièvement : 2 à 3 phrases maximum. "
+                "Pas de markdown, pas de listes, pas de titres, pas d'emojis, pas de code. "
+                "Pas de noms d'entités techniques Home Assistant sauf si Axel le demande. "
+                "Si tu ne sais pas, dis-le en une phrase."
             ),
             ResponseStyle.DETAILED: "",  # Pas de contrainte
         }
@@ -150,7 +153,7 @@ class RequestSource:
 # Helpers globaux
 # ──────────────────────────────────────────────────────────────────
 
-def parse_source(source_data: Optional[dict]) -> RequestSource:
+def parse_source(source_data: dict | None) -> RequestSource:
     """
     Point d'entrée principal : parse le champ 'source' du body JSON.
 

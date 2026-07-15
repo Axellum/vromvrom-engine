@@ -43,17 +43,17 @@ _EXTRA_PHRASES: dict[str, str] = {
 
 # entity_id HA → (service fragment → phrase_id)
 _ENTITY_SERVICE_PHRASES: dict[str, dict[str, str]] = {
-    "light.living_room": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
-    "light.bedroom": {"turn_on": "lum_chambre_on", "turn_off": "lum_chambre_off"},
-    "light.bedside": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
-    "light.hallway": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
+    "light.salon": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
+    "light.h6008_2": {"turn_on": "lum_chambre_on", "turn_off": "lum_chambre_off"},
+    "light.h6008": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
+    "light.h600c": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
     "light.cuisine": {"turn_on": "lum_cuisine_on", "turn_off": "lum_cuisine_off"},
     "light.chambre": {"turn_on": "lum_chambre_on", "turn_off": "lum_chambre_off"},
     "light.jardin": {"turn_on": "lum_jardin_on", "turn_off": "lum_jardin_off"},
-    "climate.living_room": {"turn_on": "clim_salon_on", "turn_off": "clim_salon_off"},
+    "climate.salon_daikinap71273_clim": {"turn_on": "clim_salon_on", "turn_off": "clim_salon_off"},
     "climate.salon": {"turn_on": "clim_salon_on", "turn_off": "clim_salon_off"},
     "climate.chambre": {"turn_on": "clim_chambre_on", "turn_off": "clim_chambre_off"},
-    "cover.living_room_blind": {"open_cover": "vol_salon_ouvert", "close_cover": "vol_salon_ferme"},
+    "cover.volet_serre_rideau": {"open_cover": "vol_salon_ouvert", "close_cover": "vol_salon_ferme"},
 }
 
 

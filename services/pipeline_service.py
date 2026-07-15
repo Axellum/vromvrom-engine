@@ -59,7 +59,7 @@ def apply_workload_override(config: dict, tier: str | None = None, model: str | 
 # ══════════════════════════════════════════════════════════════════
 
 FAST_PATH_SYSTEM_PROMPT = (
-    "Tu es un assistant vocal domotique, expert en maison connectée et technologie. "
+    "Tu es l'assistant vocal, expert domotique et technologie. "
     "Réponds en français, de façon concise et chaleureuse."
 )
 
@@ -80,6 +80,7 @@ async def run_fast_path(
     model_override: str | None = None,
     system_prompt_suffix: str = "",
     inject_project_context: bool = False,
+    conversation_id: str | None = None,
 ) -> str | None:
     """
     Exécute le fast-path (casual_chat) en essayant les providers rapides dans l'ordre.
@@ -106,6 +107,14 @@ async def run_fast_path(
     system_prompt = FAST_PATH_SYSTEM_PROMPT
     if system_prompt_suffix:
         system_prompt = f"{system_prompt}{system_prompt_suffix}"
+    if conversation_id:
+        try:
+            from core.vocal_session import build_vocal_session_context
+            history_block = build_vocal_session_context(conversation_id)
+            if history_block:
+                system_prompt = f"{system_prompt}{history_block}"
+        except Exception as hist_err:
+            logger.debug(f"[FAST_PATH] Historique vocal ignoré : {hist_err}")
     if inject_project_context:
         try:
             from services.execute_service import get_casual_chat_context
@@ -118,7 +127,7 @@ async def run_fast_path(
     # ── Vérification du cache TTL (évite un appel LLM si prompt identique < 15s) ──
     # [#T194] L'override tier/modèle fait partie de la clé : une même question posée
     # en "fort" ne doit pas resservir la réponse cachée du tier "léger".
-    _override_key = f"{tier_override or ''}|{model_override or ''}"
+    _override_key = f"{tier_override or ''}|{model_override or ''}|{conversation_id or ''}"
     _cache_key = hashlib.md5(
         f"{system_prompt}||{_override_key}||{user_prompt}".encode()
     ).hexdigest()
@@ -681,6 +690,220 @@ async def run_engine_background(objective: str, on_event_callback, session_id: s
         async with state.execution_lock:
             state.execution_state["status"] = "error"
             state.execution_state["error_message"] = str(e)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Service : Streaming discussion vocal (Sprint A1 — /api/execute/stream)
+# ══════════════════════════════════════════════════════════════════
+
+import re as _re
+
+_SENTENCE_BOUNDARY_RE = _re.compile(r"^(.+?[.!?…])(?:\s+|$)", _re.DOTALL)
+_CLAUSE_BOUNDARY_RE = _re.compile(r"^(.+?[,;:])(?:\s+|$)", _re.DOTALL)
+_EARLY_CHUNK_CHARS = 42
+
+
+def _pop_complete_sentences(buffer: str) -> tuple[list[str], str]:
+    """Extrait les phrases/chunks du buffer de streaming (TTS rapide)."""
+    sentences: list[str] = []
+    rest = buffer
+    while True:
+        match = _SENTENCE_BOUNDARY_RE.match(rest)
+        if match:
+            sentence = match.group(1).strip()
+            if sentence:
+                sentences.append(sentence)
+            rest = rest[match.end():]
+            continue
+
+        match = _CLAUSE_BOUNDARY_RE.match(rest)
+        if match and len(match.group(1).strip()) >= 12:
+            sentence = match.group(1).strip()
+            if sentence:
+                sentences.append(sentence)
+            rest = rest[match.end():]
+            continue
+
+        if len(rest) >= _EARLY_CHUNK_CHARS:
+            cut = rest[:_EARLY_CHUNK_CHARS].rfind(" ")
+            if cut < 12:
+                cut = _EARLY_CHUNK_CHARS
+            chunk = rest[:cut].strip()
+            if chunk:
+                sentences.append(chunk)
+            rest = rest[cut:].lstrip()
+            continue
+
+        break
+    return sentences, rest
+
+
+async def _build_fast_path_system_prompt(
+    system_prompt_suffix: str = "",
+    inject_project_context: bool = False,
+    user_prompt: str = "",
+    conversation_id: str | None = None,
+) -> str:
+    system_prompt = FAST_PATH_SYSTEM_PROMPT
+    if system_prompt_suffix:
+        system_prompt = f"{system_prompt}{system_prompt_suffix}"
+    if conversation_id:
+        try:
+            from core.vocal_session import build_vocal_session_context
+            history_block = build_vocal_session_context(conversation_id)
+            if history_block:
+                system_prompt = f"{system_prompt}{history_block}"
+        except Exception as hist_err:
+            logger.debug(f"[FAST_PATH] Historique vocal ignoré : {hist_err}")
+    if inject_project_context and user_prompt:
+        try:
+            from services.execute_service import get_casual_chat_context
+            rag_block = await get_casual_chat_context(user_prompt)
+            if rag_block:
+                system_prompt = f"{system_prompt}{rag_block}"
+        except Exception as rag_err:
+            logger.debug(f"[STREAM_DISCUSSION] Contexte projet ignoré : {rag_err}")
+    return system_prompt
+
+
+def _fast_path_provider_candidates(
+    gateway,
+    tier_override: str | None,
+    model_override: str | None,
+) -> list:
+    candidates: list = []
+    if model_override:
+        candidates.append(model_override)
+    elif tier_override in WORKLOAD_TIERS and tier_override != "automatique":
+        try:
+            from core.llm_gateway import load_config
+            _, tier_provider = gateway.get_provider_for_tier(tier_override, load_config())
+            candidates.append((f"tier:{tier_override}", tier_provider))
+        except Exception as tier_err:
+            logger.warning(f"[STREAM_DISCUSSION] Tier '{tier_override}' non résolu : {tier_err}")
+    candidates.extend(FAST_PATH_PROVIDERS)
+    return candidates
+
+
+async def stream_discussion_fast_path_sse(
+    user_prompt: str,
+    session_id: str,
+    gateway,
+    fast_path_cache,
+    system_prompt_suffix: str = "",
+    inject_project_context: bool = True,
+    tier_override: str | None = None,
+    model_override: str | None = None,
+    conversation_id: str | None = None,
+) -> AsyncGenerator[str, None]:
+    """
+    Générateur SSE pour le mode Discussion vocal (mode=chat).
+    Émet token / sentence / done — jamais Planner/DAG.
+    """
+    import json
+
+    from core.vocal_tts_cache import sanitize_discussion_tts
+    from core.vocal_abort import (
+        is_vocal_aborted,
+        register_vocal_stream,
+        unregister_vocal_stream,
+    )
+
+    register_vocal_stream(session_id, conversation_id=conversation_id)
+
+    try:
+        system_prompt = await _build_fast_path_system_prompt(
+            system_prompt_suffix, inject_project_context, user_prompt, conversation_id
+        )
+
+        _override_key = f"{tier_override or ''}|{model_override or ''}|{conversation_id or ''}"
+        _cache_key = hashlib.md5(
+            f"{system_prompt}||{_override_key}||{user_prompt}".encode()
+        ).hexdigest()
+        cached = fast_path_cache.get(_cache_key)
+        if cached is not None:
+            if is_vocal_aborted(session_id, conversation_id=conversation_id):
+                yield f"data: {json.dumps({'type': 'aborted'}, ensure_ascii=False)}\n\n"
+                return
+            logger.info(f"[STREAM_DISCUSSION] Cache HIT (clé {_cache_key[:8]}…)")
+            final = sanitize_discussion_tts(str(cached))
+            yield f"data: {json.dumps({'type': 'sentence', 'text': final}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'response': final, 'agents_used': ['discussion_chat']}, ensure_ascii=False)}\n\n"
+            return
+
+        accumulated = ""
+        sentence_buf = ""
+        streamed = False
+
+        for entry in _fast_path_provider_candidates(gateway, tier_override, model_override):
+            if is_vocal_aborted(session_id, conversation_id=conversation_id):
+                yield f"data: {json.dumps({'type': 'aborted'}, ensure_ascii=False)}\n\n"
+                return
+            if isinstance(entry, tuple):
+                pname, fast_provider = entry
+                stream_source = fast_provider.generate_stream(
+                    system_prompt, user_prompt, session_id=session_id
+                )
+            else:
+                pname = entry
+                try:
+                    gateway.get_provider(pname)
+                except ValueError:
+                    logger.debug(f"[STREAM_DISCUSSION] Provider {pname} indisponible, skip")
+                    continue
+                stream_source = gateway.stream(
+                    pname, system_prompt, user_prompt, session_id=session_id
+                )
+
+            try:
+                logger.info(f"[STREAM_DISCUSSION] Streaming → {pname}")
+                for chunk in stream_source:
+                    if is_vocal_aborted(session_id, conversation_id=conversation_id):
+                        yield f"data: {json.dumps({'type': 'aborted'}, ensure_ascii=False)}\n\n"
+                        return
+                    token = chunk.get("token") or ""
+                    if token:
+                        accumulated += token
+                        sentence_buf += token
+                        streamed = True
+                        yield f"data: {json.dumps({'type': 'token', 'text': token}, ensure_ascii=False)}\n\n"
+                        new_sentences, sentence_buf = _pop_complete_sentences(sentence_buf)
+                        for raw_sentence in new_sentences:
+                            clean = sanitize_discussion_tts(raw_sentence)
+                            if clean:
+                                yield f"data: {json.dumps({'type': 'sentence', 'text': clean}, ensure_ascii=False)}\n\n"
+                    if chunk.get("done"):
+                        break
+                if streamed:
+                    fast_path_cache[_cache_key] = accumulated
+                    asyncio.create_task(_persist_fast_path_async(session_id, user_prompt, accumulated))
+                    break
+            except Exception as provider_err:
+                logger.warning(f"[STREAM_DISCUSSION] {pname} échoué : {provider_err}")
+                accumulated = ""
+                sentence_buf = ""
+                streamed = False
+                continue
+
+        if not streamed:
+            err = "Tous les providers discussion stream ont échoué"
+            yield f"data: {json.dumps({'type': 'error', 'message': err}, ensure_ascii=False)}\n\n"
+            fallback = sanitize_discussion_tts("Désolé, peux-tu reformuler ?")
+            yield f"data: {json.dumps({'type': 'done', 'response': fallback, 'agents_used': ['discussion_chat']}, ensure_ascii=False)}\n\n"
+            return
+
+        if sentence_buf.strip():
+            tail = sanitize_discussion_tts(sentence_buf.strip())
+            if tail:
+                yield f"data: {json.dumps({'type': 'sentence', 'text': tail}, ensure_ascii=False)}\n\n"
+
+        final = sanitize_discussion_tts(accumulated)
+        if not final:
+            final = sanitize_discussion_tts("Désolé, peux-tu reformuler ?")
+
+        yield f"data: {json.dumps({'type': 'done', 'response': final, 'agents_used': ['discussion_chat']}, ensure_ascii=False)}\n\n"
+    finally:
+        unregister_vocal_stream(session_id, conversation_id=conversation_id)
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -95,21 +95,87 @@ async def _execute_stream_generator(
         from core import token_tracker
         from core.llm_gateway import LLMGateway, load_config
         from core.source_router import ModeType, log_source_decision, parse_source
+        from core.vocal_audit import VocalAuditTimer, log_vocal_request, log_vocal_response
         from services.execute_service import apply_source_config_overrides, get_execute_timeout
         from services.pipeline_service import (
             run_fast_path,
             run_full_pipeline,
+            stream_discussion_fast_path_sse,
         )
 
         state = get_app_state()
+        request_source = parse_source(source)
+        suffix = request_source.get_system_prompt_suffix()
 
-        # ── Routing ──
-        # [P1-2.1] Router canonique partagé (gateway/RAG/config câblés).
+        # ── Mode Discussion (chat) : streaming LLM léger, jamais Planner/DAG ──
+        if request_source.mode == ModeType.CHAT:
+            log_vocal_request(
+                session_id=session_id,
+                user_prompt=user_prompt,
+                source_type=request_source.type.value,
+                source_mode=request_source.mode.value,
+                tts_enabled=request_source.tts_enabled,
+                device_id=request_source.device_id,
+            )
+            log_source_decision(request_source, "discussion_chat")
+            conv_id = request_source.conversation_id
+            if conv_id:
+                from core.vocal_abort import abort_vocal_streams
+                abort_vocal_streams(conversation_id=conv_id)
+            if conv_id:
+                from core.vocal_session import record_vocal_turn
+                record_vocal_turn(
+                    conv_id, "user", user_prompt,
+                    source_mode="chat", device_id=request_source.device_id,
+                )
+            final_response = ""
+            with VocalAuditTimer() as timer:
+                async for sse_line in stream_discussion_fast_path_sse(
+                    user_prompt=user_prompt,
+                    session_id=session_id,
+                    gateway=LLMGateway(),
+                    fast_path_cache=state.fast_path_cache,
+                    system_prompt_suffix=suffix,
+                    inject_project_context=True,
+                    tier_override=tier,
+                    model_override=model,
+                    conversation_id=conv_id,
+                ):
+                    yield sse_line
+                    if sse_line.startswith("data:"):
+                        try:
+                            evt = _json.loads(sse_line[5:].strip())
+                            if evt.get("type") == "done":
+                                final_response = evt.get("response", "")
+                        except _json.JSONDecodeError:
+                            pass
+            async with state.execution_lock:
+                state.execution_state["status"] = "success"
+            if conv_id and final_response:
+                from core.vocal_session import record_vocal_turn
+                record_vocal_turn(
+                    conv_id, "assistant", final_response,
+                    source_mode="chat", device_id=request_source.device_id,
+                )
+            log_vocal_response(
+                session_id=session_id,
+                user_prompt=user_prompt,
+                source_type=request_source.type.value,
+                source_mode=request_source.mode.value,
+                routing_type="discussion_chat_stream",
+                agents_used=["discussion_chat"],
+                response_text=final_response,
+                latency_ms=timer.elapsed_ms,
+                tts_enabled=request_source.tts_enabled,
+                device_id=request_source.device_id,
+            )
+            return
+
+        # ── Routing (domotique / IDE) ──
         router_instance = state.get_shared_router()
         initial_payload, starting_agent = await router_instance.analyze_request(user_prompt)
         routing_type = initial_payload.metadata.get("routing_type", "default")
 
-        request_source = parse_source(source)
         initial_payload.metadata["request_source"] = {
             "type": request_source.type.value,
             "mode": request_source.mode.value,
@@ -246,6 +312,26 @@ async def _execute_stream_generator(
             pass
 
 
+async def _execute_stream_with_cleanup(
+    user_prompt: str,
+    source: dict,
+    session_id: str,
+    tier: str | None = None,
+    model: str | None = None,
+):
+    """Enveloppe le générateur SSE pour libérer execution_state même si client coupe."""
+    state = get_app_state()
+    try:
+        async for chunk in _execute_stream_generator(
+            user_prompt, source, session_id, tier=tier, model=model
+        ):
+            yield chunk
+    finally:
+        async with state.execution_lock:
+            if state.execution_state.get("status") == "running":
+                state.execution_state["status"] = "success"
+
+
 @router.post("/api/execute/stream")
 async def execute_chat_stream(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
     """
@@ -266,7 +352,7 @@ async def execute_chat_stream(body: ExecuteRequestBody, _auth=Depends(optional_a
 
     session_id = f"stream_{int(asyncio.get_event_loop().time())}"
     return StreamingResponse(
-        _execute_stream_generator(
+        _execute_stream_with_cleanup(
             body.user_prompt, body.source, session_id, tier=body.tier, model=body.model
         ),
         media_type="text/event-stream",

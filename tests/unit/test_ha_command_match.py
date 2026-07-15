@@ -16,14 +16,14 @@ def test_normalize_stt_verbs():
 def test_match_ha_command_exact():
     m = match_ha_command("allume le salon")
     assert m is not None
-    assert m.entity_id == "light.living_room"
+    assert m.entity_id == "light.salon"
     assert m.service == "light.turn_on"
 
 
 def test_match_ha_command_stt_variant():
     m = match_ha_command("allumé le salon")
     assert m is not None
-    assert m.entity_id == "light.living_room"
+    assert m.entity_id == "light.salon"
 
 
 def test_prompt_has_domotic_action():
@@ -32,21 +32,21 @@ def test_prompt_has_domotic_action():
 
 
 def test_build_natural_ha_response_cached():
-    text = build_natural_ha_response("light.living_room", "light.turn_on", "Salon")
+    text = build_natural_ha_response("light.salon", "light.turn_on", "Salon")
     assert text == "Lumière du salon allumée."
 
 
 def test_build_natural_volet_stop():
     text = build_natural_ha_response(
         "",
-        "script.blind_action",
+        "script.tab5_volet_action",
         service_data={"action": "stop"},
     )
     assert text == "Volet arrêté."
 
 
 def test_build_natural_ha_response_no_entity_slug():
-    text = build_natural_ha_response("light.bedroom", "light.turn_on", "Lumiere chambre")
+    text = build_natural_ha_response("light.h6008_2", "light.turn_on", "Lumiere chambre")
     assert "h6008" not in text.lower()
     assert "lumière" in text.lower()
 

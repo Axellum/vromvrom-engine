@@ -22,15 +22,15 @@ _LLM_TIMEOUT_S = 8.0
 _SYSTEM = """Tu es un extracteur d'intentions domotiques Home Assistant.
 Entrée : phrase utilisateur (transcription vocale imparfaite, en français).
 Sortie : UNIQUEMENT un objet JSON valide sur une ligne, sans markdown :
-{"service":"light.turn_on","entity_id":"light.living_room"}
+{"service":"light.turn_on","entity_id":"light.salon"}
 ou {"service":null,"entity_id":null} si la commande est incompréhensible.
 
 Règles :
 - Choisis UNIQUEMENT une entité de la liste ci-dessous.
 - service = domaine.action HA (ex. light.turn_on, light.turn_off, cover.open_cover).
 - Interprète les fautes STT (« est-elle » = éteindre, « al lumière » = la lumière).
-- Si la pièce est « salon » et action allumer → light.living_room + light.turn_on.
-- Si la pièce est « chambre » et action éteindre → light.bedroom + light.turn_off.
+- Si la pièce est « salon » et action allumer → light.salon + light.turn_on.
+- Si la pièce est « chambre » et action éteindre → light.h6008_2 + light.turn_off.
 """
 
 

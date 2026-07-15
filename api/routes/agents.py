@@ -200,44 +200,61 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
             initial_payload.metadata["system_prompt_suffix"] = suffix
             log_source_decision(request_source, routing_type)
 
-            # ── Mode Discussion (chat) : fast path LLM léger, jamais Planner/DAG ──
+            # ── Mode Discussion (chat) : vocal_host → chat sync ou job async ──
             if request_source.mode == ModeType.CHAT:
-                logger.info("[EXECUTE] 💬 Mode discussion → fast path forcé")
+                logger.info("[EXECUTE] 💬 Mode discussion → vocal_host")
                 execute_timeout = get_execute_timeout(request_source, "casual_chat")
+                conv_id = request_source.conversation_id
+                if conv_id:
+                    from core.vocal_session import record_vocal_turn
+                    record_vocal_turn(
+                        conv_id, "user", body.user_prompt,
+                        source_mode="chat", device_id=request_source.device_id,
+                    )
                 try:
                     from core import token_tracker
-                    from core.vocal_tts_cache import sanitize_discussion_tts
+                    from core.vocal_host import handle_discussion
 
-                    raw_response = await asyncio.wait_for(
-                        run_fast_path(
+                    host_result = await asyncio.wait_for(
+                        handle_discussion(
                             user_prompt=body.user_prompt,
                             session_id=session_id,
                             gateway=LLMGateway(),
                             token_tracker=token_tracker,
                             fast_path_cache=state.fast_path_cache,
+                            system_prompt_suffix=suffix,
+                            conversation_id=conv_id,
+                            device_id=request_source.device_id,
                             tier_override=body.tier,
                             model_override=body.model,
-                            system_prompt_suffix=suffix,
-                            inject_project_context=True,
                         ),
                         timeout=execute_timeout,
                     )
-                    response_text = sanitize_discussion_tts(raw_response or "")
-                    if not response_text:
-                        raise RuntimeError("Réponse discussion vide après sanitization")
-                    agents_used = ["discussion_chat"]
+                    response_text = host_result.response_text
+                    if conv_id and not host_result.async_job_id:
+                        from core.vocal_session import record_vocal_turn
+                        record_vocal_turn(
+                            conv_id, "assistant", response_text,
+                            source_mode="chat", device_id=request_source.device_id,
+                        )
+                    agents_used = host_result.agents_used
+                    routing_type = host_result.routing_type
                     async with state.execution_lock:
                         state.execution_state["status"] = "success"
                     result = _build_fast_path_response(session_id, body.user_prompt, response_text)
-                    result["history"][0]["agent_name"] = "discussion_chat"
-                    result["history"][0]["metadata"] = {"routing_type": "discussion_chat", "model_tier": "leger"}
+                    result["history"][0]["agent_name"] = agents_used[0]
+                    result["history"][0]["metadata"] = {
+                        "routing_type": routing_type,
+                        "model_tier": "leger",
+                        **host_result.metadata,
+                    }
                     result["agents_used"] = agents_used
                     log_vocal_response(
                         session_id=session_id,
                         user_prompt=body.user_prompt,
                         source_type=request_source.type.value,
                         source_mode=request_source.mode.value,
-                        routing_type="discussion_chat",
+                        routing_type=routing_type,
                         agents_used=agents_used,
                         response_text=response_text,
                         latency_ms=timer.elapsed_ms,
@@ -641,6 +658,35 @@ async def vocal_audit_recent(limit: int = 50, _auth=Depends(optional_auth)):
     safe_limit = max(1, min(limit, 200))
     logs = _get_vocal_logs(safe_limit)
     return {"count": len(logs), "logs": logs}
+
+
+class VocalAbortBody(BaseModel):
+    """Corps pour /api/vocal/abort (barge-in Sprint A4)."""
+    conversation_id: str | None = None
+    session_id: str | None = None
+    device_id: str | None = None
+
+
+@router.post("/api/vocal/abort")
+async def vocal_abort(body: VocalAbortBody, _auth=Depends(optional_auth)):
+    """Interrompt les streams vocaux Discussion en cours (barge-in Tab5)."""
+    from core.vocal_abort import abort_vocal_streams, list_active_vocal_streams
+
+    state = get_app_state()
+    count = abort_vocal_streams(
+        session_id=body.session_id,
+        conversation_id=body.conversation_id,
+        device_id=body.device_id,
+    )
+    async with state.execution_lock:
+        if state.execution_state.get("status") == "running":
+            state.execution_state["status"] = "success"
+            state.execution_state["error_message"] = "vocal_abort"
+    return {
+        "aborted": count,
+        "active_before": list_active_vocal_streams(),
+        "status": "ok",
+    }
 
 
 class CodeRequestBody(BaseModel):

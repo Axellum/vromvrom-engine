@@ -189,7 +189,7 @@ async def test_sqlite_sync_queues_on_failure(tmp_antigrav):
                                   {("192.168.1.100", 22): Exception("Refusé")}
                               )):
                 client.connect("192.168.1.100", port=22, username="deck",
-                               password="popydeck", timeout=5)
+                               password="test-password-placeholder", timeout=5)
             return True
         except Exception:
             return False
@@ -207,7 +207,7 @@ async def test_sqlite_sync_queues_on_failure(tmp_antigrav):
         queue_file.write_text(json.dumps(queue, indent=2))
 
     # Simuler un cycle sync qui échoue
-    remote_path = "/e/AuxFilsDesIdees/moteur_agents/moteur_runtime_deck_backup.db"
+    remote_path = "/opt/moteur_agents/moteur_runtime_deck_backup.db"
     success = await mock_scp_upload(fake_db, remote_path)
     if not success:
         enqueue(fake_db, remote_path)

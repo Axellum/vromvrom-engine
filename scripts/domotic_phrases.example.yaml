@@ -1,0 +1,16 @@
+# Exemple de catalogue TTS vocal — copier vers scripts/domotic_phrases.yaml
+phrases:
+  - id: lum_salon_on
+    text: "Lumière du salon allumée."
+  - id: lum_salon_off
+    text: "Lumière du salon éteinte."
+  - id: lum_chambre_on
+    text: "Lumière de la chambre allumée."
+  - id: lum_chambre_off
+    text: "Lumière de la chambre éteinte."
+  - id: vol_salon_ouvert
+    text: "Les volets du salon sont ouverts."
+  - id: vol_salon_ferme
+    text: "Les volets du salon sont fermés."
+  - id: vol_salon_stop
+    text: "Volet arrêté."

@@ -23,7 +23,7 @@ if not (getattr(sys.modules.get("tools"), "__file__", "") or "").startswith(_REP
     _m.__path__ = [os.path.join(_REPO, "tools")]
     sys.modules["tools"] = _m
 
-import mcp_server  # noqa: E402
+import core.mcp_tools.orchestrator as mcp_orchestrator  # noqa: E402
 
 
 class _FakeProvider:
@@ -57,18 +57,18 @@ class _FakeRouter:
 
 
 def _patch(monkeypatch, *, providers, candidates, routing_type="simple"):
-    monkeypatch.setattr(mcp_server, "get_gateway", lambda: _FakeGateway(providers))
-    monkeypatch.setattr(mcp_server, "get_router", lambda: _FakeRouter(routing_type))
-    monkeypatch.setattr(mcp_server, "_catalog_models_for_budget", lambda budget: candidates)
+    monkeypatch.setattr(mcp_orchestrator, "get_gateway", lambda: _FakeGateway(providers))
+    monkeypatch.setattr(mcp_orchestrator, "get_router", lambda: _FakeRouter(routing_type))
+    monkeypatch.setattr(mcp_orchestrator, "_catalog_models_for_budget", lambda budget: candidates)
 
 
 def test_resolve_provider_exact_partiel_absent():
     gw = _FakeGateway({"deepseek-chat": object(), "ollama_local": object()})
-    assert mcp_server._resolve_gateway_provider(gw, "deepseek-chat")[0] == "deepseek-chat"
+    assert mcp_orchestrator._resolve_gateway_provider(gw, "deepseek-chat")[0] == "deepseek-chat"
     # Partiel : "ollama" → "ollama_local"
-    assert mcp_server._resolve_gateway_provider(gw, "ollama")[0] == "ollama_local"
+    assert mcp_orchestrator._resolve_gateway_provider(gw, "ollama")[0] == "ollama_local"
     # Absent → provider None
-    assert mcp_server._resolve_gateway_provider(gw, "inexistant")[1] is None
+    assert mcp_orchestrator._resolve_gateway_provider(gw, "inexistant")[1] is None
 
 
 def test_delegue_au_premier_candidat_eligible(monkeypatch):
@@ -80,7 +80,7 @@ def test_delegue_au_premier_candidat_eligible(monkeypatch):
                                     "deepseek-chat": _FakeProvider("ds")},
            candidates=candidates)
 
-    out = asyncio.run(mcp_server.delegate_to_gateway("résume ceci", budget_constraint="free"))
+    out = asyncio.run(mcp_orchestrator.delegate_to_gateway("résume ceci", budget_constraint="free"))
     assert "[ollama]" in out
     assert "ollama_local" in out
     assert "deepseek-chat" not in out  # le 1er candidat a suffi
@@ -95,7 +95,7 @@ def test_fallback_cascade_si_premier_echoue(monkeypatch):
                                     "deepseek-chat": _FakeProvider("ds")},
            candidates=candidates)
 
-    out = asyncio.run(mcp_server.delegate_to_gateway("tâche", budget_constraint="auto"))
+    out = asyncio.run(mcp_orchestrator.delegate_to_gateway("tâche", budget_constraint="auto"))
     assert "[ds]" in out
     assert "deepseek-chat" in out
     assert "après échec" in out  # mention du fallback
@@ -107,13 +107,13 @@ def test_aucun_candidat_cable_dans_gateway(monkeypatch):
     ]
     _patch(monkeypatch, providers={"deepseek-chat": _FakeProvider("ds")}, candidates=candidates)
 
-    out = asyncio.run(mcp_server.delegate_to_gateway("tâche", budget_constraint="best"))
+    out = asyncio.run(mcp_orchestrator.delegate_to_gateway("tâche", budget_constraint="best"))
     assert out.startswith("❌")
     assert "câblé" in out or "câbl" in out
 
 
 def test_catalogue_vide(monkeypatch):
     _patch(monkeypatch, providers={"deepseek-chat": _FakeProvider("ds")}, candidates=[])
-    out = asyncio.run(mcp_server.delegate_to_gateway("tâche"))
+    out = asyncio.run(mcp_orchestrator.delegate_to_gateway("tâche"))
     assert out.startswith("❌")
     assert "Aucun modèle actif" in out

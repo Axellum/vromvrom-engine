@@ -72,6 +72,13 @@ class CircuitBreaker:
         self.total_trips = 0
         self.total_rate_limits = 0
 
+        # [#T118] Latence live par provider (moyenne mobile exponentielle, ms).
+        # Alimente `get_model_routing_score()` en complément du `cascade_priority`
+        # statique — pattern `lowest-latency` LiteLLM.
+        self.avg_latency_ms: float | None = None
+        self.last_latency_ms: float | None = None
+        self._LATENCY_EMA_ALPHA = 0.3
+
     @property
     def state(self) -> CircuitBreakerState:
         """Retourne l'état actuel avec vérification automatique du timeout de récupération."""
@@ -87,8 +94,22 @@ class CircuitBreaker:
         return self.state == CircuitBreakerState.OPEN
 
     def record_success(self, latency: float = 0.0) -> None:
-        """Enregistre un succès et referme le disjoncteur si nécessaire."""
+        """Enregistre un succès et referme le disjoncteur si nécessaire.
+
+        [#T118] `latency` (secondes) alimente une moyenne mobile exponentielle
+        (`avg_latency_ms`) utilisée comme signal de latence live par le routeur.
+        """
         self.total_calls += 1
+        if latency and latency > 0:
+            latency_ms = latency * 1000.0
+            self.last_latency_ms = latency_ms
+            if self.avg_latency_ms is None:
+                self.avg_latency_ms = latency_ms
+            else:
+                self.avg_latency_ms = (
+                    self._LATENCY_EMA_ALPHA * latency_ms
+                    + (1 - self._LATENCY_EMA_ALPHA) * self.avg_latency_ms
+                )
         if self._state == CircuitBreakerState.HALF_OPEN:
             logger.info(f"[CIRCUIT BREAKER] {self.name} refermé (CLOSED) suite à un succès en HALF_OPEN")
             self._state = CircuitBreakerState.CLOSED
@@ -163,6 +184,8 @@ class CircuitBreaker:
             "total_failures": self.total_failures,
             "total_trips": self.total_trips,
             "rate_limits": self.total_rate_limits,
+            "avg_latency_ms": round(self.avg_latency_ms, 1) if self.avg_latency_ms is not None else None,
+            "last_latency_ms": round(self.last_latency_ms, 1) if self.last_latency_ms is not None else None,
         }
 
     def to_dict(self) -> Dict[str, Any]:

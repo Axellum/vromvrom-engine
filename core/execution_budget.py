@@ -69,6 +69,21 @@ class ExecutionBudget:
         """Secondes écoulées depuis le début de la requête."""
         return time.time() - self.start_time
 
+    def remaining_tokens(self) -> Optional[int]:
+        """Tokens restants avant plafond, ou `None` si l'axe tokens est désactivé.
+
+        [#T111] Utilisé pour borner le fan-out parallèle du DAG runner par le
+        budget restant (cf. `DAGRunner._compute_concurrency_cap`).
+        """
+        if self.max_tokens <= 0:
+            return None
+        try:
+            from core.token_tracker import get_session_total_tokens
+            consumed = get_session_total_tokens(self.session_id)
+        except Exception:
+            consumed = 0
+        return max(self.max_tokens - consumed, 0)
+
     def check(self) -> Optional[Dict[str, Any]]:
         """
         Vérifie les trois axes. Renvoie `None` si la requête est dans le budget,

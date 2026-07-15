@@ -149,6 +149,44 @@ class TestEloScorer(unittest.TestCase):
         ranked = get_ranked_models("", [])
         self.assertEqual(ranked, [])
 
+    def test_cost_per_successful_task(self):
+        """[#T116] Le coût par tâche réussie doit être correctement agrégé."""
+        from core.elo_scorer import update_elo, get_cost_per_successful_task
+        import core.runtime_db as db_mod
+
+        # 2 succès + 1 échec pour "cost-model" (seuls les succès comptent)
+        update_elo("cost-model", "code_gen", success=True)
+        update_elo("cost-model", "analysis", success=True)
+        update_elo("cost-model", "home_assistant", success=False)
+
+        # Coût cumulé simulé pour ce modèle (table token_usage)
+        conn = db_mod.get_connection()
+        conn.execute(
+            "INSERT INTO token_usage (session_id, timestamp, model, prompt_tokens, "
+            "completion_tokens, total_tokens, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("test-session", 0.0, "cost-model", 100, 50, 150, 0.06),
+        )
+        conn.commit()
+        conn.close()
+
+        result = get_cost_per_successful_task()
+        # "cost-model" n'existe pas dans models_registry.db → regroupé sous "unknown"
+        self.assertIn("unknown", result)
+        entry = result["unknown"]
+        self.assertEqual(entry["successful_tasks"], 2)
+        self.assertAlmostEqual(entry["total_cost_usd"], 0.06, places=6)
+        self.assertAlmostEqual(entry["cost_per_success_usd"], 0.03, places=6)
+
+    def test_cost_per_successful_task_no_wins(self):
+        """[#T116] Un modèle sans succès ne doit pas provoquer de division par zéro."""
+        from core.elo_scorer import update_elo, get_cost_per_successful_task
+        update_elo("failing-model", "code_gen", success=False)
+
+        result = get_cost_per_successful_task()
+        self.assertIn("unknown", result)
+        self.assertEqual(result["unknown"]["successful_tasks"], 0)
+        self.assertIsNone(result["unknown"]["cost_per_success_usd"])
+
     def test_k_factor_decreases_over_time(self):
         """Après 30+ matchs, le K-factor diminue → convergence plus lente."""
         from core.elo_scorer import update_elo

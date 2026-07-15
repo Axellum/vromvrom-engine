@@ -10,12 +10,12 @@ Centralise l'accès et le schéma de toutes les tables du moteur :
 Sécurité ACID, mode WAL activé, gestion multi-thread sécurisée par verrous.
 """
 
+import logging
 import os
 import sqlite3
-import logging
 import threading
 from contextlib import asynccontextmanager
-from typing import Optional, Any
+from typing import Any
 
 try:
     import aiosqlite
@@ -303,7 +303,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     """)
 
     # ─── NOUVELLES TABLES DU DAG RÉACTIF ET SWARM (V8/V9) ───
-    
+
     # dag_tasks : Suivi unitaire de chaque tâche éphémère ou réactive
     conn.execute("""
         CREATE TABLE IF NOT EXISTS dag_tasks (
@@ -383,7 +383,7 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(session_id, scope_id, key)
         )
     """)
-    
+
     # ─── PERSISTANCE DES CONVERSATIONS CHAT IHM (T83) ───
     conn.execute("""
         CREATE TABLE IF NOT EXISTS chat_messages (
@@ -409,15 +409,37 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         "agents_used": "TEXT",
     })
 
+    # ─── AUDIT VOCAL Tab5/Assist (diagnostic STT → moteur) ───
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS vocal_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            session_id TEXT NOT NULL,
+            user_prompt TEXT NOT NULL,
+            source_type TEXT,
+            source_mode TEXT,
+            tts_enabled INTEGER DEFAULT 0,
+            device_id TEXT,
+            routing_type TEXT,
+            agents_used TEXT,
+            response_text TEXT,
+            latency_ms REAL,
+            phase TEXT DEFAULT 'response'
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vocal_audit_created ON vocal_audit_log(created_at DESC)"
+    )
+
     conn.commit()
 
 
-def write_scoped_var(session_id: str, scope_id: str, parent_scope_id: Optional[str], key: str, value: Any) -> None:
+def write_scoped_var(session_id: str, scope_id: str, parent_scope_id: str | None, key: str, value: Any) -> None:
     """
     Enregistre ou met à jour une variable dans la mémoire d'un scope donné.
     """
     import json
-    
+
     val_json = json.dumps(value)
     # Remplacer la connexion pour utiliser get_connection() avec gestion du lock si multi-thread,
     # mais get_connection() est thread-safe sous SQLite WAL.
@@ -443,16 +465,16 @@ def get_all_scoped_vars(session_id: str, scope_id: str) -> dict:
     Les clés des scopes enfants surchargent celles des scopes parents.
     """
     import json
-    
+
     # 1. Résoudre la hiérarchie des scopes
     scopes_chain = []
     current_scope = scope_id
     visited = set()
-    
+
     while current_scope and current_scope not in visited:
         visited.add(current_scope)
         scopes_chain.append(current_scope)
-        
+
         # Récupérer le parent du scope courant
         conn = get_connection()
         try:
@@ -462,7 +484,7 @@ def get_all_scoped_vars(session_id: str, scope_id: str) -> dict:
             ).fetchone()
         finally:
             conn.close()
-        
+
         if row and row[0]:
             current_scope = row[0]
         else:
@@ -494,5 +516,5 @@ def get_all_scoped_vars(session_id: str, scope_id: str) -> dict:
                     result[key] = val_json
     finally:
         conn.close()
-        
+
     return result

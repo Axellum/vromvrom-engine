@@ -17,6 +17,8 @@ Date : 2026-07-03
 import logging
 from typing import Any, Dict
 
+from core.llm_timeouts import get_timeout
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -43,7 +45,8 @@ class AnthropicNativeProvider(LLMProvider):
     indépendamment des quotas glissants (5h) de l'abonnement Claude Pro/Max.
     """
 
-    def __init__(self, api_key: str, model: str, max_tokens: int = 8192, timeout: tuple = (5.0, 180.0)):
+    def __init__(self, api_key: str, model: str, max_tokens: int = 8192, timeout: tuple = None):
+        timeout = timeout if timeout is not None else get_timeout("anthropic")
         self.api_key = api_key
         self.model = model
         self.max_tokens = max_tokens

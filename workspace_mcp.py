@@ -12,6 +12,8 @@ automatiquement le renouvellement du token OAuth2 via le refresh_token.
 
 import sys
 import os
+import asyncio
+import functools
 import logging
 
 # Ajouter le répertoire moteur_agents au PYTHONPATH pour les imports
@@ -43,6 +45,77 @@ def get_client():
         if not _oauth_client.available:
             logger.warning("[Workspace MCP] ⚠️ OAuth non configuré — les outils retourneront des erreurs.")
     return _oauth_client
+
+
+# ═══════════════════════════════════════════════════════
+# [T125] HITL — consentement humain pour les outils Gmail/Drive sensibles
+# ═══════════════════════════════════════════════════════
+# Protège contre le scénario "Confused Deputy" (agent compromis par prompt
+# injection appelant silencieusement ces outils) : une popup Windows bloquante
+# doit être validée par Axel avant tout accès. Fail-closed si tkinter est
+# indisponible (headless) ou si personne ne répond sous _CONSENT_TIMEOUT_S.
+
+_CONSENT_TIMEOUT_S = 45
+
+
+def _ask_consent_blocking(tool_name: str, summary: str) -> bool:
+    """Popup Yes/No bloquante. À exécuter dans un thread dédié (asyncio.to_thread)."""
+    try:
+        import tkinter
+        from tkinter import messagebox
+    except ImportError:
+        logger.error(
+            f"[Workspace MCP] ⚠️ tkinter indisponible — consentement refusé par défaut "
+            f"pour '{tool_name}' (fail-closed, environnement headless ?)."
+        )
+        return False
+
+    root = tkinter.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    root.after(_CONSENT_TIMEOUT_S * 1000, root.quit)
+    try:
+        approved = messagebox.askyesno(
+            "Autorisation requise — Moteur Agents",
+            f"L'outil MCP « {tool_name} » demande à accéder à vos données Google :\n\n"
+            f"{summary}\n\nAutoriser cet appel ?",
+            parent=root,
+        )
+    except Exception as e:
+        logger.error(f"[Workspace MCP] ⚠️ Erreur popup consentement pour '{tool_name}' : {e}")
+        approved = False
+    finally:
+        root.destroy()
+    return bool(approved)
+
+
+def require_human_consent(func):
+    """
+    [T125] Décorateur HITL : bloque l'exécution derrière une confirmation humaine
+    explicite avant tout accès aux données Gmail/Drive. À placer sous @mcp.tool().
+    """
+    @functools.wraps(func)
+    async def wrapper(*args, **kwargs):
+        summary = ", ".join(f"{k}={v!r}" for k, v in kwargs.items()) or "(sans paramètre)"
+        approved = await asyncio.to_thread(_ask_consent_blocking, func.__name__, summary)
+        if not approved:
+            logger.warning(f"[Workspace MCP] 🚫 Consentement refusé/expiré pour '{func.__name__}'.")
+            return (
+                f"🚫 Accès refusé : l'appel à « {func.__name__} » nécessite une validation "
+                f"humaine (popup non confirmé ou expiré après {_CONSENT_TIMEOUT_S}s)."
+            )
+        logger.info(f"[Workspace MCP] ✅ Consentement accordé pour '{func.__name__}'.")
+        return await func(*args, **kwargs)
+    return wrapper
+
+
+def _safe_error(context: str, exc: Exception) -> str:
+    """[T128] Logue l'exception complète en local (avec traceback) et renvoie un
+    message générique au LLM — évite de fuiter des détails d'implémentation ou
+    d'exception de l'API Google (chemins, tokens, structure interne) au modèle.
+    """
+    logger.error(f"[Workspace MCP] Erreur {context} : {exc}", exc_info=True)
+    return f"❌ Erreur lors de l'appel à {context}. Voir les logs serveur pour le détail."
 
 
 # ═══════════════════════════════════════════════════════
@@ -82,7 +155,7 @@ async def get_calendar_events(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur Calendar : {e}"
+        return _safe_error("Google Calendar", e)
 
 
 @mcp.tool()
@@ -108,7 +181,7 @@ async def list_calendars() -> str:
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur : {e}"
+        return _safe_error("Google Calendar (liste)", e)
 
 
 # ═══════════════════════════════════════════════════════
@@ -116,6 +189,7 @@ async def list_calendars() -> str:
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
+@require_human_consent
 async def search_gmail(
     query: str,
     max_results: int = 10
@@ -149,10 +223,11 @@ async def search_gmail(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur Gmail : {e}"
+        return _safe_error("Gmail", e)
 
 
 @mcp.tool()
+@require_human_consent
 async def get_recent_emails(
     max_results: int = 10,
     label: str = "INBOX"
@@ -180,7 +255,7 @@ async def get_recent_emails(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur Gmail : {e}"
+        return _safe_error("Gmail", e)
 
 
 # ═══════════════════════════════════════════════════════
@@ -188,6 +263,7 @@ async def get_recent_emails(
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
+@require_human_consent
 async def list_drive_files(
     max_results: int = 20
 ) -> str:
@@ -217,7 +293,7 @@ async def list_drive_files(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur Drive : {e}"
+        return _safe_error("Google Drive", e)
 
 
 # ═══════════════════════════════════════════════════════
@@ -225,6 +301,7 @@ async def list_drive_files(
 # ═══════════════════════════════════════════════════════
 
 @mcp.tool()
+@require_human_consent
 async def read_sheet(
     spreadsheet_id: str,
     range_notation: str = "Sheet1"
@@ -265,7 +342,7 @@ async def read_sheet(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur Sheets : {e}"
+        return _safe_error("Google Sheets", e)
 
 
 # ═══════════════════════════════════════════════════════
@@ -303,7 +380,7 @@ async def get_tasks(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur Tasks : {e}"
+        return _safe_error("Google Tasks", e)
 
 
 @mcp.tool()
@@ -327,7 +404,7 @@ async def list_task_lists() -> str:
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur : {e}"
+        return _safe_error("Google Tasks (listes)", e)
 
 
 # ═══════════════════════════════════════════════════════
@@ -363,7 +440,7 @@ async def get_contacts(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur Contacts : {e}"
+        return _safe_error("Google Contacts", e)
 
 
 # ═══════════════════════════════════════════════════════
@@ -398,7 +475,7 @@ async def search_youtube(
         
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Erreur YouTube : {e}"
+        return _safe_error("YouTube", e)
 
 
 # ═══════════════════════════════════════════════════════

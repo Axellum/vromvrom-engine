@@ -17,19 +17,20 @@ Historique :
 - V11   : Elo scoring par domaine, source-aware routing
 - PERF-1: Rendu asynchrone pour éviter le blocage de l'event loop FastAPI
 """
+import asyncio
+import json
+import logging
 import os
 import re
-import json
 import time
-import logging
-import asyncio
-from core.state import TaskPayload
-from memory.context_loader import ContextLoader
-from core.router_context_compressor import RouterContextCompressor
-from core.routing_metrics import record_routing_decision
-from core.intent_splitter import IntentSplitter
+
 # Scoring Elo pour routage prédictif des LLM
 from core.elo_scorer import get_ranked_models as elo_get_ranked
+from core.intent_splitter import IntentSplitter
+from core.router_context_compressor import RouterContextCompressor
+from core.routing_metrics import record_routing_decision
+from core.state import TaskPayload
+from memory.context_loader import ContextLoader
 
 logger = logging.getLogger(__name__)
 
@@ -73,31 +74,31 @@ class Router:
         # Gateway LLM pour le slow path de classification sémantique
         self.llm_gateway = llm_gateway
         self.config = config or {}
-        
+
         # Initialisation du ContextLoader (charge les fichiers contexte_ia/)
         if context_loader:
             self.context_loader = context_loader
         else:
             self.context_loader = ContextLoader()
         self.context_loader.load_all()
-        
+
         # Initialisation de la mémoire épisodique et sémantique
         from memory.episodes import EpisodeStore
         from memory.facts import FactStore
         self.episode_store = EpisodeStore()
         self.fact_store = FactStore()
-        
+
         # [v12.3.0] Compresseur de contexte multi-sources
         self.context_compressor = RouterContextCompressor(llm_gateway=self.llm_gateway)
-        
+
         # IntentSplitter pour décomposer les requêtes multi-intent
         self._intent_splitter = IntentSplitter()
-        
+
         # Flag pour activer/désactiver le scoring Elo.
         # [P1-2.1] Piloté par la config (défaut True) au lieu d'être codé en dur,
         # pour rester cohérent avec la relecture `getattr(self, '_elo_enabled', ...)`.
         self._elo_enabled = bool(self.config.get("elo_enabled", True))
-        
+
         # Chargement de la table de commandes HA déterministes
         # Externalisé dans ha_commands.json au lieu d'être codé en dur
         self._ha_commands = []
@@ -107,13 +108,13 @@ class Router:
         )
         if os.path.exists(ha_cmds_path):
             try:
-                with open(ha_cmds_path, "r", encoding="utf-8") as f:
+                with open(ha_cmds_path, encoding="utf-8") as f:
                     ha_data = json.load(f)
                     self._ha_commands = ha_data.get("commands", [])
                 logger.info(f"[ROUTER] {len(self._ha_commands)} commandes HA déterministes chargées depuis ha_commands.json")
             except Exception as e:
                 logger.warning(f"[ROUTER] Erreur chargement ha_commands.json : {e}")
-        
+
         # Dictionnaire des catégories et de leurs mots-clés associés
         self.categories = {
             "casual_chat": {
@@ -141,7 +142,7 @@ class Router:
                 "weight": 1.2
             },
             "sysadmin": {
-                "keywords": ["ssh", "deck", "steamdeck", "popydeck", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
+                "keywords": ["ssh", "deck", "steamdeck", "remote-host", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
                 "weight": 1.5
             },
             # Catégorie deck_edge : requêtes de tâches légères à router vers Ollama sur le Deck
@@ -151,7 +152,7 @@ class Router:
                 "weight": 1.0
             },
         }
-        
+
     def _tokenize(self, text: str) -> list[str]:
         """Tokenisation basique pour l'analyse syntaxique."""
         return re.findall(r'[a-zA-Z0-9_àâéèêëîïôöùûüç\-]+', text.lower())
@@ -248,7 +249,7 @@ class Router:
                 clean_prompt = re.sub(r'[?.!,;]+$', '', clean_prompt).strip()
 
                 direct_tool = None
-                direct_args = {}
+                direct_args: dict = {}
 
                 # Recherche dans la table de commandes externalisée (ha_commands.json)
                 ha_cmds = getattr(self, "_ha_commands", [])
@@ -257,8 +258,10 @@ class Router:
                         direct_tool = "mcp_ha_custom_call_service"
                         direct_args = {
                             "service": cmd["service"],
-                            "entity_id": cmd["entity_id"],
+                            "entity_id": cmd.get("entity_id", ""),
                         }
+                        if cmd.get("service_data"):
+                            direct_args["service_data"] = cmd["service_data"]
                         break
 
                 if direct_tool:
@@ -325,19 +328,19 @@ class Router:
             self._intent_splitter = intent_splitter
         sub_intents = intent_splitter.split(user_prompt)
         _is_multi_intent = len(sub_intents) > 1
-        
+
         # 1. Interception automatique de la routine de Fin de Session (Directive Critique)
         if "FIN DE SESSION" in up_prompt or "SAUVEGARDE" in up_prompt or "ENREGISTRE" in up_prompt:
             rules_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "contexte_ia", "01_Core", "rules_global.md"))
             rules_text = ""
             if os.path.exists(rules_path):
                 try:
-                    with open(rules_path, "r", encoding="utf-8") as f:
+                    with open(rules_path, encoding="utf-8") as f:
                         rules_text = f.read()
                 except Exception as _e:
                     from core.error_reporter import report_swallowed
                     report_swallowed("router.read_rules_global", _e, level="warning")
-            
+
             relevant_context += (
                 "\n\n*** DIRECTIVE CRITIQUE DU tab5-engine (FIN DE SESSION) ***\n"
                 "L'utilisateur a déclenché une routine de sauvegarde systémique.\n"
@@ -347,7 +350,7 @@ class Router:
                 "Voici le contenu du fichier de règles globales pour te guider :\n\n"
                 f"{rules_text}"
             )
-            
+
         # 2. Classification cognitive par scoring de mots-clés normalisé
         # (DÉPLACÉ AVANT le RAG pour permettre le filtrage par catégories)
         prompt_words = self._tokenize(user_prompt)
@@ -386,7 +389,7 @@ class Router:
                 llm_category = llm_result.get("category", "")
                 llm_confidence = llm_result.get("confidence", 0.0)
                 llm_complexity = llm_result.get("complexity", "complex")
-                
+
                 if llm_confidence >= MIN_LLM_CONFIDENCE and llm_category in self.categories:
                     dominant_category = llm_category
                     # Le LLM surcharge la détection heuristique de complexité
@@ -401,11 +404,11 @@ class Router:
                         f"[ROUTER] [LLM SLOW PATH] Confiance insuffisante "
                         f"({llm_confidence:.0%} < {MIN_LLM_CONFIDENCE:.0%}). Défaut vers Planner."
                     )
-        
+
         # 2bis. Détection de mots-clés ESPHome/LVGL/Tab5 pour enrichissement spécifique
         esphome_keywords = ["esphome", "tab5", "lvgl", "esp32", "i2c", "spi", "ota", "yaml", "on_boot", "lambda", "c++", "cpp", "mipi", "gpio"]
         is_esphome = any(kw in user_prompt.lower() for kw in esphome_keywords)
-        
+
         # Détection de mots-clés moteur/agents
         moteur_keywords = ["moteur", "engine", "planner", "executor", "gateway", "llm", "token", "pricing", "agent", "tier", "routage"]
         is_moteur = any(kw in user_prompt.lower() for kw in moteur_keywords)
@@ -442,10 +445,10 @@ class Router:
                     )
             except Exception as rag_err:
                 logger.warning(f"[ROUTER] Erreur RAG local : {rag_err}")
-        
+
         # is_complex déjà calculé plus haut (avant le slow path LLM)
         # pour permettre la surcharge par le classificateur LLM
-            
+
         # 5. Sélection de l'agent (couche de résolution extraite — D4).
         target_agent, routing_type, model_tier, payload_metadata = self._resolve_target_agent(
             user_prompt, dominant_category, is_complex
@@ -456,13 +459,13 @@ class Router:
         if context_categories and dominant_category != "casual_chat":
             # Rechargement si des fichiers ont changé
             self.context_loader.reload_if_stale()
-            
+
             structured_context = self.context_loader.get_context_for_categories(
                 context_categories, max_chars=8000  # Limiter pour ne pas exploser le prompt
             )
             if structured_context:
                 logger.info(f"[ROUTER] Contexte 3-Layers chargé : {len(structured_context):,} chars")
-        
+
         # Collecte mémoire épisodique
         episodic_context = ""
         try:
@@ -477,7 +480,7 @@ class Router:
                 logger.info(f"[ROUTER] Mémoire épisodique chargée : {len(episodic_context):,} chars")
         except Exception as ep_err:
             logger.warning(f"[ROUTER] Erreur mémoire épisodique : {ep_err}")
-        
+
         # Collecte mémoire sémantique
         facts_context = ""
         try:
@@ -485,7 +488,7 @@ class Router:
             fact_keywords = list(prompt_word_set)[:10]
             if dominant_category:
                 fact_keywords.append(dominant_category)
-                
+
             if hasattr(self.fact_store, "get_facts_for_context_async"):
                 facts_context = await self.fact_store.get_facts_for_context_async(fact_keywords, max_chars=1500)
             else:
@@ -509,15 +512,15 @@ class Router:
         if compressor is None:
             compressor = RouterContextCompressor(llm_gateway=getattr(self, "llm_gateway", None))
             self.context_compressor = compressor
-            
+
         if hasattr(compressor, "compress_async"):
             compressed_context = await compressor.compress_async(contexts_to_compress)
         else:
             compressed_context = await asyncio.to_thread(compressor.compress, contexts_to_compress)
-            
+
         if compressed_context:
             relevant_context += "\n\n" + compressed_context
-        
+
         # Fusionner les métadonnées système et spécifiques au routage
         final_metadata = {
             "routing_type": routing_type,
@@ -532,7 +535,7 @@ class Router:
             final_metadata["multi_intent"] = True
             final_metadata["sub_intents"] = sub_intents
             logger.info(f"[ROUTER] Multi-intent détecté : {len(sub_intents)} sous-requêtes")
-        
+
         # Injection du classement Elo pour le domaine détecté
         # Le LLMGateway utilisera cet ordre à la place de l'ordre statique config.json
         if getattr(self, '_elo_enabled', True) and dominant_category:
@@ -546,7 +549,7 @@ class Router:
                             "config.json",
                         )
                         if os.path.exists(_cfg_path):
-                            with open(_cfg_path, 'r', encoding='utf-8') as f:
+                            with open(_cfg_path, encoding='utf-8') as f:
                                 _cfg = json.load(f)
                     except Exception:
                         _cfg = {}
@@ -562,15 +565,15 @@ class Router:
                     )
             except Exception as _elo_err:
                 logger.warning(f"[ROUTER] [ELO] Erreur de classement : {_elo_err}")
-        
+
         final_metadata.update(payload_metadata)
-        
+
         payload = TaskPayload(
             task_objective=user_prompt,
             relevant_context=relevant_context.strip(),
             metadata=final_metadata
         )
-        
+
         # Enregistrement de la décision de routage dans SQLite
         try:
             _routing_latency_ms = (time.perf_counter() - _routing_start) * 1000
@@ -595,7 +598,7 @@ class Router:
             logger.info(f"[ROUTER] Métriques enregistrées (latence: {_routing_latency_ms:.1f}ms)")
         except Exception as _rm_err:
             logger.warning(f"[ROUTER] Erreur de logging métriques : {_rm_err}")
-        
+
         return payload, target_agent
 
     async def _llm_classify(self, user_prompt: str) -> dict | None:
@@ -612,10 +615,10 @@ class Router:
         """
         if not self.llm_gateway:
             return None
-        
+
         # Catégories disponibles pour le classifier
         categories_list = ", ".join(self.categories.keys())
-        
+
         classification_prompt = (
             "Tu es un routeur de requêtes pour un système multi-agents domotique.\n"
             "Classifie la requête utilisateur suivante en retournant UNIQUEMENT un JSON strict.\n\n"
@@ -633,7 +636,7 @@ class Router:
             '  "confidence": <float entre 0.0 et 1.0>\n'
             "}"
         )
-        
+
         try:
             # Récupérer le provider du tier léger pour minimiser la latence
             config = self.config
@@ -645,15 +648,15 @@ class Router:
                         "config.json",
                     )
                     if os.path.exists(cfg_path):
-                        with open(cfg_path, 'r', encoding='utf-8') as f:
+                        with open(cfg_path, encoding='utf-8') as f:
                             config = json.load(f)
                 except Exception:
                     config = {}
-            
+
             tier_name, provider = self.llm_gateway.get_provider_for_tier("leger", config)
-            
+
             logger.info(f"[ROUTER] [LLM SLOW PATH] Classification via tier leger ({tier_name})...")
-            
+
             if hasattr(provider, "generate_structured_async"):
                 result = await provider.generate_structured_async(
                     system_prompt="Tu es un classificateur d'intentions. Réponds uniquement en JSON.",
@@ -669,7 +672,7 @@ class Router:
                     schema={},
                     temperature=0.0,
                 )
-            
+
             # Validation du résultat
             if isinstance(result, dict) and "category" in result:
                 # Normaliser les valeurs
@@ -677,7 +680,7 @@ class Router:
                 result["category"] = result.get("category", "").lower().strip()
                 result["complexity"] = result.get("complexity", "complex").lower().strip()
                 result["target_agent"] = result.get("target_agent", "planner").lower().strip()
-                
+
                 logger.info(
                     f"[ROUTER] [LLM SLOW PATH] Résultat : "
                     f"cat={result['category']}, "
@@ -689,7 +692,7 @@ class Router:
             else:
                 logger.warning(f"[ROUTER] [LLM SLOW PATH] Réponse LLM invalide : {result}")
                 return None
-                
+
         except Exception as e:
             logger.warning(f"[ROUTER] [LLM SLOW PATH] Erreur lors de la classification LLM : {e}")
             return None

@@ -1,0 +1,434 @@
+{
+  "$meta": {
+    "genere_le": "2026-07-14",
+    "role": "Payloads de test des services api: tab5_maj_* du firmware Tab5. Consommé par tools/validate_tab5_payloads.py (rapport seulement, aucune modification firmware).",
+    "sources": [
+      "00ProjetTab/Tab5/tab5-api-logic.yaml (contrat api: services:)",
+      "00ProjetTab/Tab5/tab5_custom.cpp (parsers bulk + garde 2048)",
+      "00ProjetTab/Tab5/README.md (table des services, revue 2026-07-05)"
+    ],
+    "note_payloads_reels": "Les variantes 'reel' sont reconstruites depuis le contrat firmware ; les automations HA émettrices (automations_tab5.yaml) vivent sur le partage config HA, hors de ce depot — croisement recommandé mais non fait ici.",
+    "buffers_documentes": {
+      "tab5_maj_alerte_meteo_france": {
+        "octets_buffer": 1024,
+        "octets_utiles": 1023,
+        "ancien_buffer": 512,
+        "comportement_depasement": "troncature silencieuse (strncpy)",
+        "source": "tab5-api-logic.yaml:251 (commentaire #T165)"
+      },
+      "tab5_maj_previsions_heures_bulk": {
+        "octets_max_acceptes": 2048,
+        "octets_buffer": 2049,
+        "comportement_depasement": "rejet complet, ESP_LOGE côté device, HA non informé",
+        "source": "tab5_custom.cpp:143-151"
+      },
+      "tab5_maj_previsions_jours_bulk": {
+        "octets_max_acceptes": 2048,
+        "octets_buffer": 2049,
+        "comportement_depasement": "rejet complet, ESP_LOGE côté device, HA non informé",
+        "source": "tab5_custom.cpp:188-198"
+      },
+      "tab5_maj_clim": {
+        "octets_buffer_target": 16,
+        "octets_buffer_current": 16,
+        "comportement_depasement": "débordement sprintf (pas de troncature — UB)",
+        "source": "tab5-api-logic.yaml:148-156"
+      }
+    }
+  },
+  "services": {
+    "tab5_maj_previsions_heures_bulk": {
+      "champs": [
+        "payload"
+      ],
+      "format": "idx|heure|condition|temp|pluvio;... (idx 0-14, >=5 champs/enregistrement)",
+      "payloads": {
+        "minimal": {
+          "description": "Un seul créneau horaire.",
+          "valeurs": {
+            "payload": "0|14h|sunny|21|0"
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "15 créneaux typiques (journée été, épisode pluvieux en soirée).",
+          "valeurs": {
+            "payload": "0|14h|sunny|24.5|0.0;1|15h|sunny|25.1|0.0;2|16h|partlycloudy|24.8|0.0;3|17h|cloudy|23.9|0.0;4|18h|cloudy|22.7|0.2;5|19h|rainy|21.4|1.2;6|20h|rainy|20.6|2.8;7|21h|pouring|19.8|5.4;8|22h|rainy|19.2|1.6;9|23h|cloudy|18.7|0.4;10|00h|partlycloudy-night|18.1|0.0;11|01h|clear-night|17.6|0.0;12|02h|clear-night|17.2|0.0;13|03h|fog|16.9|0.0;14|04h|fog|16.7|0.0"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "15 créneaux, chaque champ à sa longueur légitime max.",
+          "valeurs": {
+            "payload": "0|23h30|partlycloudy-night|-10.5|99.9;1|23h30|partlycloudy-night|-10.5|99.9;2|23h30|partlycloudy-night|-10.5|99.9;3|23h30|partlycloudy-night|-10.5|99.9;4|23h30|partlycloudy-night|-10.5|99.9;5|23h30|partlycloudy-night|-10.5|99.9;6|23h30|partlycloudy-night|-10.5|99.9;7|23h30|partlycloudy-night|-10.5|99.9;8|23h30|partlycloudy-night|-10.5|99.9;9|23h30|partlycloudy-night|-10.5|99.9;10|23h30|partlycloudy-night|-10.5|99.9;11|23h30|partlycloudy-night|-10.5|99.9;12|23h30|partlycloudy-night|-10.5|99.9;13|23h30|partlycloudy-night|-10.5|99.9;14|23h30|partlycloudy-night|-10.5|99.9"
+          },
+          "attendu": "ok"
+        },
+        "demo_rejet_2048": {
+          "description": "Template HA bogué : 60 créneaux → dépasse 2048, rejeté en bloc.",
+          "valeurs": {
+            "payload": "0|23h30|partlycloudy-night|-10.5|99.9;1|23h30|partlycloudy-night|-10.5|99.9;2|23h30|partlycloudy-night|-10.5|99.9;3|23h30|partlycloudy-night|-10.5|99.9;4|23h30|partlycloudy-night|-10.5|99.9;5|23h30|partlycloudy-night|-10.5|99.9;6|23h30|partlycloudy-night|-10.5|99.9;7|23h30|partlycloudy-night|-10.5|99.9;8|23h30|partlycloudy-night|-10.5|99.9;9|23h30|partlycloudy-night|-10.5|99.9;10|23h30|partlycloudy-night|-10.5|99.9;11|23h30|partlycloudy-night|-10.5|99.9;12|23h30|partlycloudy-night|-10.5|99.9;13|23h30|partlycloudy-night|-10.5|99.9;14|23h30|partlycloudy-night|-10.5|99.9;15|23h30|partlycloudy-night|-10.5|99.9;16|23h30|partlycloudy-night|-10.5|99.9;17|23h30|partlycloudy-night|-10.5|99.9;18|23h30|partlycloudy-night|-10.5|99.9;19|23h30|partlycloudy-night|-10.5|99.9;20|23h30|partlycloudy-night|-10.5|99.9;21|23h30|partlycloudy-night|-10.5|99.9;22|23h30|partlycloudy-night|-10.5|99.9;23|23h30|partlycloudy-night|-10.5|99.9;24|23h30|partlycloudy-night|-10.5|99.9;25|23h30|partlycloudy-night|-10.5|99.9;26|23h30|partlycloudy-night|-10.5|99.9;27|23h30|partlycloudy-night|-10.5|99.9;28|23h30|partlycloudy-night|-10.5|99.9;29|23h30|partlycloudy-night|-10.5|99.9;30|23h30|partlycloudy-night|-10.5|99.9;31|23h30|partlycloudy-night|-10.5|99.9;32|23h30|partlycloudy-night|-10.5|99.9;33|23h30|partlycloudy-night|-10.5|99.9;34|23h30|partlycloudy-night|-10.5|99.9;35|23h30|partlycloudy-night|-10.5|99.9;36|23h30|partlycloudy-night|-10.5|99.9;37|23h30|partlycloudy-night|-10.5|99.9;38|23h30|partlycloudy-night|-10.5|99.9;39|23h30|partlycloudy-night|-10.5|99.9;40|23h30|partlycloudy-night|-10.5|99.9;41|23h30|partlycloudy-night|-10.5|99.9;42|23h30|partlycloudy-night|-10.5|99.9;43|23h30|partlycloudy-night|-10.5|99.9;44|23h30|partlycloudy-night|-10.5|99.9;45|23h30|partlycloudy-night|-10.5|99.9;46|23h30|partlycloudy-night|-10.5|99.9;47|23h30|partlycloudy-night|-10.5|99.9;48|23h30|partlycloudy-night|-10.5|99.9;49|23h30|partlycloudy-night|-10.5|99.9;50|23h30|partlycloudy-night|-10.5|99.9;51|23h30|partlycloudy-night|-10.5|99.9;52|23h30|partlycloudy-night|-10.5|99.9;53|23h30|partlycloudy-night|-10.5|99.9;54|23h30|partlycloudy-night|-10.5|99.9;55|23h30|partlycloudy-night|-10.5|99.9;56|23h30|partlycloudy-night|-10.5|99.9;57|23h30|partlycloudy-night|-10.5|99.9;58|23h30|partlycloudy-night|-10.5|99.9;59|23h30|partlycloudy-night|-10.5|99.9"
+          },
+          "attendu": "rejet_firmware"
+        }
+      }
+    },
+    "tab5_maj_previsions_jours_bulk": {
+      "champs": [
+        "payload"
+      ],
+      "format": "jour|nom|condition|tmin|tmax|est_repos|est_dimanche|est_passe|heures_ouverture;... (jour 0-14, >=9 champs/enregistrement)",
+      "payloads": {
+        "minimal": {
+          "description": "Un seul jour, ouverture vide.",
+          "valeurs": {
+            "payload": "0|Lun|sunny|12|22|0|0|0|"
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "15 jours mixtes (repos week-end, dimanche, jour passé).",
+          "valeurs": {
+            "payload": "0|Lun 14|sunny|12.5|22.5|0|0|1|09h00 - 17h30;1|Mar 15|partlycloudy|13.5|23.5|0|0|0|09h00 - 17h30;2|Mer 16|cloudy|14.5|24.5|0|0|0|09h00 - 17h30;3|Jeu 17|rainy|15.5|25.5|0|0|0|09h00 - 17h30;4|Ven 18|lightning-rainy|16.5|26.5|0|0|0|09h00 - 17h30;5|Sam 19|sunny|12.5|27.5|1|0|0|;6|Dim 20|clear-night|13.5|28.5|1|1|0|;7|Lun 21|partlycloudy|14.5|29.5|0|0|0|09h00 - 17h30;8|Mar 22|pouring|15.5|22.5|0|0|0|09h00 - 17h30;9|Mer 23|fog|16.5|23.5|0|0|0|09h00 - 17h30;10|Jeu 24|windy|12.5|24.5|0|0|0|09h00 - 17h30;11|Ven 25|sunny|13.5|25.5|0|0|0|09h00 - 17h30;12|Sam 26|cloudy|14.5|26.5|1|0|0|;13|Dim 27|rainy|15.5|27.5|1|1|0|;14|Lun 28|snowy|16.5|28.5|0|0|0|09h00 - 17h30"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "15 jours, noms longs + horaires coupés midi.",
+          "valeurs": {
+            "payload": "0|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;1|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;2|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;3|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;4|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;5|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;6|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;7|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;8|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;9|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;10|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;11|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;12|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;13|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30;14|Mercredi 23|partlycloudy-night|-10.5|-12.5|1|1|1|08h30-12h30 / 14h00-19h30"
+          },
+          "attendu": "ok"
+        },
+        "demo_rejet_2048": {
+          "description": "Horaires verbeux type agenda → dépasse 2048, rejeté en bloc.",
+          "valeurs": {
+            "payload": "0|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;1|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;2|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;3|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;4|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;5|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;6|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;7|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;8|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;9|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;10|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;11|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;12|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;13|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel;14|Mercredi 23 juillet 2026|partlycloudy-night|-10.5|-12.5|0|0|0|08h00-12h00 / 13h30-17h30 puis astreinte téléphonique 18h00-21h00, garde exceptionnelle week-end et jours fériés sur appel"
+          },
+          "attendu": "rejet_firmware"
+        }
+      }
+    },
+    "tab5_maj_alerte_meteo_france": {
+      "champs": [
+        "payload"
+      ],
+      "format": "phrase_pluie|globale|vent|inondation|orages|pluie_inondation|neige_verglas|grand_froid|vagues_submersion|canicule|avalanches (11 champs, niveaux Vert/Jaune/Orange/Rouge)",
+      "payloads": {
+        "minimal": {
+          "description": "Aucune vigilance, phrase 'RAS'.",
+          "valeurs": {
+            "payload": "RAS|Vert|Vert|Vert|Vert|Vert|Vert|Vert|Vert|Vert|Vert"
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Vigilance jaune vent avec phrase courte typique.",
+          "valeurs": {
+            "payload": "Rafales de sud-ouest atteignant 90 à 100 km/h dans l'intérieur des terres cette nuit, localement 110 km/h sur le littoral.|Jaune|Jaune|Vert|Vert|Vert|Vert|Vert|Vert|Vert|Vert"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Phrase de vigilance longue : tient dans 1024, aurait tronqué dans l'ancien buffer 512 (#T165).",
+          "valeurs": {
+            "payload": "Épisode venteux remarquable par sa durée et son intensité : rafales de sud-ouest atteignant 100 à 110 km/h dans l'intérieur des terres, 120 à 130 km/h sur le littoral et jusqu'à 140 km/h sur les caps exposés en fin de nuit de vendredi à samedi. Ces valeurs sont nettement supérieures aux normales de saison et susceptibles de provoquer des chutes d'arbres, des coupures d'électricité et des difficultés de circulation, en particulier pour les véhicules hauts. Une accalmie temporaire est attendue samedi en milieu de journée avant une nouvelle intensification dimanche matin, accompagnée de fortes pluies orageuses pouvant donner des cumuls de 60 à 80 mm en peu de temps sur les bassins déjà saturés.|Orange|Orange|Jaune|Orange|Orange|Vert|Vert|Jaune|Vert|Vert"
+          },
+          "attendu": "ok"
+        },
+        "demo_troncature_1024": {
+          "description": "Phrase très longue + canicule Rouge en queue : coupée à 1023 octets, l'alerte Rouge disparaît sans erreur.",
+          "valeurs": {
+            "payload": "Épisode venteux remarquable par sa durée et son intensité : rafales de sud-ouest atteignant 100 à 110 km/h dans l'intérieur des terres, 120 à 130 km/h sur le littoral et jusqu'à 140 km/h sur les caps exposés en fin de nuit de vendredi à samedi. Ces valeurs sont nettement supérieures aux normales de saison et susceptibles de provoquer des chutes d'arbres, des coupures d'électricité et des difficultés de circulation, en particulier pour les véhicules hauts. Une accalmie temporaire est attendue samedi en milieu de journée avant une nouvelle intensification dimanche matin, accompagnée de fortes pluies orageuses pouvant donner des cumuls de 60 à 80 mm en peu de temps sur les bassins déjà saturés. Par ailleurs, une vague de chaleur exceptionnelle concerne la moitié sud du pays avec des températures maximales de 39 à 42 °C, localement 43 °C, et des minimales nocturnes ne descendant pas sous 24 °C, faisant l'objet d'une vigilance rouge canicule sur les départements concernés. Les personnes fragiles sont invitées à ne pas sortir aux heures les plus chaudes et à s'hydrater régulièrement.|Orange|Orange|Jaune|Orange|Orange|Vert|Vert|Jaune|Rouge|Orange"
+          },
+          "attendu": "troncature_silencieuse"
+        },
+        "demo_decalage_champ_vide": {
+          "description": "Phrase vide : strtok_r fusionne les délimiteurs, tous les champs glissent d'un cran (vent Rouge lu comme globale).",
+          "valeurs": {
+            "payload": "|Jaune|Rouge|Vert|Vert|Vert|Vert|Vert|Vert|Vert|Vert"
+          },
+          "attendu": "decalage_champs"
+        }
+      }
+    },
+    "tab5_maj_clim": {
+      "champs": [
+        "target",
+        "current",
+        "mode",
+        "preset",
+        "fan",
+        "swing"
+      ],
+      "format": "6 strings ; target/current passés à atof puis sprintf %.1f dans char[16]",
+      "payloads": {
+        "minimal": {
+          "description": "Clim éteinte, champs optionnels vides.",
+          "valeurs": {
+            "target": "0",
+            "current": "0",
+            "mode": "off",
+            "preset": "",
+            "fan": "",
+            "swing": ""
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Rafraîchissement été typique.",
+          "valeurs": {
+            "target": "21.5",
+            "current": "22.3",
+            "mode": "cool",
+            "preset": "eco",
+            "fan": "quiet",
+            "swing": "vertical"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Valeurs extrêmes qui tiennent tout juste dans les char[16].",
+          "valeurs": {
+            "target": "-99.9",
+            "current": "999999999.9",
+            "mode": "fan_only",
+            "preset": "boost",
+            "fan": "Silence",
+            "swing": "horizontal"
+          },
+          "attendu": "ok"
+        },
+        "demo_overflow_sprintf": {
+          "description": "Template HA renvoyant un nombre énorme : sprintf %.1f déborde char[16] (UB, pas une troncature).",
+          "valeurs": {
+            "target": "99999999999999999",
+            "current": "1e12",
+            "mode": "heat",
+            "preset": "",
+            "fan": "",
+            "swing": ""
+          },
+          "attendu": "overflow_sprintf"
+        }
+      }
+    },
+    "tab5_maj_volet_etat": {
+      "champs": [
+        "etat_physique"
+      ],
+      "format": "littéraux attendus : En_mouvement / Ouvert / Partiel / open / Ferme / closed",
+      "payloads": {
+        "minimal": {
+          "description": "Volet fermé.",
+          "valeurs": {
+            "etat_physique": "Ferme"
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Volet en course.",
+          "valeurs": {
+            "etat_physique": "En_mouvement"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Ouverture partielle.",
+          "valeurs": {
+            "etat_physique": "Partiel"
+          },
+          "attendu": "ok"
+        },
+        "demo_hors_contrat": {
+          "description": "État brut HA 'opening' non prévu par le contrat : icônes non mises à jour, sans erreur.",
+          "valeurs": {
+            "etat_physique": "opening"
+          },
+          "attendu": "hors_contrat"
+        }
+      }
+    },
+    "tab5_maj_planning": {
+      "champs": [
+        "ligne1",
+        "ligne2"
+      ],
+      "format": "2 strings libres ; préfixes '1/ ' et '2/ ' retirés par le firmware",
+      "payloads": {
+        "minimal": {
+          "description": "Planning vide.",
+          "valeurs": {
+            "ligne1": "",
+            "ligne2": ""
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Deux lignes préfixées.",
+          "valeurs": {
+            "ligne1": "1/ Axel : 09h00 - 17h30",
+            "ligne2": "2/ Camille : repos"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Lignes longues — aucun buffer fixe côté firmware (std::string).",
+          "valeurs": {
+            "ligne1": "1/ Axel : 08h30-12h30 / 14h00-19h30 puis astreinte",
+            "ligne2": "2/ Camille : formation extérieure toute la journée, retour prévu vers 21h00"
+          },
+          "attendu": "ok"
+        }
+      }
+    },
+    "tab5_maj_meteo_actuelle": {
+      "champs": [
+        "condition",
+        "temperature",
+        "humidite"
+      ],
+      "format": "3 strings ; seule humidite est encore consommée — condition et temperature sont ignorées depuis le retrait de la grosse icône centrale",
+      "payloads": {
+        "minimal": {
+          "description": "Champs vides : atof('') vaut 0.",
+          "valeurs": {
+            "condition": "",
+            "temperature": "",
+            "humidite": ""
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Relevé courant.",
+          "valeurs": {
+            "condition": "partlycloudy",
+            "temperature": "21.4",
+            "humidite": "63"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Bornes de l'échelle colorimétrique.",
+          "valeurs": {
+            "condition": "lightning-rainy",
+            "temperature": "-12.5",
+            "humidite": "100"
+          },
+          "attendu": "ok"
+        }
+      }
+    },
+    "tab5_maj_pluie_1h": {
+      "champs": [
+        "index_5mn",
+        "intensite"
+      ],
+      "format": "index_5mn 0-8 (9 barres) ; intensite parmi : Pluie faible / Pluie modérée / Pluie forte / Pluie très forte (+ variante 'trés')",
+      "payloads": {
+        "minimal": {
+          "description": "Pas de pluie sur le créneau (barre vide).",
+          "valeurs": {
+            "index_5mn": "0",
+            "intensite": ""
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Averse modérée dans 15-20 min.",
+          "valeurs": {
+            "index_5mn": "3",
+            "intensite": "Pluie modérée"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Dernière barre, intensité max.",
+          "valeurs": {
+            "index_5mn": "8",
+            "intensite": "Pluie très forte"
+          },
+          "attendu": "ok"
+        },
+        "demo_hors_contrat": {
+          "description": "Index 9 hors plage 0-8 : ignoré sans erreur.",
+          "valeurs": {
+            "index_5mn": "9",
+            "intensite": "Pluie faible"
+          },
+          "attendu": "hors_contrat"
+        }
+      }
+    },
+    "tab5_maj_probabilites": {
+      "champs": [
+        "uv",
+        "gel",
+        "neige"
+      ],
+      "format": "3 strings numériques passées à atoi ; neige >= 5 bascule l'icône",
+      "payloads": {
+        "minimal": {
+          "description": "Aucun risque.",
+          "valeurs": {
+            "uv": "0",
+            "gel": "0",
+            "neige": "0"
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Été, UV élevés.",
+          "valeurs": {
+            "uv": "7",
+            "gel": "0",
+            "neige": "0"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Bornes hautes ; neige=100 bascule l'icône flocon.",
+          "valeurs": {
+            "uv": "11",
+            "gel": "100",
+            "neige": "100"
+          },
+          "attendu": "ok"
+        }
+      }
+    },
+    "tab5_maj_info_texte": {
+      "champs": [
+        "texte",
+        "couleur"
+      ],
+      "format": "lambda vide (conteneur conservé en attendant les alertes) — no-op",
+      "payloads": {
+        "minimal": {
+          "description": "No-op.",
+          "valeurs": {
+            "texte": "",
+            "couleur": ""
+          },
+          "attendu": "ok"
+        },
+        "reel": {
+          "description": "Exemple d'info courte — ignorée par le firmware actuel.",
+          "valeurs": {
+            "texte": "Lave-linge terminé",
+            "couleur": "vert"
+          },
+          "attendu": "ok"
+        },
+        "maximal": {
+          "description": "Toujours no-op, aucun buffer.",
+          "valeurs": {
+            "texte": "Message long de démonstration pour le conteneur d'informations générales du Tab5",
+            "couleur": "orange"
+          },
+          "attendu": "ok"
+        }
+      }
+    }
+  }
+}

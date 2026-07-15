@@ -7,18 +7,19 @@ Contient :
 - /api/execute/stream : Streaming progressif de l'exécution complète d'un pipeline d'agents.
 """
 
+import asyncio
 import json
 import logging
-import asyncio
 from typing import Any
-from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException, Depends
-from fastapi.responses import StreamingResponse
 
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+from api.routes.agents import ExecuteRequestBody
 from core.app_state import get_app_state
 from core.auth import optional_auth
 from core.serializers import global_state_to_dict
-from api.routes.agents import ExecuteRequestBody
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ async def sse_stream():
     state = get_app_state()
     queue: asyncio.Queue = asyncio.Queue()
 
+    # Bug trouvé en vérification navigateur (Phase 3) : `sse_clients_list`
+    # n'existe plus sur AppState (seul `sse_clients` subsiste) → GET /api/stream
+    # levait AttributeError et le flux d'événements du Dashboard était mort.
     async with state.sse_lock:
         state.sse_clients.add(queue)
 
@@ -71,9 +75,16 @@ async def chat_stream(body: ChatStreamBody):
     )
 
 
-async def _execute_stream_generator(user_prompt: str, source: dict, session_id: str):
+async def _execute_stream_generator(
+    user_prompt: str,
+    source: dict,
+    session_id: str,
+    tier: str | None = None,
+    model: str | None = None,
+):
     """
     Générateur SSE pour /api/execute/stream.
+    [#T194] tier/model : override par requête de la force du workload (sélecteur IHM).
     """
     import json as _json
 
@@ -81,10 +92,14 @@ async def _execute_stream_generator(user_prompt: str, source: dict, session_id: 
     pipeline_task = None
 
     try:
-        from core.llm_gateway import LLMGateway, load_config
-        from services.pipeline_service import run_full_pipeline, run_fast_path
         from core import token_tracker
-        from core.source_router import parse_source, log_source_decision
+        from core.llm_gateway import LLMGateway, load_config
+        from core.source_router import ModeType, log_source_decision, parse_source
+        from services.execute_service import apply_source_config_overrides, get_execute_timeout
+        from services.pipeline_service import (
+            run_fast_path,
+            run_full_pipeline,
+        )
 
         state = get_app_state()
 
@@ -100,8 +115,12 @@ async def _execute_stream_generator(user_prompt: str, source: dict, session_id: 
             "mode": request_source.mode.value,
             "tts_enabled": request_source.tts_enabled,
         }
-        initial_payload.metadata["system_prompt_suffix"] = request_source.get_system_prompt_suffix()
+        suffix = request_source.get_system_prompt_suffix()
+        initial_payload.metadata["system_prompt_suffix"] = suffix
         log_source_decision(request_source, routing_type)
+
+        if routing_type == "casual_chat" and request_source.mode == ModeType.HA:
+            routing_type = "default"
 
         # ── Fast path : pas de streaming pour casual_chat (déjà rapide) ──
         if routing_type == "casual_chat":
@@ -111,6 +130,10 @@ async def _execute_stream_generator(user_prompt: str, source: dict, session_id: 
                 gateway=LLMGateway(),
                 token_tracker=token_tracker,
                 fast_path_cache=state.fast_path_cache,
+                tier_override=tier,
+                model_override=model,
+                system_prompt_suffix=suffix,
+                inject_project_context=True,
             )
             async with state.execution_lock:
                 state.execution_state["status"] = "success"
@@ -127,7 +150,16 @@ async def _execute_stream_generator(user_prompt: str, source: dict, session_id: 
                 state.execution_state["status"] = data.get("status", "success")
             await queue.put({"type": event_type, "data": data})
 
-        config = load_config()
+        # [#T194] Override par requête + source_router tier recommandé.
+        config = apply_source_config_overrides(
+            load_config(), request_source, tier_override=tier, model_override=model
+        )
+        if tier or model:
+            initial_payload.metadata["workload_override"] = {"tier": tier, "model": model}
+
+        pipeline_timeout = get_execute_timeout(request_source, routing_type)
+        if pipeline_timeout < 120:
+            deadline = asyncio.get_event_loop().time() + pipeline_timeout
 
         async def _run_pipeline():
             try:
@@ -138,6 +170,7 @@ async def _execute_stream_generator(user_prompt: str, source: dict, session_id: 
                     starting_agent=starting_agent,
                     on_event_callback=_on_event,
                     config=config,
+                    timeout_seconds=pipeline_timeout,
                 )
                 await queue.put({"type": "__done__", "result": result})
             except Exception as e:
@@ -146,7 +179,7 @@ async def _execute_stream_generator(user_prompt: str, source: dict, session_id: 
         pipeline_task = asyncio.create_task(_run_pipeline())
 
         # ── Lecture de la queue + yield SSE ──
-        deadline = asyncio.get_event_loop().time() + 120.0  # Timeout 120s
+        deadline = asyncio.get_event_loop().time() + pipeline_timeout
 
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
@@ -159,7 +192,7 @@ async def _execute_stream_generator(user_prompt: str, source: dict, session_id: 
 
             try:
                 item = await asyncio.wait_for(queue.get(), timeout=min(5.0, remaining))
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 yield "data: {\"type\":\"heartbeat\"}\n\n"
                 continue
 
@@ -233,7 +266,9 @@ async def execute_chat_stream(body: ExecuteRequestBody, _auth=Depends(optional_a
 
     session_id = f"stream_{int(asyncio.get_event_loop().time())}"
     return StreamingResponse(
-        _execute_stream_generator(body.user_prompt, body.source, session_id),
+        _execute_stream_generator(
+            body.user_prompt, body.source, session_id, tier=body.tier, model=body.model
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

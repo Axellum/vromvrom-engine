@@ -7,7 +7,7 @@ import os
 console = Console()
 
 ENDPOINT = "http://localhost:8001/v1/chat/completions"
-API_KEY = "antigravity_secret_token_2026"
+API_KEY = os.environ.get("MOTEUR_API_KEY", "changeme")
 
 async def send_chat_request(client, messages, strategy):
     headers = {"Authorization": f"Bearer {API_KEY}"}

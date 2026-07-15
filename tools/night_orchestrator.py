@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
 tools/night_orchestrator.py — Chef d'orchestre du run de nuit (Audit + Refactoring + Batch).
 
@@ -22,7 +22,7 @@ import subprocess
 import requests
 from pathlib import Path
 
-PROJECT = os.environ.get("GCP_PROJECT_NAME", "your-gcp-project")
+PROJECT = "ha-delta"
 LOCATION_BATCH = "europe-west1"
 LOCATION_ONLINE = "global"
 
@@ -250,7 +250,7 @@ def main():
             print("  Soumission du job batch à Vertex...")
             submit_res = run_cmd([sys.executable, "tools/vertex_dataset_factory.py", "submit", 
                                   "--input", batch_req_file, 
-                                  "--bucket", "gs://your-gcp-bucket", 
+                                  "--bucket", "gs://ha-delta-corpus-axell", 
                                   "--project", PROJECT, 
                                   "--location", LOCATION_BATCH, 
                                   "--model", "gemini-2.5-pro"])
@@ -312,7 +312,7 @@ def main():
     report_lines.append("1. Vérifier les diffs sur la branche de nuit : `git diff master`.")
     report_lines.append("2. Lancer les tests unitaires : `pytest`.")
     report_lines.append("3. Récupérer les résultats du job de scoring batch (si terminé) :")
-    report_lines.append("   `python tools/vertex_dataset_factory.py collect --job <JOB_ID> --bucket gs://your-gcp-bucket --project ha-delta --out dataset_scored.jsonl`.")
+    report_lines.append("   `python tools/vertex_dataset_factory.py collect --job <JOB_ID> --bucket gs://ha-delta-corpus-axell --project ha-delta --out dataset_scored.jsonl`.")
 
     report_path.write_text("\n".join(report_lines), encoding="utf-8")
     print(f"\n✅ Rapport de nuit rédigé : {report_path}")

@@ -30,6 +30,8 @@ from typing import Dict, Any
 
 import httpx  # [D5] client HTTP async natif
 
+from core.llm_timeouts import get_timeout
+
 logger = logging.getLogger(__name__)
 
 
@@ -167,13 +169,13 @@ class OpenAICompatibleProvider:
         api_key: str,
         model: str,
         extra_headers: Dict[str, str] = None,
-        timeout: tuple = (5.0, 120.0),
+        timeout: tuple = None,
     ):
         self.provider_name = provider_name
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
-        self.timeout = timeout
+        self.timeout = timeout if timeout is not None else get_timeout("openai_compat")
         
         # Construction des headers HTTP standard + optionnels
         self.headers = {

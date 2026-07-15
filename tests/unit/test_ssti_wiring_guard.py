@@ -17,9 +17,11 @@ import pytest
 _ROOT = Path(__file__).resolve().parents[2]
 
 # Fichiers exposant un appel de service HA à partir de service_data externe.
+# [T124] execute_ha_action a été déplacé de mcp_server.py vers
+# core/mcp_tools/homeassistant.py (segmentation par domaine).
 _HA_BOUNDARIES = [
     "api/routes/ha.py",
-    "mcp_server.py",
+    "core/mcp_tools/homeassistant.py",
 ]
 
 

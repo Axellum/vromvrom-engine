@@ -1,4 +1,4 @@
-﻿# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────
 # Moteur Multi-Agents V12 — Dépendances runtime
 # Versions plancher alignées sur l'environnement validé (2026-06-16).
 # Dépendances dev/test : voir requirements-dev.txt
@@ -20,7 +20,7 @@ aiohttp>=3.13.0
 # ── Persistance ──
 aiosqlite>=0.22.0          # accès SQLite async (DAG runner)
 
-# ── MCP (serveurs vromvrom-engine, Workspace) ──
+# ── MCP (serveurs Tab5-Engine, Workspace) ──
 mcp>=1.27.0
 
 # ── Mémoire vectorielle / RAG ──
@@ -35,6 +35,7 @@ jsonschema>=4.26.0
 PyYAML>=6.0.0
 paho-mqtt>=1.6.0,<2.0      # failover_manager (MQTT)
 filelock>=3.12             # verrous sur fichiers partagés (config.json, BDD)
+cryptography>=42.0         # chiffrement au repos de google_token.json (Fernet, MCP_TOKEN_KEY)
 
 # ─────────────────────────────────────────────────────────────────────────
 # Dépendances OPTIONNELLES (le moteur dégrade gracieusement si absentes)

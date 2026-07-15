@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/llm/providers/deepseek.py — Providers DeepSeek, OpenAI-compatibles locaux, Claude CLI et Cascade Fallback.
 """
 
@@ -14,6 +14,7 @@ import requests
 from typing import Dict, Any
 from .base import LLMProvider, run_cli_command
 from ..circuit_breaker import CircuitBreaker
+from core.llm_timeouts import get_timeout
 
 try:
     from core.otel import llm_span, set_span_tokens
@@ -122,7 +123,7 @@ class LMStudioProvider(LLMProvider):
         
         logger.debug(f"Appel API LM Studio ({self.base_url})")
         _http = SharedHTTPPool.get_session() if _USE_HTTP_POOL else requests
-        response = _http.post(self.base_url, headers=self.headers, json=payload, timeout=(2.0, 120.0))
+        response = _http.post(self.base_url, headers=self.headers, json=payload, timeout=get_timeout("lmstudio"))
         response.raise_for_status()
         
         resp_json = response.json()
@@ -149,7 +150,7 @@ class LMStudioProvider(LLMProvider):
         
         logger.debug("Appel API LM Studio (generate_structured)")
         _http = SharedHTTPPool.get_session() if _USE_HTTP_POOL else requests
-        response = _http.post(self.base_url, headers=self.headers, json=payload, timeout=(2.0, 120.0))
+        response = _http.post(self.base_url, headers=self.headers, json=payload, timeout=get_timeout("lmstudio"))
         response.raise_for_status()
         
         resp_json = response.json()
@@ -358,7 +359,7 @@ class ClaudeCLIProvider(LLMProvider):
                         text=True,
                         encoding="utf-8",
                         errors="replace",
-                        timeout=240.0,
+                        timeout=get_timeout("claude_cli"),
                         stdin=pf
                     )
                 try:
@@ -372,7 +373,7 @@ class ClaudeCLIProvider(LLMProvider):
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=240.0,
+                    timeout=get_timeout("claude_cli"),
                     stdin=subprocess.DEVNULL
                 )
             
@@ -577,7 +578,9 @@ class FallbackProvider(LLMProvider):
                 sem_cache = get_semantic_cache()
                 if sem_cache.enabled:
                     cache_key = f"{system_prompt}\n###\n{user_prompt}"
-                    cached = sem_cache.get(cache_key)
+                    # [T130] ChromaDB (sem_cache) est synchrone → to_thread pour ne pas
+                    # geler l'event loop sur chaque appel du hot-path async.
+                    cached = await asyncio.to_thread(sem_cache.get, cache_key)
                     if cached is not None:
                         logger.info("[FALLBACK GATEWAY] ⚡ HIT cache sémantique — appel LLM évité.")
                         return cached
@@ -623,7 +626,8 @@ class FallbackProvider(LLMProvider):
                             break
 
                         if sem_cache is not None and isinstance(res, str):
-                            sem_cache.put(cache_key, res, model=model_name)
+                            # [T130] écriture ChromaDB synchrone → to_thread.
+                            await asyncio.to_thread(sem_cache.put, cache_key, res, model=model_name)
 
                         return res
                     except Exception as e:

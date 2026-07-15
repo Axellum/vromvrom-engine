@@ -1,17 +1,21 @@
 import httpx
 import time
 import asyncio
+import os
 from rich.console import Console
 from rich.table import Table
 
 console = Console()
 
-# Configuration
+# Configuration — renseigner MOTEUR_API_KEY et MOTEUR_BENCHMARK_REMOTE_URL dans .env
 ENDPOINTS = [
     {"name": "Local Windows Native", "url": "http://localhost:8001/v1/chat/completions"},
-    {"name": "Remote Steam Deck Podman", "url": "http://192.168.0.43:8002/v1/chat/completions"}
+    {
+        "name": "Remote endpoint (optional)",
+        "url": os.environ.get("MOTEUR_BENCHMARK_REMOTE_URL", "http://${DECK_HOST:-192.168.1.x}:8002/v1/chat/completions"),
+    },
 ]
-API_KEY = "antigravity_secret_token_2026"
+API_KEY = os.environ.get("MOTEUR_API_KEY", "changeme")
 
 # Stratégies à tester (issues de STRATEGIES.md)
 STRATEGIES = [

@@ -330,6 +330,69 @@ def get_model_profile(model_name: str) -> Dict[str, dict]:
         return {}
 
 
+def get_cost_per_successful_task() -> Dict[str, dict]:
+    """
+    [#T116] Métrique "coût par tâche réussie", agrégée par provider.
+
+    Croise deux sources déjà persistées plutôt que d'ajouter une nouvelle table :
+    - `token_usage` (moteur_runtime.db, via `core.token_tracker.load_usage()`) pour
+      le coût USD cumulé réel par modèle. `billing_history` (session_history.db)
+      est trop grossier pour cet usage : ce sont des snapshots périodiques de
+      solde/facturation par PROVIDER, non corrélés à une tâche individuelle.
+    - `model_elo_scores.wins` (cette table, mise à jour par `update_elo()` après
+      chaque tâche DAG — cf. `dag_runner.py::_run_single_task`) pour le nombre de
+      tâches réussies par modèle, toutes domaines confondus.
+
+    Returns:
+        {
+            "gemini": {"total_cost_usd": 1.23, "successful_tasks": 42, "cost_per_success_usd": 0.0293},
+            "unknown": {...},  # modèles absents du catalogue models_registry.db
+            ...
+        }
+        Un provider sans tâche réussie a `cost_per_success_usd: None` (pas de
+        division par zéro) plutôt que d'être omis du résultat.
+    """
+    from core.token_tracker import load_usage
+    from core.models_db import get_model
+
+    try:
+        conn = _get_connection()
+        rows = conn.execute(
+            "SELECT model_name, SUM(wins) FROM model_elo_scores GROUP BY model_name"
+        ).fetchall()
+        conn.close()
+        wins_by_model = {row[0]: row[1] or 0 for row in rows}
+    except Exception as e:
+        logger.warning(f"[ELO] Erreur lecture wins pour cost_per_success: {e}")
+        wins_by_model = {}
+
+    try:
+        costs_by_model = {
+            m: v.get("estimated_cost_usd", 0.0) or 0.0
+            for m, v in load_usage().get("models", {}).items()
+        }
+    except Exception as e:
+        logger.warning(f"[ELO] Erreur lecture coûts pour cost_per_success: {e}")
+        costs_by_model = {}
+
+    by_provider: Dict[str, dict] = {}
+    for model_name in set(wins_by_model) | set(costs_by_model):
+        model_info = get_model(model_name) or {}
+        provider_id = model_info.get("provider_id") or "unknown"
+        entry = by_provider.setdefault(provider_id, {"total_cost_usd": 0.0, "successful_tasks": 0})
+        entry["total_cost_usd"] += costs_by_model.get(model_name, 0.0)
+        entry["successful_tasks"] += wins_by_model.get(model_name, 0)
+
+    for entry in by_provider.values():
+        entry["total_cost_usd"] = round(entry["total_cost_usd"], 6)
+        entry["cost_per_success_usd"] = (
+            round(entry["total_cost_usd"] / entry["successful_tasks"], 6)
+            if entry["successful_tasks"] > 0 else None
+        )
+
+    return by_provider
+
+
 def get_domain_leaderboard(domain: str, top_n: int = 10) -> List[dict]:
     """
     Retourne le classement des modèles pour un domaine spécifique.

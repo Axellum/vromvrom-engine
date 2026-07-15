@@ -18,7 +18,7 @@ def pool(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "key-A")
     monkeypatch.setenv("GEMINI_API_KEY_2", "key-B")
     # Neutraliser les autres clés éventuellement présentes dans l'env réel
-    for var in ("GEMINI_API_KEY_3", "GEMINI_API_KEY_4", "GEMINI_API_KEY_5", "GEMINI_PAYANT_API_KEY"):
+    for var in ("GEMINI_API_KEY_3", "GEMINI_API_KEY_4", "GEMINI_API_KEY_5", "GEMINI_API_KEY_6", "GEMINI_PAYANT_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     return GeminiKeyPool()
 

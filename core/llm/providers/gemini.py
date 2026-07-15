@@ -9,6 +9,7 @@ import shutil
 import requests
 from typing import Dict, Any
 from .base import LLMProvider, run_cli_command
+from core.llm_timeouts import get_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class GeminiProvider(LLMProvider):
             payload["tools"] = kwargs["tools"]
             
         logger.debug(f"Appel API Gemini ({self.model}) (generate)")
-        response = requests.post(self.base_url, headers=self.headers, json=payload, timeout=(5.0, 120.0))
+        response = requests.post(self.base_url, headers=self.headers, json=payload, timeout=get_timeout("gemini"))
         response.raise_for_status()
         
         resp_json = response.json()
@@ -73,7 +74,7 @@ class GeminiProvider(LLMProvider):
         }
         
         logger.debug(f"Appel API Gemini ({self.model}) (generate_structured)")
-        response = requests.post(self.base_url, headers=self.headers, json=payload, timeout=(5.0, 120.0))
+        response = requests.post(self.base_url, headers=self.headers, json=payload, timeout=get_timeout("gemini"))
         response.raise_for_status()
         
         resp_json = response.json()
@@ -107,7 +108,7 @@ class GeminiProvider(LLMProvider):
         logger.debug(f"Appel API Gemini ({self.model}) (generate_stream)")
         response = requests.post(
             self.base_url, headers=self.headers, json=payload,
-            timeout=(5.0, 120.0), stream=True,
+            timeout=get_timeout("gemini"), stream=True,
         )
         response.raise_for_status()
 

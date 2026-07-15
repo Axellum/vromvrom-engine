@@ -47,9 +47,9 @@ class GCPOAuthClient:
             return
         
         try:
-            with open(self._token_file, "r") as f:
-                data = json.load(f)
-            
+            from core.token_crypto import load_token_json
+            data = load_token_json(self._token_file)
+
             self._refresh_token = data.get("refresh_token")
             self._client_id = data.get("client_id")
             self._client_secret = data.get("client_secret")

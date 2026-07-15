@@ -19,6 +19,8 @@ import logging
 import requests
 from typing import Dict, Any, Optional
 
+from core.llm_timeouts import get_timeout
+
 logger = logging.getLogger(__name__)
 
 # Import de la classe de base LLMProvider
@@ -597,7 +599,7 @@ class GeminiNativeProvider(LLMProvider):
                 api_url,
                 headers={"Content-Type": "application/json"},
                 json=payload,
-                timeout=(5.0, 120.0)
+                timeout=get_timeout("gemini")
             )
             
             # Gestion 429 (rate-limit) → rotation de clé via le KeyPool
@@ -617,7 +619,7 @@ class GeminiNativeProvider(LLMProvider):
                         retry_url,
                         headers={"Content-Type": "application/json"},
                         json=payload,
-                        timeout=(5.0, 120.0)
+                        timeout=get_timeout("gemini")
                     )
                     if response.status_code == 200:
                         self._key_pool.report_success(next_key)
@@ -656,7 +658,7 @@ class GeminiNativeProvider(LLMProvider):
                     self._api_url("generateContent"),
                     headers={"Content-Type": "application/json"},
                     json=payload,
-                    timeout=(5.0, 120.0)
+                    timeout=get_timeout("gemini")
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -740,7 +742,7 @@ class GeminiNativeProvider(LLMProvider):
                 self._api_url("generateContent"),
                 headers={"Content-Type": "application/json"},
                 json=payload,
-                timeout=(5.0, 120.0)
+                timeout=get_timeout("gemini")
             )
             response.raise_for_status()
             data = response.json()
@@ -818,7 +820,7 @@ class GeminiNativeProvider(LLMProvider):
                 url,
                 headers={"Content-Type": "application/json"},
                 json=payload,
-                timeout=(5.0, 120.0),
+                timeout=get_timeout("gemini"),
                 stream=True
             )
             response.raise_for_status()
@@ -919,7 +921,7 @@ class GeminiNativeProvider(LLMProvider):
                 self._api_url("generateContent"),
                 headers={"Content-Type": "application/json"},
                 json=payload,
-                timeout=(5.0, 120.0)
+                timeout=get_timeout("gemini")
             )
             response.raise_for_status()
             data = response.json()

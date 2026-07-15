@@ -25,6 +25,15 @@ logger = logging.getLogger(__name__)
 # Nombre maximum de rounds de review-correction
 MAX_REVIEW_ROUNDS = 2
 
+# [#T117] Cascade routing qualité : si le Reviewer rejette avec un quality_score
+# sous ce seuil sur un domaine "coûteux", la correction est forcée sur un tier
+# plus puissant plutôt que de re-tenter au même tier. Configurable via
+# `config.json` (clé `cascade_quality_escalation`) — valeurs ci-dessous = défauts.
+DEFAULT_ESCALATION_ENABLED = True
+DEFAULT_QUALITY_THRESHOLD = 6.0
+DEFAULT_ELIGIBLE_DOMAINS = ["code_generation", "analysis", "sysadmin"]
+DEFAULT_ESCALATED_TIER = "fort"
+
 
 class ReviewLoop:
     """
@@ -130,17 +139,35 @@ class ReviewLoop:
             else:
                 # Reviewer a rejeté
                 severity = review_update.metadata.get("severity", "?")
+                quality_score = review_update.metadata.get("quality_score")
                 logger.warning(
-                    f"[REVIEW] ❌ Round {review_round} : code rejeté. Sévérité: {severity}"
+                    f"[REVIEW] ❌ Round {review_round} : code rejeté. Sévérité: {severity}, "
+                    f"Score: {quality_score}"
                 )
 
                 if review_round >= max_rounds:
                     logger.error("[REVIEW] Limite de rounds de review atteinte. Marquage en erreur.")
                     break
 
+                # [#T117] Cascade routing qualité : escalader vers un tier plus fort
+                # si le score est bas sur un domaine coûteux, plutôt que de re-tenter
+                # au même tier en boucle.
+                force_tier = self._escalation_tier(quality_score)
+                if force_tier:
+                    logger.warning(
+                        f"[REVIEW] [T117] ⬆️ Escalade cascade qualité : quality_score={quality_score} "
+                        f"sous seuil sur domaine coûteux → correction forcée au tier '{force_tier}'."
+                    )
+                    if on_event:
+                        await on_event("review_escalation", {
+                            "round": review_round,
+                            "quality_score": quality_score,
+                            "escalated_tier": force_tier,
+                        })
+
                 # 4. Tenter la correction via le Planner
                 correction_ok = await self._apply_corrections(
-                    review_update, initial_objective, review_round, on_event
+                    review_update, initial_objective, review_round, on_event, force_tier=force_tier
                 )
                 if not correction_ok:
                     break
@@ -160,6 +187,47 @@ class ReviewLoop:
             })
 
         return approved
+
+    def _escalation_tier(self, quality_score) -> str | None:
+        """
+        [#T117] Détermine si la correction doit être escaladée vers un tier plus
+        puissant, et lequel. Retourne `None` si aucune escalade n'est nécessaire.
+
+        Conditions cumulatives :
+        - `cascade_quality_escalation.enabled` (config.json, défaut True)
+        - quality_score fourni et strictement sous le seuil configuré
+        - domaine dominant de la requête dans la liste des domaines éligibles
+          (ex: code_generation, analysis, sysadmin — "tâches coûteuses")
+        """
+        if quality_score is None:
+            return None
+
+        try:
+            from core.llm_gateway import load_config
+            cfg = load_config().get("cascade_quality_escalation", {})
+        except Exception:
+            cfg = {}
+
+        if not cfg.get("enabled", DEFAULT_ESCALATION_ENABLED):
+            return None
+
+        threshold = float(cfg.get("quality_threshold", DEFAULT_QUALITY_THRESHOLD))
+        if quality_score >= threshold:
+            return None
+
+        eligible_domains = cfg.get("eligible_domains", DEFAULT_ELIGIBLE_DOMAINS)
+        domain = self._get_dominant_category()
+        if domain not in eligible_domains:
+            return None
+
+        return cfg.get("escalated_tier", DEFAULT_ESCALATED_TIER)
+
+    def _get_dominant_category(self) -> str | None:
+        """Retrouve le domaine dominant de la requête (posé par le Router en metadata)."""
+        for u in self._engine.state.history:
+            if u.metadata and u.metadata.get("dominant_category"):
+                return u.metadata["dominant_category"]
+        return None
 
     async def _build_review_context(self) -> str:
         """
@@ -243,10 +311,15 @@ class ReviewLoop:
         initial_objective: str,
         review_round: int,
         on_event=None,
+        force_tier: str | None = None,
     ) -> bool:
         """
         Génère et exécute un plan correctif basé sur les rejets du Reviewer.
-        
+
+        Args:
+            force_tier: [#T117] si fourni, écrase le `model_tier` de chaque tâche
+                corrective générée par le Planner (cascade routing qualité).
+
         Returns:
             True si les corrections ont été appliquées avec succès.
         """
@@ -286,6 +359,14 @@ class ReviewLoop:
         if corr_plan_update.status == "error" or not corr_plan_update.new_tasks:
             logger.error("[REVIEW] Planner a échoué à générer un plan correctif post-review.")
             return False
+
+        # [#T117] Cascade routing qualité : forcer le tier des tâches correctives
+        # si une escalade a été décidée, quel que soit le tier choisi par le Planner.
+        if force_tier:
+            for ct in corr_plan_update.new_tasks:
+                if not ct.metadata:
+                    ct.metadata = {}
+                ct.metadata["model_tier"] = force_tier
 
         # Exécution des tâches correctives par stage
         corr_stages = {}

@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/unit/test_pure_helpers.py — Couverture de fonctions pures critiques (Phase 2, #15).
 
 Cible des logiques jusqu'ici non testées et pourtant déterminantes :
@@ -112,9 +112,11 @@ def test_migrate_old_gemini_id_known_and_unknown():
 
 
 def test_heuristic_base_score_ordering():
-    from core.llm_gateway import LLMGateway
-    local = LLMGateway._heuristic_base_score("local-llm", "local")
-    free = LLMGateway._heuristic_base_score("gemini", "gemini-free-flash")
-    paid_pro = LLMGateway._heuristic_base_score("some-pro-model", "other")
+    # [T133] déplacé de LLMGateway vers ProviderScorer (extraction du God Object
+    # get_provider_for_tier).
+    from core.provider_scorer import ProviderScorer
+    local = ProviderScorer._heuristic_base_score("local-llm", "local")
+    free = ProviderScorer._heuristic_base_score("gemini", "gemini-free-flash")
+    paid_pro = ProviderScorer._heuristic_base_score("some-pro-model", "other")
     # Le local doit être le moins coûteux (score le plus bas), le Pro le plus haut.
     assert local < free < paid_pro

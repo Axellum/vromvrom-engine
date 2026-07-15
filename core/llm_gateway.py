@@ -1,4 +1,4 @@
-﻿import copy
+import copy
 import os
 import json
 import logging
@@ -32,6 +32,32 @@ try:
     from core.gemini_native import GeminiNativeProvider
 except ImportError:
     GeminiNativeProvider = None
+
+
+# [#T118] Poids de la latence live (CircuitBreaker.avg_latency_ms) dans le score
+# de routage — un tie-breaker en complément du cascade_priority statique, pas un
+# remplacement : plafonné pour ne jamais dominer un écart de cascade_priority
+# entre providers réellement différents.
+LIVE_LATENCY_WEIGHT = 0.3
+LIVE_LATENCY_MAX_PENALTY = 3.0
+
+
+def get_live_latency_penalty(model_name: str) -> float:
+    """
+    [#T118] Pénalité de score dérivée de la latence live moyenne (EMA) du modèle,
+    mesurée par son CircuitBreaker (`core/llm/circuit_breaker.py`). Plafonnée à
+    `LIVE_LATENCY_MAX_PENALTY` pour rester un tie-breaker, jamais un remplacement
+    du `cascade_priority` statique.
+
+    Retourne 0.0 tant qu'aucun appel réussi n'a encore mesuré de latence.
+    """
+    try:
+        avg_latency_ms = CircuitBreaker.get_or_create(model_name).avg_latency_ms
+    except Exception:
+        return 0.0
+    if not avg_latency_ms:
+        return 0.0
+    return min((avg_latency_ms / 1000.0) * LIVE_LATENCY_WEIGHT, LIVE_LATENCY_MAX_PENALTY)
 
 
 class LLMGateway:
@@ -553,35 +579,8 @@ class LLMGateway:
         provider = self.get_provider(provider_name)
         yield from provider.generate_stream(system_prompt, user_prompt, **kwargs)
 
-    @staticmethod
-    def _heuristic_base_score(m_lower: str, channel: str) -> float:
-        """Fallback de scoring par heuristique (noms/channels) si la BDD n'est pas disponible."""
-        if "local" in m_lower:
-            return 1.0  # Local gratuit + confidentiel
-        elif channel in ("gemini-free-flash", "gemini-free-pro"):
-            return 2.0  # API Gratuit AI Studio
-        elif channel == "gemini-cli-abo":
-            return 3.0  # CLI Gemini Advanced (amorti ~0.20$/M)
-        elif channel == "claude-cli-abo":
-            return 3.5  # CLI Claude Pro (amorti ~0.57$/M)
-        elif "deepseek-chat" in m_lower or "deepseek-v4-flash" in m_lower:
-            return 4.0  # API Payant ultra low-cost DeepSeek Flash
-        elif "deepseek-reasoner" in m_lower or "deepseek-v4-pro" in m_lower:
-            return 4.5  # API Payant raisonnement DeepSeek
-        elif "gemini-3.5-flash" in m_lower or "gemini-3.1-flash" in m_lower:
-            return 5.0  # API Payant GCP standard
-        else:
-            return 6.0  # GCP Payant Pro ou autre
-
-    def get_provider_for_tier(self, tier: str, config: dict, elo_order: list = None) -> tuple[str, FallbackProvider]:
-        """
-        Résout un Tier en un FallbackProvider contenant les modèles configurés pour ce Tier, triés dynamiquement.
-        
-        Si elo_order est fourni (liste de dicts {"model": str, "elo": float}),
-        les modèles sont triés par Elo décroissant en priorité, puis par coût/quota en
-        second critère. Cela permet au routeur de privilégier le modèle le plus fiable
-        pour le domaine d'intention détecté.
-        """
+    def _resolve_tier_models(self, tier: str, config: dict) -> tuple[str, list]:
+        """[T133] Résout un nom de tier (avec alias) en (actual_tier, allowed_models)."""
         tier = tier.lower()
         tier_mapping = {
             "flash": "leger",
@@ -594,10 +593,10 @@ class LLMGateway:
         actual_tier = tier_mapping.get(tier, tier)
         if actual_tier not in ["leger", "moyen", "fort", "automatique"]:
             actual_tier = "moyen"
-            
+
         tiers_config = config.get("tiers", {})
         allowed_models = tiers_config.get(actual_tier, [])
-        
+
         if not allowed_models:
             default_map = {
                 "leger": ["local", "gemini-3.5-flash"],
@@ -606,7 +605,24 @@ class LLMGateway:
                 "automatique": ["local", "gemini-3.5-flash", "deepseek-chat", "gemini-cli", "deepseek-reasoner", "claude", "gemini-2.5-pro"]
             }
             allowed_models = default_map.get(actual_tier, ["gemini-3.5-flash"])
-            
+
+        return actual_tier, allowed_models
+
+    def get_provider_for_tier(self, tier: str, config: dict, elo_order: list = None) -> tuple[str, FallbackProvider]:
+        """
+        Résout un Tier en un FallbackProvider contenant les modèles configurés pour ce Tier, triés dynamiquement.
+
+        Si elo_order est fourni (liste de dicts {"model": str, "elo": float}),
+        les modèles sont triés par Elo décroissant en priorité, puis par coût/quota en
+        second critère. Cela permet au routeur de privilégier le modèle le plus fiable
+        pour le domaine d'intention détecté.
+
+        [T133] Le scoring coût/quota/latence est délégué à ProviderScorer
+        (core/provider_scorer.py, ex God Object de 150+ lignes) — cette méthode ne
+        fait plus que résoudre le tier, instancier les providers et trier.
+        """
+        actual_tier, allowed_models = self._resolve_tier_models(tier, config)
+
         providers_list = []
         for model in allowed_models:
             try:
@@ -615,130 +631,13 @@ class LLMGateway:
             except ValueError:
                 logger.warning(f"Modèle {model} non disponible ou clé API manquante.")
                 continue
-                
-        # Récupération des statuts de quota pour tri dynamique intelligent
-        from core.token_tracker import get_quotas_status, classify_model_channel
-        try:
-            quotas = get_quotas_status()
-        except Exception as e:
-            logger.warning(f"Impossible de récupérer les quotas de tokens pour le routage: {e}")
-            quotas = {}
 
-        # Pré-chargement GROUPÉ des routing scores depuis la BDD (1 requête pour N modèles).
-        # Évite N ouvertures/fermetures SQLite dans la closure du sort + ne bloque pas l'event loop
-        # car appelé depuis un thread via _DB_EXECUTOR si run_in_executor est utilisé en amont.
-        _bulk_scores: Dict[str, float] = {}
-        try:
-            from core.models_db import get_bulk_routing_scores
-            _bulk_scores = get_bulk_routing_scores([m for m, _ in providers_list])
-        except Exception:
-            pass
+        from core.provider_scorer import ProviderScorer
+        scorer = ProviderScorer([m for m, _ in providers_list])
+        providers_list = scorer.sort_providers(providers_list, elo_order)
 
-        def get_model_routing_score(model_name: str) -> float:
-            """
-            Calcule un score de priorité (plus le score est bas, plus le modèle est prioritaire).
-            Pénalise fortement les modèles dont le quota glissant est saturé à plus de 90%.
-            Pénalise graduellement les modèles approchant de la saturation (>70%).
-            Pénalise DeepSeek si le solde prépayé est critique (<1$).
-            """
-            m_lower = model_name.lower()
-            channel = classify_model_channel(model_name)
-
-            # 1. Détection de saturation de quota (pénalité graduée)
-            saturation_penalty = 0.0
-
-            if channel == "gemini-free-flash" and "gemini_free_flash" in quotas:
-                q = quotas["gemini_free_flash"]
-                for key in ["rpm", "tpm", "rpd"]:
-                    if key in q and q[key]["limit"] > 0:
-                        usage_ratio = q[key]["current"] / q[key]["limit"]
-                        if usage_ratio >= 0.95: saturation_penalty = max(saturation_penalty, 1000.0)
-                        elif usage_ratio >= 0.80: saturation_penalty = max(saturation_penalty, 200.0)
-                        elif usage_ratio >= 0.70: saturation_penalty = max(saturation_penalty, 50.0)
-
-            elif channel == "gemini-free-pro" and "gemini_free_pro" in quotas:
-                q = quotas["gemini_free_pro"]
-                for key in ["rpm", "tpm", "rpd"]:
-                    if key in q and q[key]["limit"] > 0:
-                        usage_ratio = q[key]["current"] / q[key]["limit"]
-                        if usage_ratio >= 0.95: saturation_penalty = max(saturation_penalty, 1000.0)
-                        elif usage_ratio >= 0.80: saturation_penalty = max(saturation_penalty, 200.0)
-                        elif usage_ratio >= 0.70: saturation_penalty = max(saturation_penalty, 50.0)
-
-            elif channel == "claude-cli-abo" and "claude_cli_abo" in quotas:
-                q = quotas["claude_cli_abo"]
-                for key in ["tph", "tpm"]:
-                    if key in q and q[key]["limit"] > 0:
-                        usage_ratio = q[key]["current"] / q[key]["limit"]
-                        if usage_ratio >= 0.95: saturation_penalty = max(saturation_penalty, 1000.0)
-                        elif usage_ratio >= 0.80: saturation_penalty = max(saturation_penalty, 200.0)
-                        elif usage_ratio >= 0.70: saturation_penalty = max(saturation_penalty, 50.0)
-
-            elif channel == "gemini-cli-abo" and "gemini_cli_abo" in quotas:
-                q = quotas["gemini_cli_abo"]
-                for key in ["tph", "tpm"]:
-                    if key in q and q[key]["limit"] > 0:
-                        usage_ratio = q[key]["current"] / q[key]["limit"]
-                        if usage_ratio >= 0.95: saturation_penalty = max(saturation_penalty, 1000.0)
-                        elif usage_ratio >= 0.80: saturation_penalty = max(saturation_penalty, 200.0)
-                        elif usage_ratio >= 0.70: saturation_penalty = max(saturation_penalty, 50.0)
-
-            # 2. Détection de solde DeepSeek critique
-            deepseek_penalty = 0.0
-            if "deepseek" in m_lower:
-                try:
-                    ds_balance = quotas.get("deepseek_balance_usd")
-                    if ds_balance is not None:
-                        if ds_balance < 0.5:
-                            deepseek_penalty = 2000.0  # Solde quasi épuisé → bloquer
-                        elif ds_balance < 1.0:
-                            deepseek_penalty = 500.0   # Solde critique → fortement pénaliser
-                        elif ds_balance < 5.0:
-                            deepseek_penalty = 50.0    # Solde bas → légère pénalité
-                except Exception as _e:
-                    from core.error_reporter import report_swallowed
-                    report_swallowed("llm_gateway.deepseek_balance_penalty", _e, level="debug")
-
-            # 3. Priorité base : pré-chargé en bulk depuis models_registry.db (0 I/O ici).
-            # Fallback heuristique si le modèle n'est pas dans la BDD (score retourné = 5.0).
-            base_score = _bulk_scores.get(model_name, 5.0)
-            if base_score == 5.0 and model_name not in ("gemini-3.5-flash-paid",):
-                base_score = LLMGateway._heuristic_base_score(m_lower, channel)
-
-            total_score = base_score + saturation_penalty + deepseek_penalty
-            logger.debug(f"[Routing Score] {model_name}: base={base_score:.1f} sat={saturation_penalty:.0f} ds={deepseek_penalty:.0f} → total={total_score:.1f}")
-            return total_score
-
-        # Tri combiné : Elo (priorité) + coût/quota (départage)
-        # Si un classement Elo est fourni par le Router, on l'utilise comme critère principal.
-        # Le scoring de coût/disponibilité sert de second critère (tie-breaker).
-        if elo_order:
-            # Construire un mapping Elo : nom normalisé → rang (0 = meilleur)
-            elo_rank_map = {}
-            for idx, entry in enumerate(elo_order):
-                model_key = entry.get("model", "").strip().lower()
-                if model_key:
-                    elo_rank_map[model_key] = idx
-            
-            # Tri composite : d'abord par rang Elo (croissant = meilleur d'abord),
-            # puis par score coût (croissant = moins cher d'abord) pour départager
-            def _combined_sort_key(item):
-                m_name = item[0].strip().lower()
-                elo_rank = elo_rank_map.get(m_name, 999)  # Inconnu → fin de liste
-                cost_score = get_model_routing_score(item[0])
-                return (elo_rank, cost_score)
-            
-            providers_list.sort(key=_combined_sort_key)
-            logger.info(
-                f"[LLMGateway] [ELO] Tri combiné Elo+coût appliqué — "
-                f"ordre: {[p[0] for p in providers_list]}"
-            )
-        else:
-            # Tri classique par score de coût/disponibilité uniquement
-            providers_list.sort(key=lambda x: get_model_routing_score(x[0]))
-        
         logger.info(f"[LLMGateway] Tier '{tier}' (actual: '{actual_tier}') -> allowed_models: {allowed_models} -> trié (prioritaire d'abord): {[p[0] for p in providers_list]}")
-        
+
         if not providers_list:
             for fallback_model in ["gemini-3.5-flash", "deepseek-chat", "local"]:
                 try:
@@ -746,7 +645,7 @@ class LLMGateway:
                     break
                 except ValueError:
                     continue
-                    
+
         return f"tier-{actual_tier}", FallbackProvider(providers_list)
 
     def get_providers_summary(self) -> list:

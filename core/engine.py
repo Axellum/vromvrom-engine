@@ -54,6 +54,12 @@ HITL_INTERACTIVE_PREFIXES = ("chat_", "stream_", "gui_session_")
 
 _HITL_RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
+# [#T111] Plafond de handoffs agent-à-agent (update.next_agent) dans la boucle
+# séquentielle. Garde-fou anti-boucle inspiré du `recursion_limit` LangGraph :
+# sans lui, un cycle A→B→A→B... déclenché par une logique d'agent buguée
+# tournerait indéfiniment (aucun compteur n'existait auparavant sur ce chemin).
+MAX_AGENT_HANDOFFS = 20
+
 # COMMENTAIRE DE TEST POUR HOT-RELOAD AUTOMATIQUE DEPUIS WINDOWS
 
 
@@ -119,7 +125,10 @@ class Engine:
 
             modified_files = []
             for git_dir in git_dirs:
-                result = subprocess.run(
+                # [T134] subprocess.run est synchrone → to_thread pour ne pas geler
+                # le thread principal (Engine.run() tourne dans l'event loop FastAPI).
+                result = await asyncio.to_thread(
+                    subprocess.run,
                     ["git", "status", "--porcelain"],
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     text=True, cwd=git_dir, encoding='utf-8', errors='ignore'
@@ -149,7 +158,8 @@ class Engine:
                     logger.warning(f"[ENGINE] Impossible de lire {yaml_file} pour vérifier 'esphome:': {fe}")
                     continue
 
-                validation_res = validate_config_yaml(yaml_file)
+                # [T134] esphome config (lancé par validate_config_yaml) est lent et synchrone.
+                validation_res = await asyncio.to_thread(validate_config_yaml, yaml_file)
                 if validation_res.startswith("Erreur"):
                     if "section missing" in validation_res or "esphome:" in validation_res:
                         logger.info(f"[ENGINE] Erreur de section manquante ignorée pour: {yaml_file}")
@@ -168,13 +178,18 @@ class Engine:
     async def run(self, initial_payload: TaskPayload, starting_agent: str) -> GlobalState:
         """
         Point d'entrée principal du moteur.
-        
+
         Flux :
         1. Initialisation (Git branch, Langfuse, budget tokens)
-        2. Boucle agent séquentiel (Router → Planner → ...)
-        3. Si le Planner produit un DAG → DAGRunner.execute_dag()
-        4. Review post-DAG → ReviewLoop.run_review()
-        5. Finalisation (Git merge, mémoire épisodique, checkpoint)
+        2. Boucle agent séquentiel (Router → Planner → ...) — voir _run_sequential_agents()
+        3. Si le Planner produit un DAG → DAGRunner.execute_dag() — voir _handle_dag_execution()
+        4. Review post-DAG → ReviewLoop.run_review() (dans _handle_dag_execution())
+        5. Finalisation (Git merge, mémoire épisodique, checkpoint) — voir _finalize_session()
+
+        [T137] Découpé en méthodes dédiées (250+ lignes → point d'entrée fin) : la
+        logique DAG (HITL + DAGRunner + review + skills), auparavant dupliquée à
+        l'identique sur les deux chemins possibles de la boucle séquentielle, est
+        désormais unifiée dans _handle_dag_execution().
         """
         from tools.git_safety import git_finalize_agent_branch
 
@@ -184,13 +199,11 @@ class Engine:
         if not initial_payload.metadata:
             initial_payload.metadata = {}
         initial_payload.metadata["session_id"] = self.state.session_id
-
-        current_agent_name: Optional[str] = starting_agent
         self.state.current_payload = initial_payload
 
         git_branch = None
         has_error = False
-        tasks_status = {}
+        tasks_status: dict = {}
 
         # [P2-3.4] Budget global d'exécution (tokens + durée + coût), partagé avec
         # le DAG runner pour plafonner TOUTE la requête. Durée/coût opt-in via config.
@@ -213,221 +226,9 @@ class Engine:
                 pass
 
         try:
-            # ── Boucle agent séquentiel ──
-            while current_agent_name and current_agent_name.upper() != "END":
-                agent = self.agents.get(current_agent_name)
-                if not agent:
-                    raise ValueError(f"Agent cible inconnu: '{current_agent_name}'")
-
-                print(f"\n[ENGINE] -> Routage vers l'agent: {current_agent_name.upper()}")
-
-                # [P2-3.4] Garde-fou budget global (tokens + durée + coût)
-                violation = budget.check()
-                if violation:
-                    logger.warning(
-                        f"[ENGINE] ⛔ BUDGET DÉPASSÉ ({violation['reason']}) : "
-                        f"{violation['value']} / {violation['limit']} {violation['metric']}. "
-                        f"Arrêt propre de l'exécution."
-                    )
-                    if self.on_event:
-                        await self.on_event(
-                            "budget_exceeded",
-                            budget.event_payload(violation, blocked=current_agent_name),
-                        )
-                    has_error = True
-                    break
-
-                # Mise à jour de la phase
-                if current_agent_name == "planner":
-                    self.state.current_phase = ExecutionPhase.PLANNING
-                elif current_agent_name == "reviewer":
-                    self.state.current_phase = ExecutionPhase.REVIEWING
-                else:
-                    self.state.current_phase = ExecutionPhase.EXECUTING
-
-                if self.on_event:
-                    await self.on_event("agent_started", {
-                        "agent_name": current_agent_name,
-                        "task_objective": self.state.current_payload.task_objective,
-                    })
-
-                # Langfuse : span pour cet agent
-                if _lf:
-                    try:
-                        _lf.start_span(self.state.session_id, current_agent_name)
-                    except Exception:
-                        pass
-
-                # ── Exécution de l'agent actif ──
-                update: StateUpdate = await agent.invoke(self.state.current_payload)
-
-                # Validation YAML post-exécution si succès
-                if update.status == "success":
-                    yaml_err = await self._validate_modified_yamls()
-                    if yaml_err:
-                        update.status = "error"
-                        update.error_message = yaml_err
-                        update.result_data = f"Erreur de validation de configuration YAML : {yaml_err}"
-
-                if self.on_event:
-                    await self.on_event("agent_completed", {
-                        "agent_name": current_agent_name,
-                        "status": update.status,
-                        "result_data": update.result_data,
-                        "error_message": update.error_message,
-                    })
-
-                # Langfuse : fermer le span
-                if _lf:
-                    try:
-                        _lf.end_span(
-                            self.state.session_id, current_agent_name,
-                            status=update.status,
-                            output=str(update.result_data)[:300] if update.result_data else None,
-                        )
-                    except Exception:
-                        pass
-
-                # Checkpoint disque après chaque transition
-                try:
-                    self._checkpoint_mgr.save(self.state)
-                except Exception as _cp_err:
-                    logger.warning(f"[ENGINE] Checkpoint échoué : {_cp_err}")
-
-                # Gestion des nouvelles tâches (Planner → DAG)
-                if update.new_tasks:
-                    print(f"[ENGINE] -> L'agent {current_agent_name} a planifié {len(update.new_tasks)} nouvelle(s) tâche(s).")
-                    for task in update.new_tasks:
-                        if not task.metadata:
-                            task.metadata = {}
-                        if "session_id" not in task.metadata:
-                            task.metadata["session_id"] = self.state.session_id
-                    self.state.task_queue.extend(update.new_tasks)
-
-                # Historisation thread-safe
-                async with self._history_lock:
-                    self.state.history.append(update)
-
-                if update.status == "error":
-                    logger.error(f"Erreur depuis {current_agent_name}: {update.error_message}")
-                    has_error = True
-                    break
-
-                # ── Détermination du prochain agent ──
-                if update.next_agent and update.next_agent.upper() != "END":
-                    self.state.current_payload = TaskPayload(
-                        task_objective=f"Poursuite après exécution de {current_agent_name}",
-                        relevant_context=str(update.result_data),
-                        metadata={"previous_agent": current_agent_name, "session_id": self.state.session_id},
-                    )
-                    current_agent_name = update.next_agent
-                elif self._workflow_executor.has_transitions(current_agent_name) and not update.new_tasks:
-                    # Transitions dynamiques depuis le workflow JSON
-                    wf_tasks = self._workflow_executor.resolve_next_tasks(
-                        current_agent=current_agent_name,
-                        status=update.status,
-                        result_data=str(update.result_data)[:500],
-                        session_id=self.state.session_id,
-                    )
-                    if wf_tasks:
-                        self.state.task_queue.extend(wf_tasks)
-                        logger.info(
-                            f"[ENGINE] [A11] Workflow-as-Code : {len(wf_tasks)} transition(s) "
-                            f"injectée(s) depuis le graphe pour '{current_agent_name}'"
-                        )
-                    # [FIX] Ne pas sortir du while — laisser le bloc suivant (task_queue)
-                    # traiter les tâches DAG via DAGRunner. Avant ce fix, current_agent_name=None
-                    # provoquait une sortie prématurée SANS exécuter le DAG.
-                    current_agent_name = None
-                    # Forcer le passage au traitement de la file DAG ci-dessous
-                    if self.state.task_queue:
-                        dag_tasks = list(self.state.task_queue)
-                        self.state.task_queue.clear()
-
-                        # Point d'approbation HITL avant le DAG
-                        hitl_approved = await self._check_hitl_before_dag(
-                            dag_tasks, initial_payload.task_objective
-                        )
-                        if not hitl_approved:
-                            logger.warning("[ENGINE] Plan rejeté par l'utilisateur (HITL).")
-                            has_error = True
-                            if self.on_event:
-                                await self.on_event("plan_rejected", {
-                                    "reason": "Rejeté par l'utilisateur via HITL"
-                                })
-                            continue
-
-                        tasks_status, has_error = await self._dag_runner.execute_dag(
-                            tasks=dag_tasks,
-                            max_session_tokens=max_session_tokens,
-                            on_event=self.on_event,
-                            budget=budget,  # [P2-3.4] budget partagé (tokens+durée+coût)
-                        )
-
-                        # ── Review post-DAG ──
-                        if not has_error and tasks_status:
-                            review_enabled = self._is_review_enabled()
-                            if review_enabled and self.agents.get("reviewer"):
-                                approved = await self._review_loop.run_review(
-                                    initial_objective=initial_payload.task_objective,
-                                    on_event=self.on_event,
-                                )
-                                if not approved:
-                                    has_error = True
-
-                        # Enregistrement des skills après un DAG réussi
-                        if not has_error:
-                            self._record_skills_from_dag(
-                                dag_tasks, initial_payload.task_objective
-                            )
-                else:
-                    # ── Traitement de la file DAG ──
-                    if self.state.task_queue:
-                        dag_tasks = list(self.state.task_queue)
-                        self.state.task_queue.clear()
-
-                        # Point d'approbation HITL avant le DAG
-                        # Les plans contenant des tâches à risque (write_file, run_terminal,
-                        # delete) déclenchent une demande d'approbation humaine
-                        hitl_approved = await self._check_hitl_before_dag(
-                            dag_tasks, initial_payload.task_objective
-                        )
-                        if not hitl_approved:
-                            logger.warning("[ENGINE] Plan rejeté par l'utilisateur (HITL).")
-                            has_error = True
-                            if self.on_event:
-                                await self.on_event("plan_rejected", {
-                                    "reason": "Rejeté par l'utilisateur via HITL"
-                                })
-                            current_agent_name = None
-                            continue
-
-                        tasks_status, has_error = await self._dag_runner.execute_dag(
-                            tasks=dag_tasks,
-                            max_session_tokens=max_session_tokens,
-                            on_event=self.on_event,
-                            budget=budget,  # [P2-3.4] budget partagé (tokens+durée+coût)
-                        )
-
-                        # ── Review post-DAG ──
-                        if not has_error and tasks_status:
-                            review_enabled = self._is_review_enabled()
-                            if review_enabled and self.agents.get("reviewer"):
-                                approved = await self._review_loop.run_review(
-                                    initial_objective=initial_payload.task_objective,
-                                    on_event=self.on_event,
-                                )
-                                if not approved:
-                                    has_error = True
-
-                        # Enregistrement des skills après un DAG réussi
-                        if not has_error:
-                            self._record_skills_from_dag(
-                                dag_tasks, initial_payload.task_objective
-                            )
-
-                    current_agent_name = None  # Fin du traitement
-
+            has_error, tasks_status = await self._run_sequential_agents(
+                initial_payload, starting_agent, budget, max_session_tokens, _lf,
+            )
         finally:
             # ── Hooks post-exécution ──
             self._run_doc_hook(has_error)
@@ -435,6 +236,259 @@ class Engine:
             if git_branch:
                 self._finalize_git(git_branch, has_error, tasks_status, git_finalize_agent_branch)
 
+        return await self._finalize_session(initial_payload, has_error, _lf)
+
+    async def _run_sequential_agents(
+        self,
+        initial_payload: TaskPayload,
+        starting_agent: str,
+        budget,
+        max_session_tokens: int,
+        _lf,
+    ) -> tuple[bool, dict]:
+        """
+        [T137] Boucle agent séquentielle (Router → Planner → ... → DAG optionnel
+        via la file de tâches). Extraite de run().
+
+        Returns:
+            (has_error, tasks_status)
+        """
+        current_agent_name: Optional[str] = starting_agent
+        has_error = False
+        tasks_status: dict = {}
+        agent_handoffs = 0
+
+        # ── Boucle agent séquentiel ──
+        while current_agent_name and current_agent_name.upper() != "END":
+            agent_handoffs += 1
+            if agent_handoffs > MAX_AGENT_HANDOFFS:
+                logger.error(
+                    f"[ENGINE] ⛔ Plafond de boucle atteint ({MAX_AGENT_HANDOFFS} handoffs "
+                    f"agent-à-agent) : arrêt anti-boucle (agent courant: {current_agent_name})."
+                )
+                if self.on_event:
+                    await self.on_event("loop_limit_exceeded", {
+                        "kind": "agent_handoffs",
+                        "limit": MAX_AGENT_HANDOFFS,
+                        "current_agent": current_agent_name,
+                    })
+                has_error = True
+                break
+
+            agent = self.agents.get(current_agent_name)
+            if not agent:
+                raise ValueError(f"Agent cible inconnu: '{current_agent_name}'")
+
+            print(f"\n[ENGINE] -> Routage vers l'agent: {current_agent_name.upper()}")
+
+            # [P2-3.4] Garde-fou budget global (tokens + durée + coût)
+            violation = budget.check()
+            if violation:
+                logger.warning(
+                    f"[ENGINE] ⛔ BUDGET DÉPASSÉ ({violation['reason']}) : "
+                    f"{violation['value']} / {violation['limit']} {violation['metric']}. "
+                    f"Arrêt propre de l'exécution."
+                )
+                if self.on_event:
+                    await self.on_event(
+                        "budget_exceeded",
+                        budget.event_payload(violation, blocked=current_agent_name),
+                    )
+                has_error = True
+                break
+
+            # Mise à jour de la phase
+            if current_agent_name == "planner":
+                self.state.current_phase = ExecutionPhase.PLANNING
+            elif current_agent_name == "reviewer":
+                self.state.current_phase = ExecutionPhase.REVIEWING
+            else:
+                self.state.current_phase = ExecutionPhase.EXECUTING
+
+            if self.on_event:
+                await self.on_event("agent_started", {
+                    "agent_name": current_agent_name,
+                    "task_objective": self.state.current_payload.task_objective,
+                })
+
+            # Langfuse : span pour cet agent
+            if _lf:
+                try:
+                    _lf.start_span(self.state.session_id, current_agent_name)
+                except Exception:
+                    pass
+
+            # ── Exécution de l'agent actif ──
+            update: StateUpdate = await agent.invoke(self.state.current_payload)
+
+            # Validation YAML post-exécution si succès
+            if update.status == "success":
+                yaml_err = await self._validate_modified_yamls()
+                if yaml_err:
+                    update.status = "error"
+                    update.error_message = yaml_err
+                    update.result_data = f"Erreur de validation de configuration YAML : {yaml_err}"
+
+            if self.on_event:
+                await self.on_event("agent_completed", {
+                    "agent_name": current_agent_name,
+                    "status": update.status,
+                    "result_data": update.result_data,
+                    "error_message": update.error_message,
+                })
+
+            # Langfuse : fermer le span
+            if _lf:
+                try:
+                    _lf.end_span(
+                        self.state.session_id, current_agent_name,
+                        status=update.status,
+                        output=str(update.result_data)[:300] if update.result_data else None,
+                    )
+                except Exception:
+                    pass
+
+            # Checkpoint disque après chaque transition
+            try:
+                self._checkpoint_mgr.save(self.state)
+            except Exception as _cp_err:
+                logger.warning(f"[ENGINE] Checkpoint échoué : {_cp_err}")
+
+            # Gestion des nouvelles tâches (Planner → DAG)
+            if update.new_tasks:
+                print(f"[ENGINE] -> L'agent {current_agent_name} a planifié {len(update.new_tasks)} nouvelle(s) tâche(s).")
+                for task in update.new_tasks:
+                    if not task.metadata:
+                        task.metadata = {}
+                    if "session_id" not in task.metadata:
+                        task.metadata["session_id"] = self.state.session_id
+                self.state.task_queue.extend(update.new_tasks)
+
+            # Historisation thread-safe
+            async with self._history_lock:
+                self.state.history.append(update)
+
+            if update.status == "error":
+                logger.error(f"Erreur depuis {current_agent_name}: {update.error_message}")
+                has_error = True
+                break
+
+            # ── Détermination du prochain agent ──
+            if update.next_agent and update.next_agent.upper() != "END":
+                self.state.current_payload = TaskPayload(
+                    task_objective=f"Poursuite après exécution de {current_agent_name}",
+                    relevant_context=str(update.result_data),
+                    metadata={"previous_agent": current_agent_name, "session_id": self.state.session_id},
+                )
+                current_agent_name = update.next_agent
+            elif self._workflow_executor.has_transitions(current_agent_name) and not update.new_tasks:
+                # Transitions dynamiques depuis le workflow JSON
+                wf_tasks = self._workflow_executor.resolve_next_tasks(
+                    current_agent=current_agent_name,
+                    status=update.status,
+                    result_data=str(update.result_data)[:500],
+                    session_id=self.state.session_id,
+                )
+                if wf_tasks:
+                    self.state.task_queue.extend(wf_tasks)
+                    logger.info(
+                        f"[ENGINE] [A11] Workflow-as-Code : {len(wf_tasks)} transition(s) "
+                        f"injectée(s) depuis le graphe pour '{current_agent_name}'"
+                    )
+                # [FIX] Ne pas sortir du while — laisser le bloc suivant (task_queue)
+                # traiter les tâches DAG via DAGRunner. Avant ce fix, current_agent_name=None
+                # provoquait une sortie prématurée SANS exécuter le DAG.
+                current_agent_name = None
+                # Forcer le passage au traitement de la file DAG ci-dessous
+                if self.state.task_queue:
+                    dag_tasks = list(self.state.task_queue)
+                    self.state.task_queue.clear()
+                    new_tasks_status, has_error = await self._handle_dag_execution(
+                        dag_tasks, initial_payload, max_session_tokens, budget,
+                    )
+                    if new_tasks_status is not None:
+                        tasks_status = new_tasks_status
+            else:
+                # ── Traitement de la file DAG ──
+                if self.state.task_queue:
+                    dag_tasks = list(self.state.task_queue)
+                    self.state.task_queue.clear()
+                    new_tasks_status, has_error = await self._handle_dag_execution(
+                        dag_tasks, initial_payload, max_session_tokens, budget,
+                    )
+                    if new_tasks_status is not None:
+                        tasks_status = new_tasks_status
+
+                current_agent_name = None  # Fin du traitement
+
+        return has_error, tasks_status
+
+    async def _handle_dag_execution(
+        self,
+        dag_tasks: list,
+        initial_payload: TaskPayload,
+        max_session_tokens: int,
+        budget,
+    ) -> tuple:
+        """
+        [T137] Exécute un lot de tâches DAG : approbation HITL, DAGRunner.execute_dag,
+        review post-DAG, puis enregistrement des skills. Factorise un bloc auparavant
+        dupliqué à l'identique dans run() (chemin "transitions workflow" ET chemin
+        "file DAG standard").
+
+        Returns:
+            (tasks_status, has_error) — tasks_status vaut None si le plan a été
+            rejeté via HITL avant que DAGRunner ne tourne (l'appelant doit alors
+            laisser sa propre variable tasks_status inchangée, pour préserver le
+            comportement d'origine).
+        """
+        # Point d'approbation HITL avant le DAG. Les plans contenant des tâches à
+        # risque (write_file, run_terminal, delete) déclenchent une approbation humaine.
+        hitl_approved = await self._check_hitl_before_dag(
+            dag_tasks, initial_payload.task_objective
+        )
+        if not hitl_approved:
+            logger.warning("[ENGINE] Plan rejeté par l'utilisateur (HITL).")
+            if self.on_event:
+                await self.on_event("plan_rejected", {
+                    "reason": "Rejeté par l'utilisateur via HITL"
+                })
+            return None, True
+
+        tasks_status, has_error = await self._dag_runner.execute_dag(
+            tasks=dag_tasks,
+            max_session_tokens=max_session_tokens,
+            on_event=self.on_event,
+            budget=budget,  # [P2-3.4] budget partagé (tokens+durée+coût)
+        )
+
+        # ── Review post-DAG ──
+        if not has_error and tasks_status:
+            review_enabled = self._is_review_enabled()
+            if review_enabled and self.agents.get("reviewer"):
+                approved = await self._review_loop.run_review(
+                    initial_objective=initial_payload.task_objective,
+                    on_event=self.on_event,
+                )
+                if not approved:
+                    has_error = True
+
+        # Enregistrement des skills après un DAG réussi
+        if not has_error:
+            self._record_skills_from_dag(
+                dag_tasks, initial_payload.task_objective
+            )
+
+        return tasks_status, has_error
+
+    async def _finalize_session(
+        self, initial_payload: TaskPayload, has_error: bool, _lf,
+    ) -> GlobalState:
+        """
+        [T137] Finalisation post-boucle : phase finale, mémoire épisodique,
+        consolidation mémoire, checkpoint final, fermeture trace Langfuse, event.
+        Extraite de run().
+        """
         # Phase finale
         self.state.current_phase = ExecutionPhase.FAILED if has_error else ExecutionPhase.COMPLETED
 

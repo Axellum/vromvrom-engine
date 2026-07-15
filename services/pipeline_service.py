@@ -23,9 +23,35 @@ Auteur : Antigravity IDE + Axel — 2026-06-04
 import asyncio
 import hashlib
 import logging
-from typing import Any, AsyncGenerator, Dict, Optional
+from collections.abc import AsyncGenerator
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ══════════════════════════════════════════════════════════════════
+# [#T194] Override de force de workload (sélecteur de tier IHM)
+# ══════════════════════════════════════════════════════════════════
+
+WORKLOAD_TIERS = ("leger", "moyen", "fort", "automatique")
+
+
+def apply_workload_override(config: dict, tier: str | None = None, model: str | None = None) -> dict:
+    """
+    Applique l'override par requête du sélecteur IHM (tier léger/moyen/fort/auto
+    ou id de modèle explicite) sur une COPIE de la config.
+
+    Cible executor_model et ha_model : ce sont les agents qui produisent la
+    réponse — le Planner garde son modèle configuré (fiabilité du plan JSON,
+    coût déjà faible). `provider_name` accepte indifféremment un nom de tier
+    (résolu par get_provider_for_tier) ou un id littéral (get_provider), donc
+    aucune autre plomberie n'est nécessaire.
+    """
+    if model:
+        return {**config, "executor_model": model, "ha_model": model}
+    if tier in WORKLOAD_TIERS:
+        return {**config, "executor_model": tier, "ha_model": tier}
+    return config
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -33,8 +59,8 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════
 
 FAST_PATH_SYSTEM_PROMPT = (
-    "Tu es un assistant IA expert en domotique, code et technologie. "
-    "Réponds de manière concise, chaleureuse et en français."
+    "Tu es un assistant vocal domotique, expert en maison connectée et technologie. "
+    "Réponds en français, de façon concise et chaleureuse."
 )
 
 FAST_PATH_PROVIDERS = [
@@ -50,7 +76,11 @@ async def run_fast_path(
     gateway,
     token_tracker,
     fast_path_cache,
-) -> Optional[str]:
+    tier_override: str | None = None,
+    model_override: str | None = None,
+    system_prompt_suffix: str = "",
+    inject_project_context: bool = False,
+) -> str | None:
     """
     Exécute le fast-path (casual_chat) en essayant les providers rapides dans l'ordre.
 
@@ -73,8 +103,25 @@ async def run_fast_path(
     """
     token_tracker.init_session(session_id, user_prompt)
 
+    system_prompt = FAST_PATH_SYSTEM_PROMPT
+    if system_prompt_suffix:
+        system_prompt = f"{system_prompt}{system_prompt_suffix}"
+    if inject_project_context:
+        try:
+            from services.execute_service import get_casual_chat_context
+            rag_block = await get_casual_chat_context(user_prompt)
+            if rag_block:
+                system_prompt = f"{system_prompt}{rag_block}"
+        except Exception as rag_err:
+            logger.debug(f"[FAST_PATH] Contexte projet ignoré : {rag_err}")
+
     # ── Vérification du cache TTL (évite un appel LLM si prompt identique < 15s) ──
-    _cache_key = hashlib.md5(f"{FAST_PATH_SYSTEM_PROMPT}||{user_prompt}".encode()).hexdigest()
+    # [#T194] L'override tier/modèle fait partie de la clé : une même question posée
+    # en "fort" ne doit pas resservir la réponse cachée du tier "léger".
+    _override_key = f"{tier_override or ''}|{model_override or ''}"
+    _cache_key = hashlib.md5(
+        f"{system_prompt}||{_override_key}||{user_prompt}".encode()
+    ).hexdigest()
     _cached = fast_path_cache.get(_cache_key)
 
     if _cached is not None:
@@ -87,19 +134,37 @@ async def run_fast_path(
     response_text = None
     loop = asyncio.get_event_loop()
 
-    for pname in FAST_PATH_PROVIDERS:
+    # [#T194] Le modèle/tier choisi dans l'IHM passe en tête de cascade ; la
+    # liste statique FAST_PATH_PROVIDERS reste le filet de sécurité derrière.
+    candidates: list = []
+    if model_override:
+        candidates.append(model_override)
+    elif tier_override in WORKLOAD_TIERS and tier_override != "automatique":
         try:
-            fast_provider = gateway.get_provider(pname)
-        except ValueError:
-            logger.debug(f"[FAST_PATH] Provider {pname} non disponible, skip")
-            continue
+            from core.llm_gateway import load_config
+            _, tier_provider = gateway.get_provider_for_tier(tier_override, load_config())
+            candidates.append((f"tier:{tier_override}", tier_provider))
+        except Exception as tier_err:
+            logger.warning(f"[FAST_PATH] Tier '{tier_override}' non résolu : {tier_err}")
+    candidates.extend(FAST_PATH_PROVIDERS)
+
+    for entry in candidates:
+        if isinstance(entry, tuple):
+            pname, fast_provider = entry
+        else:
+            pname = entry
+            try:
+                fast_provider = gateway.get_provider(pname)
+            except ValueError:
+                logger.debug(f"[FAST_PATH] Provider {pname} non disponible, skip")
+                continue
 
         try:
             logger.info(f"[FAST_PATH] Tentative → {pname}")
             response_text = await loop.run_in_executor(
                 None,
                 lambda p=fast_provider: p.generate(
-                    FAST_PATH_SYSTEM_PROMPT,
+                    system_prompt,
                     user_prompt,
                     session_id=session_id,
                 )
@@ -124,7 +189,7 @@ async def run_fast_path(
 async def _persist_fast_path_async(sid: str, prompt: str, result: str, source: str = "") -> None:
     """Tâche async différée : persiste la session fast-path en BDD + EventStore ."""
     try:
-        from core.session_history import record_session_start, record_session_end
+        from core.session_history import record_session_end, record_session_start
         record_session_start(sid, prompt, "fast_path")
         record_session_end(
             sid, "success",
@@ -146,7 +211,7 @@ async def _persist_fast_path_async(sid: str, prompt: str, result: str, source: s
         logger.debug(f"[FAST_PATH] EventStore skip : {_ee}")
 
 
-def _build_fast_path_response(session_id: str, user_prompt: str, response_text: str) -> Dict[str, Any]:
+def _build_fast_path_response(session_id: str, user_prompt: str, response_text: str) -> dict[str, Any]:
     """Construit le dict de réponse JSON standardisé pour le fast-path."""
     return {
         "status": "completed",
@@ -175,8 +240,9 @@ async def run_full_pipeline(
     initial_payload: Any,
     starting_agent: str,
     on_event_callback,
-    config: Dict,
-) -> Dict[str, Any]:
+    config: dict,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
     """
     Exécute le pipeline complet du moteur : Planner → DAG → Executor → Reviewer.
 
@@ -194,44 +260,33 @@ async def run_full_pipeline(
     Returns:
         dict : Réponse JSON normalisée avec status, response, history, agents_used
     """
-    from core.llm_gateway import LLMGateway
-    from tools.tool_registry import ToolRegistry
-    from memory.context_manager import ContextManager
-    from core.engine import Engine
-    from agents.executor import ExecutorAgent
-    from agents.planner import PlannerAgent
     from agents.antigravity_agent import AntigravityAgent
+    from agents.executor import ExecutorAgent
     from agents.ha_agent import HACommandAgent
+    from agents.planner import PlannerAgent
     from agents.reviewer import ReviewerAgent
-    from core.mcp_bridge import MCPBridge
-    from core.workflow_bridge import WorkflowBridge
-    from tools.system import read_file, write_file, validate_config_yaml
-    from tools.terminal import run_terminal_command
-    from tools.api import call_api
-    from core.serializers import global_state_to_dict, state_update_to_dict
-    from core.session_history import record_session_start, record_session_end
     from core import token_tracker
+    from core.engine import Engine
+    from core.llm_gateway import LLMGateway
+    from core.mcp_bridge import MCPBridge
+    from core.serializers import global_state_to_dict, state_update_to_dict
+    from core.session_history import record_session_end, record_session_start
+    from core.workflow_bridge import WorkflowBridge
+    from memory.context_manager import ContextManager
+    from tools.registry_setup import register_base_tools, register_extended_tools
+    from tools.tool_registry import ToolRegistry
 
     # ── Construction des dépendances ──
     gateway = LLMGateway()
     registry = ToolRegistry()
     context_manager = ContextManager(llm_gateway=gateway)
 
-    # ── Outils standard ──
-    registry.register("read_file", read_file, "Lit le contenu d'un fichier texte local.")
-    registry.register("write_file", write_file, "Crée ou modifie un fichier texte local.")
-    registry.register("run_terminal_command", run_terminal_command, "Exécute une commande système.")
-    registry.register("call_api", call_api, "Effectue une requête HTTP vers une API distante.")
-    registry.register("validate_config_yaml", validate_config_yaml, "Valide la syntaxe YAML ESPHome.")
-
-    # ── Outils Git Safety ──
-    try:
-        from tools.git_safety import git_create_checkpoint, git_rollback_checkpoint, git_apply_checkpoint
-        registry.register("git_create_checkpoint", git_create_checkpoint, "Crée un checkpoint Git.")
-        registry.register("git_rollback_checkpoint", git_rollback_checkpoint, "Rollback Git.")
-        registry.register("git_apply_checkpoint", git_apply_checkpoint, "Valide checkpoint Git.")
-    except ImportError:
-        logger.debug("[PIPELINE] Outils Git Safety non disponibles")
+    # ── Outils (enregistrement factorisé, #T213) ──
+    # Le chemin HTTP principal dispose désormais des mêmes familles d'outils que
+    # core/factory.py (avant : base + git seulement — Workspace/Cloud/Imagen
+    # manquaient silencieusement ici, alors que compensés en théorie par MCPBridge).
+    register_base_tools(registry)
+    register_extended_tools(registry)
 
     # ── MCP Bridge ──
     mcp_bridge = MCPBridge()
@@ -258,7 +313,13 @@ async def run_full_pipeline(
 
     # ── Engine ──
     token_tracker.init_session(session_id, user_prompt)
-    engine = Engine(session_id=session_id, context_manager=context_manager)
+    # [#T202] repo_root optionnel dans la config (posé par DreamCoder pour
+    # cibler son clone de travail dédié) — None = comportement historique.
+    engine = Engine(
+        session_id=session_id,
+        context_manager=context_manager,
+        repo_root=config.get("repo_root"),
+    )
     engine.register_agent(executor)
     engine.register_agent(planner)
     engine.register_agent(antigravity_agent)
@@ -282,6 +343,13 @@ async def run_full_pipeline(
             engine.register_agent(custom_agent)
     except Exception:
         pass
+
+    # ── [#T159] Agents custom déclarés dans config.json (CRUD /api/agents) ──
+    try:
+        from core.custom_agents import register_config_custom_agents
+        register_config_custom_agents(engine, gateway, registry, config)
+    except Exception as e:
+        logger.warning(f"[PIPELINE] Agents custom config.json non chargés : {e}")
 
     # ── Plugins auto-découverts ──
     try:
@@ -332,21 +400,24 @@ async def run_full_pipeline(
 
     engine.on_event = handle_engine_event
 
-    # ── Exécution avec timeout 120s ──
+    # ── Exécution avec timeout configurable (source_router en mode vocal) ──
     await mcp_bridge.start(registry, user_prompt=user_prompt)
     record_session_start(session_id, user_prompt, starting_agent)
 
     try:
         final_state = await asyncio.wait_for(
             engine.run(initial_payload, starting_agent),
-            timeout=120.0
+            timeout=timeout_seconds,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         await _cleanup_mcp(mcp_bridge)
-        record_session_end(session_id, "error", error_message="Timeout 120s")
+        record_session_end(session_id, "error", error_message=f"Timeout {timeout_seconds}s")
         return {
             "status": "error",
-            "error": "⏱️ Timeout : l'exécution a dépassé 120 secondes. Essayez une requête plus simple.",
+            "error": (
+                f"⏱️ Timeout : l'exécution a dépassé {int(timeout_seconds)} secondes. "
+                "Essayez une requête plus simple."
+            ),
         }
     except Exception as e:
         await _cleanup_mcp(mcp_bridge)
@@ -371,8 +442,9 @@ async def run_full_pipeline(
 
     # Scanner les tokens CLI à la fin pour s'assurer du tracking temps réel
     try:
-        from core.cli_token_collector import collect_all_cli_tokens
         from datetime import datetime, timedelta
+
+        from core.cli_token_collector import collect_all_cli_tokens
         since = (datetime.now() - timedelta(hours=2)).isoformat()
         # Exécuter dans un thread en tâche de fond pour ne pas bloquer le retour de l'API
         asyncio.create_task(asyncio.to_thread(collect_all_cli_tokens, since_date=since, persist_to_db=True))
@@ -410,7 +482,7 @@ async def run_multi_intent_pipeline(
     engine,
     on_event_callback,
     mcp_bridge,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Exécute plusieurs sous-intents en parallèle via asyncio.gather.
 
@@ -490,7 +562,7 @@ async def run_multi_intent_pipeline(
                 "status":      "success",
             }
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"[PIPELINE] [MULTI-INTENT] Timeout intent[{index}] : {intent[:50]}")
             return {"intent": intent, "index": index, "response": "⏱️ Timeout 45s.", "agents_used": [], "status": "timeout"}
         except Exception as e:
@@ -561,7 +633,7 @@ async def _cleanup_mcp(mcp_bridge) -> None:
 # Service : Exécution moteur en background (fire-and-forget)
 # ══════════════════════════════════════════════════════════════════
 
-async def run_engine_background(objective: str, on_event_callback, session_id: Optional[str] = None) -> None:
+async def run_engine_background(objective: str, on_event_callback, session_id: str | None = None) -> None:
     """
     Lance le moteur en arrière-plan pour /api/run (fire-and-forget).
     Met à jour execution_state via AppState pendant l'exécution.
@@ -572,8 +644,10 @@ async def run_engine_background(objective: str, on_event_callback, session_id: O
         session_id       : ID de session optionnel pré-généré (V12 B3-Fix)
     """
     from core.app_state import get_app_state
-    from core.llm_gateway import LLMGateway
-    from core.llm_gateway import load_config  # config_loader n'existe pas — load_config est dans llm_gateway
+    from core.llm_gateway import (
+        LLMGateway,
+        load_config,  # config_loader n'existe pas — load_config est dans llm_gateway
+    )
 
     state = get_app_state()
 
@@ -633,6 +707,7 @@ async def stream_chat_tokens(
         str : Lignes SSE formatées (data: {...}\\n\\n)
     """
     import json
+
     from core.llm_gateway import LLMGateway
 
     gateway = LLMGateway()

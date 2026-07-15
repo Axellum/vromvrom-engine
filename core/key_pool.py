@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/key_pool.py — Pool de clés API Gemini avec rotation automatique.
 
 [Phase 1] Gère N clés API Free Tier Gemini avec rotation intelligente
@@ -7,7 +7,7 @@ indépendants (RPM, TPD), ce qui multiplie la capacité du moteur.
 
 Architecture :
   - Pool de clés Free Tier (rotation round-robin + fallback sur 429)
-  - 5 clés Free Tier = quintuple quota (2500 RPD Flash, 7500 RPD Lite)
+  - 6 clés Free Tier = sextuple quota (3000 RPD Flash, 9000 RPD Lite)
   - Clé payante séparée (jamais en rotation, utilisée uniquement si explicite)
   - Tracking du nombre de requêtes par clé
   - Cooldown automatique sur les clés rate-limitées
@@ -58,13 +58,14 @@ class GeminiKeyPool:
     def _load_keys(self):
         """Charge toutes les clés API depuis les variables d'environnement."""
         # Clés Free Tier (rotation round-robin)
-        # 3 clés = triple quota (1500 RPD Flash, 4500 RPD Lite)
+        # [T114] 6 clés = sextuple quota (3000 RPD Flash, 9000 RPD Lite)
         free_key_configs = [
             ("GEMINI_API_KEY", "moteur-ia-free"),
             ("GEMINI_API_KEY_2", "Gemini Project"),
             ("GEMINI_API_KEY_3", "Default Gemini Project"),
             ("GEMINI_API_KEY_4", "home-assistant-aeb75"),
-            ("GEMINI_API_KEY_5", "${GCP_PROJECT_NAME:-your-gcp-project}"),
+            ("GEMINI_API_KEY_5", "ha-delta"),
+            ("GEMINI_API_KEY_6", "Gemini Project 6"),
         ]
         
         for env_var, project_name in free_key_configs:

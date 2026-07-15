@@ -28,7 +28,8 @@ DIRECTIVES DE REVUE ET CRITÈRES D'ACCEPTATION :
    - Vérifie que le `dac_output` de l'ES8388 est bien configuré sur `LINE1` (indispensable pour avoir du son).
 4. QUALITÉ DU CODE : Recherche les erreurs d'indentation, les importations manquantes, et les fonctions/variables mal nommées.
 5. RIGUEUR DU VERDICT : Si le code comporte une faille, un bug, ou une consigne non respectée, tu DOIS rejeter la modification et lister précisément les corrections requises. Sois très strict.
-6. QUALITÉ VISUELLE (si un rapport d'analyse visuelle ou un screenshot est fourni dans le contexte) : Évalue l'harmonie des couleurs, la lisibilité des textes, l'alignement des éléments, la cohérence du design avec les standards premium (glassmorphism, coins arrondis, animations fluides). Un score visuel inférieur à 5/10 doit entraîner un rejet avec des recommandations précises."""
+6. QUALITÉ VISUELLE (si un rapport d'analyse visuelle ou un screenshot est fourni dans le contexte) : Évalue l'harmonie des couleurs, la lisibilité des textes, l'alignement des éléments, la cohérence du design avec les standards premium (glassmorphism, coins arrondis, animations fluides). Un score visuel inférieur à 5/10 doit entraîner un rejet avec des recommandations précises.
+7. SCORE DE QUALITÉ GRADUÉ : En plus du verdict binaire, attribue un `quality_score` de 0 (inacceptable) à 10 (parfait), cohérent avec la sévérité : critical≈0-3, major≈3-6, minor≈6-8, info≈8-10. Ce score sert à décider d'une éventuelle escalade vers un modèle plus puissant pour la correction — sois précis et non paresseux (n'attribue pas systématiquement 5)."""
         )
         self.gateway = llm_gateway
         self.provider_name = provider_name
@@ -92,7 +93,7 @@ DIRECTIVES DE REVUE ET CRITÈRES D'ACCEPTATION :
                 status="success",
                 result_data="Auto-approuvé : Aucune modification de fichier détectée.",
                 next_agent="END",
-                metadata={"severity": "info", "approved": True}
+                metadata={"severity": "info", "approved": True, "quality_score": 10.0}
             )
 
         # Détermination du fournisseur de modèle pour la relecture
@@ -125,9 +126,13 @@ DIRECTIVES DE REVUE ET CRITÈRES D'ACCEPTATION :
               "type": "array",
               "items": {"type": "string"},
               "description": "Liste précise des lignes ou des logiques à corriger en cas de refus. Laisser vide si approuvé."
+            },
+            "quality_score": {
+              "type": "number",
+              "description": "Score global de qualité de 0 (inacceptable) à 10 (parfait), cohérent avec la sévérité (critical≈0-3, major≈3-6, minor≈6-8, info≈8-10)."
             }
           },
-          "required": ["code_approved", "severity", "review_feedback", "target_corrections"]
+          "required": ["code_approved", "severity", "review_feedback", "target_corrections", "quality_score"]
         }
         
         try:
@@ -142,20 +147,23 @@ DIRECTIVES DE REVUE ET CRITÈRES D'ACCEPTATION :
             severity = response_json.get("severity", "major")
             feedback = response_json.get("review_feedback", "Aucun commentaire fourni.")
             corrections = response_json.get("target_corrections", [])
-            
-            logger.info(f"[REVIEWER] Verdict : Approbation = {approved}, Sévérité = {severity}")
+            # [#T117] Score gradué (0-10) — fallback sur la sévérité si le LLM l'omet
+            _sev_scores = {"info": 9.0, "minor": 7.5, "major": 5.0, "critical": 2.0}
+            quality_score = response_json.get("quality_score")
+            if quality_score is None:
+                quality_score = _sev_scores.get(severity, 5.0)
+            quality_score = max(0.0, min(10.0, float(quality_score)))
+
+            logger.info(f"[REVIEWER] Verdict : Approbation = {approved}, Sévérité = {severity}, Score = {quality_score:.1f}/10")
             logger.info(f"[REVIEWER] Commentaire : {feedback}")
 
-            # Mise à jour Elo du routing_type depuis le verdict Reviewer
-            # Mapping sévérité → score ReviewerAgent (1-10)
+            # Mise à jour Elo du routing_type depuis le verdict Reviewer (score gradué)
             try:
-                _sev_scores = {"info": 9.0, "minor": 7.5, "major": 5.0, "critical": 2.0}
-                _elo_score  = _sev_scores.get(severity, 5.0)
                 _routing_type = payload.metadata.get("routing_type", "")
                 if _routing_type:
                     from core.elo_router import get_elo_router
                     asyncio.create_task(
-                        get_elo_router().update_score(_routing_type, _elo_score)
+                        get_elo_router().update_score(_routing_type, quality_score)
                     )
             except Exception as _ee:
                 logger.debug(f"[REVIEWER] EloRouter update skipped : {_ee}")
@@ -173,7 +181,7 @@ DIRECTIVES DE REVUE ET CRITÈRES D'ACCEPTATION :
                     status="success",
                     result_data=f"Code validé et approuvé par le Reviewer. Sévérité: {severity}. Rapport : {feedback}",
                     next_agent="END",
-                    metadata={"severity": severity, "approved": True}
+                    metadata={"severity": severity, "approved": True, "quality_score": quality_score}
                 )
             else:
                 formatted_corrections = "\n".join(f"- {c}" for c in corrections)
@@ -184,7 +192,7 @@ DIRECTIVES DE REVUE ET CRITÈRES D'ACCEPTATION :
                     result_data=error_msg,
                     next_agent="END",
                     error_message=error_msg,
-                    metadata={"severity": severity, "approved": False, "corrections": corrections}
+                    metadata={"severity": severity, "approved": False, "corrections": corrections, "quality_score": quality_score}
                 )
                 
         except Exception as e:

@@ -125,6 +125,21 @@ async def get_elo_scores():
         return {"scores": {}, "domains": [], "leaderboards": {}}
 
 
+@router.get("/api/metrics/cost-per-success")
+async def get_cost_per_success_endpoint():
+    """
+    [#T116] Coût USD par tâche réussie, agrégé par provider — croise le coût
+    cumulé par modèle (token_usage) avec le nombre de tâches réussies par
+    modèle (model_elo_scores.wins). Voir `core.elo_scorer.get_cost_per_successful_task`.
+    """
+    try:
+        from core.elo_scorer import get_cost_per_successful_task
+        return {"providers": get_cost_per_successful_task()}
+    except Exception as e:
+        logger.warning(f"[METRICS] Erreur cost-per-success : {e}")
+        return {"providers": {}}
+
+
 @router.get("/api/metrics/routing")
 async def get_routing_stats_endpoint():
     """Statistiques détaillées de routage (catégories, fast/slow path)."""

@@ -19,6 +19,7 @@ Date : 2026-06-06
 import os
 import hmac
 import time
+import hashlib
 import secrets
 import threading
 import logging
@@ -106,6 +107,14 @@ def _get_api_key() -> str:
     return key
 
 
+def _fingerprint(token: str) -> str:
+    """
+    Empreinte non réversible d'un token, pour corréler des tentatives invalides
+    répétées dans les logs sans jamais y faire apparaître le secret en clair.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:8]
+
+
 async def optional_auth(
     credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
 ) -> str | None:
@@ -142,7 +151,7 @@ async def optional_auth(
     # Comparaison à temps constant pour éviter les attaques par timing.
     if not hmac.compare_digest(credentials.credentials, required_key):
         logger.warning(
-            f"[AUTH] ❌ Token invalide reçu : {credentials.credentials[:8]}..."
+            f"[AUTH] ❌ Token invalide reçu (empreinte {_fingerprint(credentials.credentials)})"
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -210,7 +219,7 @@ async def require_auth(
         )
 
     if not hmac.compare_digest(token, required_key):
-        logger.warning(f"[AUTH] ❌ Token invalide reçu : {token[:8]}...")
+        logger.warning(f"[AUTH] ❌ Token invalide reçu (empreinte {_fingerprint(token)})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="🔐 Token invalide.",

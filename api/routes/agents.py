@@ -1,4 +1,4 @@
-﻿"""
+"""
 api/routes/agents.py — Routes API d'exécution et de contrôle des agents.
 
 Extrait de gui_server.py dans le cadre du refactoring v12.1.0.
@@ -7,24 +7,85 @@ Contient :
 - /api/execute : Exécution synchrone (conversationnelle) avec routage sémantique.
 """
 
-import os
-import uuid
-import logging
 import asyncio
-import aiohttp
+import logging
+import re
+import uuid
 from typing import Any
-from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
-from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException, Depends
 
-from core.app_state import get_app_state, broadcast_event
-from core.llm_gateway import LLMGateway, load_config
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from core.app_state import broadcast_event, get_app_state
 from core.auth import optional_auth
+from core.llm_gateway import LLMGateway, load_config
 from core.serializers import global_state_to_dict
+from core.source_router import ModeType, log_source_decision, parse_source
+from core.vocal_audit import VocalAuditTimer, log_vocal_request, log_vocal_response
+from services.execute_service import (
+    apply_source_config_overrides,
+    build_chat_mode_failure_response,
+    build_ha_fast_path_response,
+    build_ha_mode_failure_response,
+    execute_ha_service,
+    get_execute_timeout,
+    match_ha_command,
+    prompt_has_domotic_action,
+    resolve_ha_command_for_execute,
+    should_block_full_pipeline,
+)
+from services.ha_vocal_fallback import resolve_ha_via_llm
+from services.pipeline_service import (
+    _build_fast_path_response,
+    run_fast_path,
+    run_full_pipeline,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Agents"])
+
+# Salutations / small-talk évidents en mode domotique (évite le pipeline Planner ~30s).
+_HA_GREETING_TOKENS = frozenset({
+    "bonjour", "salut", "hello", "hey", "coucou", "bonsoir", "bonne", "nuit", "journée", "journee",
+})
+_HA_THANKS_TOKENS = frozenset({"merci", "thanks"})
+_HA_JOKE_MARKERS = ("blague", "raconte", "une blague", "dis une blague")
+
+
+def _normalize_ha_prompt(text: str) -> str:
+    t = text.lower().strip()
+    t = re.sub(r"[^\w\sàâäéèêëïîôùûüç'-]", " ", t, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _ha_conversational_response(prompt: str) -> str | None:
+    """
+    Réponse courte fixe pour le small-talk évident en mode HA.
+    Retourne None si la phrase ressemble à une commande domotique ou est ambiguë.
+    """
+    norm = _normalize_ha_prompt(prompt)
+    if not norm:
+        return None
+
+    # Ne jamais intercepter une commande domotique (STT peut ajouter "bonjour" etc.)
+    if prompt_has_domotic_action(prompt):
+        return None
+
+    words = set(norm.split())
+
+    if words & _HA_GREETING_TOKENS or any(
+        p in norm for p in ("comment vas", "ca va", "ça va", "qui es tu", "qui es-tu")
+    ):
+        return "Bonjour, que veux-tu contrôler ?"
+
+    if words & _HA_THANKS_TOKENS or norm.startswith("merci"):
+        return "De rien. Que veux-tu contrôler ?"
+
+    if any(marker in norm for marker in _HA_JOKE_MARKERS):
+        return "Je n'ai pas compris la commande domotique."
+
+    return None
 
 
 class RunRequestBody(BaseModel):
@@ -35,9 +96,14 @@ class ExecuteRequestBody(BaseModel):
     """
     Corps de requête pour /api/execute (mode chat synchrone).
     Champ 'source' optionnel pour le routing source-aware.
+    [#T194] 'tier' (leger/moyen/fort/automatique) et 'model' (id littéral,
+    prioritaire sur tier) : override par requête de la force du workload,
+    appliqué à executor/ha_agent via apply_workload_override().
     """
     user_prompt: str
     source: dict = {}  # Ex: {"type": "tab5", "mode": "ha", "tts_enabled": true}
+    tier: str | None = None
+    model: str | None = None
 
 
 @router.post("/api/run")
@@ -86,22 +152,10 @@ async def run_task(body: RunRequestBody):
 @router.post("/api/execute")
 async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
     """
-    Point d'entrée synchrone pour le chat conversationnel.
-    Logique métier déléguée à services.pipeline_service.
-    Auth optionnelle via Bearer Token (MOTEUR_API_KEY dans .env).
-
-    Flux :
-    1. Router analyse → routing_type (casual_chat vs complexe)
-    2. casual_chat → run_fast_path() (< 400ms avec cache TTL)
-    3. complexe    → run_full_pipeline() (Planner → DAG → Reviewer)
+    Point d'entrée synchrone pour le chat conversationnel (IHM + vocal Tab5).
     """
-    from services.pipeline_service import (
-        run_fast_path, run_full_pipeline,
-        _build_fast_path_response
-    )
     state = get_app_state()
 
-    # ── Vérification mutex exécution ──
     async with state.execution_lock:
         if state.execution_state.get("status") == "running":
             raise HTTPException(
@@ -113,210 +167,460 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
             "engine_state": None, "error_message": None,
         })
 
-    session_id = f"chat_{int(asyncio.get_event_loop().time())}"
+    session_id = f"chat_{uuid.uuid4().hex[:10]}"
+    request_source = parse_source(body.source)
+    suffix = request_source.get_system_prompt_suffix()
+    execute_timeout = get_execute_timeout(request_source, "default")
+
+    log_vocal_request(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+
+    routing_type = "default"
+    agents_used: list[str] = []
+    response_text = ""
 
     try:
-        # ── Parse de la source (source-aware routing) ──
-        from core.source_router import parse_source, log_source_decision
-        request_source = parse_source(body.source)
+        with VocalAuditTimer() as timer:
+            router_instance = state.get_shared_router()
+            initial_payload, starting_agent = await router_instance.analyze_request(body.user_prompt)
+            routing_type = initial_payload.metadata.get("routing_type", "default")
 
-        # ── ÉTAPE 1 : Routage (< 50ms) ──
-        # [P1-2.1] Router canonique partagé (gateway/RAG/config câblés).
-        router_instance = state.get_shared_router()
-        initial_payload, starting_agent = await router_instance.analyze_request(body.user_prompt)
-        routing_type = initial_payload.metadata.get("routing_type", "default")
+            initial_payload.metadata["request_source"] = {
+                "type": request_source.type.value,
+                "mode": request_source.mode.value,
+                "tts_enabled": request_source.tts_enabled,
+                "device_id": request_source.device_id,
+            }
+            initial_payload.metadata["system_prompt_suffix"] = suffix
+            log_source_decision(request_source, routing_type)
 
-        # Injecter la source et le suffix TTS dans les métadonnées du payload
-        initial_payload.metadata["request_source"] = {
-            "type": request_source.type.value,
-            "mode": request_source.mode.value,
-            "tts_enabled": request_source.tts_enabled,
-        }
-        initial_payload.metadata["system_prompt_suffix"] = request_source.get_system_prompt_suffix()
-        log_source_decision(request_source, routing_type)
+            # ── Mode Discussion (chat) : fast path LLM léger, jamais Planner/DAG ──
+            if request_source.mode == ModeType.CHAT:
+                logger.info("[EXECUTE] 💬 Mode discussion → fast path forcé")
+                execute_timeout = get_execute_timeout(request_source, "casual_chat")
+                try:
+                    from core import token_tracker
+                    from core.vocal_tts_cache import sanitize_discussion_tts
 
-        # ── ÉTAPE 2A : FAST PATH (casual_chat) ──
-        if routing_type == "casual_chat":
-            logger.info(f"[EXECUTE] ⚡ Fast Path → {body.user_prompt[:60]}")
-            try:
-                from core import token_tracker
-                response_text = await run_fast_path(
-                    user_prompt=body.user_prompt,
-                    session_id=session_id,
-                    gateway=LLMGateway(),
-                    token_tracker=token_tracker,
-                    fast_path_cache=state.fast_path_cache,
-                )
-                async with state.execution_lock:
-                    state.execution_state["status"] = "success"
-                return _build_fast_path_response(session_id, body.user_prompt, response_text)
-            except Exception as fast_err:
-                logger.warning(f"[EXECUTE] Fast path échoué, fallback pipeline : {fast_err}")
+                    raw_response = await asyncio.wait_for(
+                        run_fast_path(
+                            user_prompt=body.user_prompt,
+                            session_id=session_id,
+                            gateway=LLMGateway(),
+                            token_tracker=token_tracker,
+                            fast_path_cache=state.fast_path_cache,
+                            tier_override=body.tier,
+                            model_override=body.model,
+                            system_prompt_suffix=suffix,
+                            inject_project_context=True,
+                        ),
+                        timeout=execute_timeout,
+                    )
+                    response_text = sanitize_discussion_tts(raw_response or "")
+                    if not response_text:
+                        raise RuntimeError("Réponse discussion vide après sanitization")
+                    agents_used = ["discussion_chat"]
+                    async with state.execution_lock:
+                        state.execution_state["status"] = "success"
+                    result = _build_fast_path_response(session_id, body.user_prompt, response_text)
+                    result["history"][0]["agent_name"] = "discussion_chat"
+                    result["history"][0]["metadata"] = {"routing_type": "discussion_chat", "model_tier": "leger"}
+                    result["agents_used"] = agents_used
+                    log_vocal_response(
+                        session_id=session_id,
+                        user_prompt=body.user_prompt,
+                        source_type=request_source.type.value,
+                        source_mode=request_source.mode.value,
+                        routing_type="discussion_chat",
+                        agents_used=agents_used,
+                        response_text=response_text,
+                        latency_ms=timer.elapsed_ms,
+                        tts_enabled=request_source.tts_enabled,
+                        device_id=request_source.device_id,
+                    )
+                    return result
+                except Exception as chat_err:
+                    logger.warning(f"[EXECUTE] Discussion fast path échoué : {chat_err}")
+                    async with state.execution_lock:
+                        state.execution_state["status"] = "success"
+                    result = build_chat_mode_failure_response(session_id)
+                    log_vocal_response(
+                        session_id=session_id,
+                        user_prompt=body.user_prompt,
+                        source_type=request_source.type.value,
+                        source_mode=request_source.mode.value,
+                        routing_type="discussion_chat_failure",
+                        agents_used=["discussion_chat"],
+                        response_text=result["response"],
+                        latency_ms=timer.elapsed_ms,
+                        tts_enabled=request_source.tts_enabled,
+                        device_id=request_source.device_id,
+                    )
+                    return result
 
-        # ── ÉTAPE 2A-bis : COURT-CIRCUIT HA DÉTERMINISTE (Zero-LLM, ~100ms) ──
-        if routing_type == "ha_deterministic":
-            direct_call = initial_payload.metadata.get("direct_tool_call", {})
-            ha_service = direct_call.get("arguments", {}).get("service", "")
-            ha_entity = direct_call.get("arguments", {}).get("entity_id", "")
-            logger.info(f"[EXECUTE] 🏠 HA Déterministe → {ha_service}({ha_entity})")
-            try:
-                # Récupérer le token et l'URL HA depuis les variables d'environnement ou .env
-                ha_token = os.environ.get("HASS_TOKEN", "")
-                ha_url = os.environ.get("HASS_URL", "https://${HA_HOST:-192.168.1.x}:8123")
-                if not ha_token:
-                    # Fallback : lire depuis .env du moteur
-                    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-                    if os.path.exists(env_path):
-                        with open(env_path, "r", encoding="utf-8") as ef:
-                            for line in ef:
-                                line = line.strip()
-                                if line.startswith("HASS_TOKEN="):
-                                    ha_token = line.split("=", 1)[1].strip().strip('"').strip("'")
-                                elif line.startswith("HASS_URL="):
-                                    ha_url = line.split("=", 1)[1].strip().strip('"').strip("'")
+            if routing_type == "casual_chat" and request_source.mode == ModeType.HA:
+                logger.info("[EXECUTE] mode=ha bloque casual_chat → fast paths HA")
+                routing_type = "default"
 
-                if ha_token:
-                    domain, action = ha_service.split(".", 1)
-                    api_url = f"{ha_url}/api/services/{domain}/{action}"
-                    headers = {
-                        "Authorization": f"Bearer {ha_token}",
-                        "Content-Type": "application/json"
-                    }
-                    payload_ha = {"entity_id": ha_entity}
-                    ssl_ctx = ha_ssl_context()  # [P0-1.5] TLS HA centralisé
-                    connector = aiohttp.TCPConnector(ssl=ssl_ctx)
-                    async with aiohttp.ClientSession(connector=connector) as http_session:
-                        async with http_session.post(api_url, json=payload_ha, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                            if resp.status == 200:
-                                entity_name = ha_entity.split(".")[-1].replace("_", " ").title()
-                                action_verb = "allumé" if "turn_on" in ha_service else "éteint" if "turn_off" in ha_service else "exécuté"
-                                if "open" in ha_service:
-                                    action_verb = "ouvert"
-                                elif "close" in ha_service:
-                                    action_verb = "fermé"
-                                response_text = f"{entity_name} {action_verb}."
-                            else:
-                                resp_text = await resp.text()
-                                response_text = f"Erreur HA ({resp.status}): {resp_text[:100]}"
-                else:
-                    response_text = "Token HA non configuré. Commande non exécutée."
-
-                async with state.execution_lock:
-                    state.execution_state["status"] = "success"
-                return {
-                    "status": "completed",
-                    "session_id": session_id,
-                    "response": response_text,
-                    "history": [{
-                        "agent_name": "ha_deterministic",
-                        "status": "success",
-                        "result_data": response_text,
-                        "next_agent": "END",
-                        "error_message": None,
-                        "new_tasks": [],
-                        "metadata": {"routing_type": "ha_deterministic", "service": ha_service, "entity_id": ha_entity},
-                    }],
-                    "agents_used": ["ha_deterministic"],
-                }
-            except Exception as ha_err:
-                logger.warning(f"[EXECUTE] HA déterministe échoué, fallback pipeline : {ha_err}")
-
-        # ── ÉTAPE 2A-ter : FUZZY MATCH HA (mode tab5/ha sans match déterministe) ──
-        from core.source_router import ModeType
-        if (request_source.mode == ModeType.HA
-                and routing_type in ("ha_direct", "default", "home_assistant")):
-            try:
-                from core.ha_fuzzy_matcher import get_fuzzy_matcher
-                matcher = get_fuzzy_matcher()
-                if matcher:
-                    fuzzy_result = await matcher.find_entity(body.user_prompt)
-                    if fuzzy_result:
-                        logger.info(
-                            f"[EXECUTE] 🔍 Fuzzy match → {fuzzy_result.entity_id} "
-                            f"(score={fuzzy_result.score:.2f})"
+            # ── HA ha_commands.json (prioritaire, tolérant STT) ──
+            if request_source.mode == ModeType.HA:
+                ha_cmd = await resolve_ha_command_for_execute(body.user_prompt)
+                if ha_cmd:
+                    logger.info(
+                        "[EXECUTE] 🏠 HA Command → %s(%s) data=%s phrase=%s",
+                        ha_cmd.service, ha_cmd.entity_id, ha_cmd.service_data, ha_cmd.matched_phrase,
+                    )
+                    ok, response_text = await execute_ha_service(
+                        ha_cmd.service,
+                        ha_cmd.entity_id,
+                        service_data=ha_cmd.service_data,
+                    )
+                    if ok:
+                        agents_used = ["ha_command"]
+                        async with state.execution_lock:
+                            state.execution_state["status"] = "success"
+                        result = build_ha_fast_path_response(
+                            session_id,
+                            response_text,
+                            "ha_command",
+                            {
+                                "routing_type": "ha_command",
+                                "service": ha_cmd.service,
+                                "entity_id": ha_cmd.entity_id,
+                                "service_data": ha_cmd.service_data,
+                                "matched_phrase": ha_cmd.matched_phrase,
+                            },
                         )
-                        _ha_token = os.environ.get("HASS_TOKEN", "")
-                        _ha_url = os.environ.get("HASS_URL", "https://${HA_HOST:-192.168.1.x}:8123")
-                        if not _ha_token:
-                            _env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-                            if os.path.exists(_env_path):
-                                with open(_env_path, "r", encoding="utf-8") as _ef:
-                                    for _ln in _ef:
-                                        _ln = _ln.strip()
-                                        if _ln.startswith("HASS_TOKEN="):
-                                            _ha_token = _ln.split("=", 1)[1].strip().strip('"').strip("'")
-                                        elif _ln.startswith("HASS_URL="):
-                                            _ha_url = _ln.split("=", 1)[1].strip().strip('"').strip("'")
-                        if _ha_token:
-                            _domain, _action = fuzzy_result.service.split(".", 1)
-                            _api_url = f"{_ha_url}/api/services/{_domain}/{_action}"
-                            _ssl_ctx = ha_ssl_context()  # [P0-1.5] TLS HA centralisé
-                            _connector = aiohttp.TCPConnector(ssl=_ssl_ctx)
-                            async with aiohttp.ClientSession(connector=_connector) as _s:
-                                async with _s.post(
-                                    _api_url,
-                                    json={"entity_id": fuzzy_result.entity_id},
-                                    headers={"Authorization": f"Bearer {_ha_token}", "Content-Type": "application/json"},
-                                    timeout=aiohttp.ClientTimeout(total=5.0)
-                                ) as _resp:
-                                    if _resp.status == 200:
-                                        _response_text = fuzzy_result.to_response_text()
-                                    else:
-                                        _resp_body = await _resp.text()
-                                        _response_text = f"Erreur HA ({_resp.status}): {_resp_body[:80]}"
-                            async with state.execution_lock:
-                                state.execution_state["status"] = "success"
-                            return {
-                                "status": "completed",
-                                "session_id": session_id,
-                                "response": _response_text,
-                                "history": [{
-                                    "agent_name": "ha_fuzzy",
-                                    "status": "success",
-                                    "result_data": _response_text,
-                                    "next_agent": "END",
-                                    "error_message": None,
-                                    "new_tasks": [],
-                                    "metadata": {
+                        log_vocal_response(
+                            session_id=session_id,
+                            user_prompt=body.user_prompt,
+                            source_type=request_source.type.value,
+                            source_mode=request_source.mode.value,
+                            routing_type="ha_command",
+                            agents_used=agents_used,
+                            response_text=response_text,
+                            latency_ms=timer.elapsed_ms,
+                            tts_enabled=request_source.tts_enabled,
+                            device_id=request_source.device_id,
+                        )
+                        return result
+                    logger.warning("[EXECUTE] HA command match mais appel HA échoué")
+                    if should_block_full_pipeline(request_source):
+                        async with state.execution_lock:
+                            state.execution_state["status"] = "success"
+                        result = build_ha_mode_failure_response(session_id)
+                        log_vocal_response(
+                            session_id=session_id,
+                            user_prompt=body.user_prompt,
+                            source_type=request_source.type.value,
+                            source_mode=request_source.mode.value,
+                            routing_type="ha_command_failed",
+                            agents_used=["ha_command_failed"],
+                            response_text=result["response"],
+                            latency_ms=timer.elapsed_ms,
+                            tts_enabled=request_source.tts_enabled,
+                            device_id=request_source.device_id,
+                        )
+                        return result
+
+            # ── Fast path discussion (avec RAG léger #T173) ──
+            if routing_type == "casual_chat":
+                logger.info(f"[EXECUTE] ⚡ Fast Path → {body.user_prompt[:60]}")
+                try:
+                    from core import token_tracker
+                    response_text = await asyncio.wait_for(
+                        run_fast_path(
+                            user_prompt=body.user_prompt,
+                            session_id=session_id,
+                            gateway=LLMGateway(),
+                            token_tracker=token_tracker,
+                            fast_path_cache=state.fast_path_cache,
+                            tier_override=body.tier,
+                            model_override=body.model,
+                            system_prompt_suffix=suffix,
+                            inject_project_context=True,
+                        ),
+                        timeout=execute_timeout,
+                    )
+                    agents_used = ["fast_path"]
+                    async with state.execution_lock:
+                        state.execution_state["status"] = "success"
+                    result = _build_fast_path_response(session_id, body.user_prompt, response_text)
+                    log_vocal_response(
+                        session_id=session_id,
+                        user_prompt=body.user_prompt,
+                        source_type=request_source.type.value,
+                        source_mode=request_source.mode.value,
+                        routing_type="casual_chat",
+                        agents_used=agents_used,
+                        response_text=response_text,
+                        latency_ms=timer.elapsed_ms,
+                        tts_enabled=request_source.tts_enabled,
+                        device_id=request_source.device_id,
+                    )
+                    return result
+                except Exception as fast_err:
+                    logger.warning(f"[EXECUTE] Fast path échoué : {fast_err}")
+                    if should_block_full_pipeline(request_source):
+                        async with state.execution_lock:
+                            state.execution_state["status"] = "success"
+                        result = build_ha_mode_failure_response(session_id)
+                        log_vocal_response(
+                            session_id=session_id,
+                            user_prompt=body.user_prompt,
+                            source_type=request_source.type.value,
+                            source_mode=request_source.mode.value,
+                            routing_type="ha_mode_failure",
+                            agents_used=["ha_mode_blocked"],
+                            response_text=result["response"],
+                            latency_ms=timer.elapsed_ms,
+                            tts_enabled=request_source.tts_enabled,
+                            device_id=request_source.device_id,
+                        )
+                        return result
+
+            # ── HA déterministe (ha_commands.json) ──
+            if routing_type == "ha_deterministic":
+                direct_call = initial_payload.metadata.get("direct_tool_call", {})
+                ha_service = direct_call.get("arguments", {}).get("service", "")
+                ha_entity = direct_call.get("arguments", {}).get("entity_id", "")
+                ha_service_data = direct_call.get("arguments", {}).get("service_data")
+                logger.info(f"[EXECUTE] 🏠 HA Déterministe → {ha_service}({ha_entity}) data={ha_service_data}")
+                try:
+                    ok, response_text = await execute_ha_service(
+                        ha_service, ha_entity, service_data=ha_service_data,
+                    )
+                    if ok:
+                        agents_used = ["ha_deterministic"]
+                        async with state.execution_lock:
+                            state.execution_state["status"] = "success"
+                        result = build_ha_fast_path_response(
+                            session_id,
+                            response_text,
+                            "ha_deterministic",
+                            {
+                                "routing_type": "ha_deterministic",
+                                "service": ha_service,
+                                "entity_id": ha_entity,
+                            },
+                        )
+                        log_vocal_response(
+                            session_id=session_id,
+                            user_prompt=body.user_prompt,
+                            source_type=request_source.type.value,
+                            source_mode=request_source.mode.value,
+                            routing_type="ha_deterministic",
+                            agents_used=agents_used,
+                            response_text=response_text,
+                            latency_ms=timer.elapsed_ms,
+                            tts_enabled=request_source.tts_enabled,
+                            device_id=request_source.device_id,
+                        )
+                        return result
+                    logger.warning("[EXECUTE] HA déterministe : appel HA échoué")
+                except Exception as ha_err:
+                    logger.warning(f"[EXECUTE] HA déterministe échoué : {ha_err}")
+
+            # ── Fuzzy match HA ──
+            if request_source.mode == ModeType.HA:
+                try:
+                    from core.ha_fuzzy_matcher import get_fuzzy_matcher
+                    matcher = get_fuzzy_matcher()
+                    if matcher:
+                        fuzzy_result = await matcher.find_entity(body.user_prompt)
+                        if fuzzy_result:
+                            logger.info(
+                                f"[EXECUTE] 🔍 Fuzzy match → {fuzzy_result.entity_id} "
+                                f"(score={fuzzy_result.score:.2f})"
+                            )
+                            ok, response_text = await execute_ha_service(
+                                fuzzy_result.service,
+                                fuzzy_result.entity_id,
+                                friendly_name=fuzzy_result.friendly_name,
+                            )
+                            if ok:
+                                agents_used = ["ha_fuzzy"]
+                                async with state.execution_lock:
+                                    state.execution_state["status"] = "success"
+                                result = build_ha_fast_path_response(
+                                    session_id,
+                                    response_text,
+                                    "ha_fuzzy",
+                                    {
                                         "routing_type": "ha_fuzzy",
                                         "service": fuzzy_result.service,
                                         "entity_id": fuzzy_result.entity_id,
                                         "score": fuzzy_result.score,
                                     },
-                                }],
-                                "agents_used": ["ha_fuzzy"],
-                            }
-            except Exception as _fuzz_err:
-                logger.warning(f"[EXECUTE] Fuzzy match HA échoué, fallback pipeline : {_fuzz_err}")
+                                )
+                                log_vocal_response(
+                                    session_id=session_id,
+                                    user_prompt=body.user_prompt,
+                                    source_type=request_source.type.value,
+                                    source_mode=request_source.mode.value,
+                                    routing_type="ha_fuzzy",
+                                    agents_used=agents_used,
+                                    response_text=response_text,
+                                    latency_ms=timer.elapsed_ms,
+                                    tts_enabled=request_source.tts_enabled,
+                                    device_id=request_source.device_id,
+                                )
+                                return result
+                            logger.warning("[EXECUTE] Fuzzy match mais appel HA échoué")
+                except Exception as fuzz_err:
+                    logger.warning(f"[EXECUTE] Fuzzy match HA échoué : {fuzz_err}")
 
-        # ── ÉTAPE 2B : PIPELINE COMPLET ──
-        config = load_config()
+            # ── Repli LLM léger (tier leger, ~8s max) ──
+            if request_source.mode == ModeType.HA and prompt_has_domotic_action(body.user_prompt):
+                try:
+                    from core.vocal_stt_normalize import normalize_vocal_stt
+                    vocal_prompt = normalize_vocal_stt(body.user_prompt)
+                    llm_intent = await resolve_ha_via_llm(vocal_prompt or body.user_prompt, session_id)
+                    if llm_intent:
+                        ok, response_text = await execute_ha_service(
+                            llm_intent.service,
+                            llm_intent.entity_id,
+                        )
+                        if ok:
+                            agents_used = ["ha_llm_fallback"]
+                            async with state.execution_lock:
+                                state.execution_state["status"] = "success"
+                            result = build_ha_fast_path_response(
+                                session_id,
+                                response_text,
+                                "ha_llm_fallback",
+                                {
+                                    "routing_type": "ha_llm_fallback",
+                                    "service": llm_intent.service,
+                                    "entity_id": llm_intent.entity_id,
+                                },
+                            )
+                            log_vocal_response(
+                                session_id=session_id,
+                                user_prompt=body.user_prompt,
+                                source_type=request_source.type.value,
+                                source_mode=request_source.mode.value,
+                                routing_type="ha_llm_fallback",
+                                agents_used=agents_used,
+                                response_text=response_text,
+                                latency_ms=timer.elapsed_ms,
+                                tts_enabled=request_source.tts_enabled,
+                                device_id=request_source.device_id,
+                            )
+                            return result
+                except Exception as llm_err:
+                    logger.warning(f"[EXECUTE] Repli LLM HA échoué : {llm_err}")
 
-        async def _on_event(event_type: str, data: Any, engine=None):
-            """Callback SSE pour diffusion temps réel pendant pipeline."""
-            if engine:
-                state.execution_state["engine_state"] = global_state_to_dict(engine.state)
-            if event_type == "orchestration_completed":
-                state.execution_state["status"] = data.get("status", "success")
-            try:
-                await broadcast_event(event_type, data)
-            except Exception:
-                pass
+            # ── Small-talk HA ──
+            if request_source.mode == ModeType.HA:
+                conv_reply = _ha_conversational_response(body.user_prompt)
+                if conv_reply:
+                    logger.info(f"[EXECUTE] 💬 HA conversational → {conv_reply[:60]}")
+                    agents_used = ["ha_conversational"]
+                    async with state.execution_lock:
+                        state.execution_state["status"] = "success"
+                    result = build_ha_fast_path_response(
+                        session_id,
+                        conv_reply,
+                        "ha_conversational",
+                        {"routing_type": "ha_conversational"},
+                    )
+                    log_vocal_response(
+                        session_id=session_id,
+                        user_prompt=body.user_prompt,
+                        source_type=request_source.type.value,
+                        source_mode=request_source.mode.value,
+                        routing_type="ha_conversational",
+                        agents_used=agents_used,
+                        response_text=conv_reply,
+                        latency_ms=timer.elapsed_ms,
+                        tts_enabled=request_source.tts_enabled,
+                        device_id=request_source.device_id,
+                    )
+                    return result
 
-        result = await run_full_pipeline(
-            user_prompt=body.user_prompt,
-            session_id=session_id,
-            initial_payload=initial_payload,
-            starting_agent=starting_agent,
-            on_event_callback=_on_event,
-            config=config,
-        )
+                # Mode domotique : ne jamais lancer le pipeline complet
+                if should_block_full_pipeline(request_source):
+                    logger.info("[EXECUTE] mode=ha — pipeline bloqué, réponse d'échec courte")
+                    async with state.execution_lock:
+                        state.execution_state["status"] = "success"
+                    result = build_ha_mode_failure_response(session_id)
+                    log_vocal_response(
+                        session_id=session_id,
+                        user_prompt=body.user_prompt,
+                        source_type=request_source.type.value,
+                        source_mode=request_source.mode.value,
+                        routing_type="ha_mode_failure",
+                        agents_used=["ha_mode_blocked"],
+                        response_text=result["response"],
+                        latency_ms=timer.elapsed_ms,
+                        tts_enabled=request_source.tts_enabled,
+                        device_id=request_source.device_id,
+                    )
+                    return result
 
-        async with state.execution_lock:
-            state.execution_state["status"] = result.get("status", "success")
-            state.execution_state["engine_state"] = result.get("engine_state")
+            # ── Pipeline complet (discussion complexe / IDE) ──
+            if request_source.should_skip_planner() and routing_type == "casual_chat":
+                logger.info("[EXECUTE] skip_planner actif mais fast path déjà tenté")
 
-        return result
+            config = apply_source_config_overrides(
+                load_config(),
+                request_source,
+                tier_override=body.tier,
+                model_override=body.model,
+            )
+            if body.tier or body.model:
+                initial_payload.metadata["workload_override"] = {
+                    "tier": body.tier, "model": body.model
+                }
+
+            pipeline_timeout = execute_timeout if request_source.mode == ModeType.CHAT else 120.0
+
+            async def _on_event(event_type: str, data: Any, engine=None):
+                if engine:
+                    state.execution_state["engine_state"] = global_state_to_dict(engine.state)
+                if event_type == "orchestration_completed":
+                    state.execution_state["status"] = data.get("status", "success")
+                try:
+                    await broadcast_event(event_type, data)
+                except Exception:
+                    pass
+
+            result = await run_full_pipeline(
+                user_prompt=body.user_prompt,
+                session_id=session_id,
+                initial_payload=initial_payload,
+                starting_agent=starting_agent,
+                on_event_callback=_on_event,
+                config=config,
+                timeout_seconds=pipeline_timeout,
+            )
+
+            async with state.execution_lock:
+                state.execution_state["status"] = result.get("status", "success")
+                state.execution_state["engine_state"] = result.get("engine_state")
+
+            agents_used = result.get("agents_used") or []
+            response_text = result.get("response", "")
+            log_vocal_response(
+                session_id=session_id,
+                user_prompt=body.user_prompt,
+                source_type=request_source.type.value,
+                source_mode=request_source.mode.value,
+                routing_type=routing_type,
+                agents_used=agents_used,
+                response_text=response_text,
+                latency_ms=timer.elapsed_ms,
+                tts_enabled=request_source.tts_enabled,
+                device_id=request_source.device_id,
+            )
+            return result
 
     except Exception as e:
         async with state.execution_lock:
@@ -324,3 +628,42 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
             state.execution_state["error_message"] = str(e)
         logger.error(f"[EXECUTE] Erreur inattendue : {e}")
         return {"status": "error", "error": f"❌ {str(e)}"}
+
+
+# ── Routes additionnelles (évite de patcher gui_server.py sur le Deck) ──
+
+from core.vocal_audit import get_recent_vocal_logs as _get_vocal_logs
+
+
+@router.get("/api/vocal/audit")
+async def vocal_audit_recent(limit: int = 50, _auth=Depends(optional_auth)):
+    """Derniers événements vocal_audit_log (diagnostic STT → moteur)."""
+    safe_limit = max(1, min(limit, 200))
+    logs = _get_vocal_logs(safe_limit)
+    return {"count": len(logs), "logs": logs}
+
+
+class CodeRequestBody(BaseModel):
+    prompt: str
+    tier: str | None = None
+    context_files: list[str] = []
+
+
+@router.post("/api/code")
+async def run_code_task(body: CodeRequestBody, _auth=Depends(optional_auth)) -> dict[str, Any]:
+    """Coding front HTTP (#T204) — équivalent `python -m tools.code_front`."""
+    from services.coding_front import run_coding_task
+
+    file_contents: dict[str, str] = {}
+    for path in body.context_files[:5]:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                file_contents[path] = f.read()[:40_000]
+        except OSError as exc:
+            logger.warning("[API_CODE] Fichier ignoré %s : %s", path, exc)
+
+    return await run_coding_task(
+        body.prompt,
+        file_contents=file_contents or None,
+        force_tier=body.tier if body.tier in ("moyen", "fort") else None,
+    )

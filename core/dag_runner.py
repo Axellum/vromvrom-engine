@@ -15,6 +15,7 @@ Historique :
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import time
@@ -30,6 +31,20 @@ if TYPE_CHECKING:
     from core.engine import Engine
 
 logger = logging.getLogger(__name__)
+
+# [#T111] Profondeur maximale de récursion des subgraphs (execute_subgraph → execute_dag),
+# garde-fou anti-boucle inspiré du `recursion_limit` LangGraph. Un workflow imbriqué qui
+# se ré-invoque lui-même (ex: Planner qui re-génère le même subgraph) est stoppé net
+# plutôt que de récurser indéfiniment.
+MAX_SUBGRAPH_DEPTH = 5
+
+# Plafond de fan-out par défaut si `max_parallel_dag_tasks` absent de config.json.
+DEFAULT_MAX_PARALLEL_DAG_TASKS = 8
+
+# Estimation du coût moyen (en tokens) d'une tâche DAG, utilisée pour dériver un
+# plafond de concurrence à partir du budget restant si `avg_tokens_per_dag_task`
+# absent de config.json.
+DEFAULT_AVG_TOKENS_PER_DAG_TASK = 3000
 
 
 class DAGRunner:
@@ -57,6 +72,43 @@ class DAGRunner:
         self._current_tasks_retries = None
         self._current_running_jobs = None
         self._new_task_event = None
+
+        # [#T111] Profondeur courante de récursion des subgraphs (anti-boucle)
+        self._subgraph_depth = 0
+
+    def _compute_concurrency_cap(self, budget) -> int:
+        """
+        [#T111] Plafonne le fan-out parallèle du DAG à
+        `min(budget_restant/coût_moyen, débit_cumulé_clés_API, plafond_config)`.
+
+        Évite qu'un stage à forte parallélisation (ex: MapReduce N chunks) ne
+        vide le budget de tokens d'un coup ou ne dépasse le débit cumulé des
+        clés API actives (ex: 5 clés Gemini free ≈ 75 RPM cumulé).
+        """
+        try:
+            from core.llm_gateway import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+
+        caps = [int(config.get("max_parallel_dag_tasks", DEFAULT_MAX_PARALLEL_DAG_TASKS) or DEFAULT_MAX_PARALLEL_DAG_TASKS)]
+
+        # Cap par budget restant (tokens)
+        remaining = budget.remaining_tokens() if budget is not None else None
+        if remaining is not None:
+            avg_tokens = int(config.get("avg_tokens_per_dag_task", DEFAULT_AVG_TOKENS_PER_DAG_TASK) or DEFAULT_AVG_TOKENS_PER_DAG_TASK)
+            caps.append(max(1, remaining // max(avg_tokens, 1)))
+
+        # Cap par débit cumulé des clés API actives (RPM)
+        try:
+            from core.models_db import get_all_api_keys
+            total_rpm = sum(int(k.get("quota_rpm") or 0) for k in get_all_api_keys(hide_values=True))
+            if total_rpm > 0:
+                caps.append(total_rpm)
+        except Exception:
+            pass
+
+        return max(1, min(caps))
 
     async def execute_dag(
         self,
@@ -221,42 +273,39 @@ class DAGRunner:
                 )
                 await db.commit()
 
-        def _get_newly_ready_children(parent_id: str) -> list[str]:
+        async def _get_newly_ready_children(parent_id: str) -> list[str]:
             # Trouve les enfants du parent_id dont toutes les dépendances sont maintenant à 'success'
-            with get_connection() as conn:
-                cursor = conn.execute(
+            # [T129] version async (aiosqlite) : évite de bloquer l'event loop FastAPI à chaque
+            # résolution de nœud du DAG (avant : get_connection() synchrone dans le hot-path).
+            # [T132] une seule requête groupée au lieu de 1 (liste des enfants) + N (un COUNT
+            # par enfant trouvé) — un nœud avec 50 enfants faisait avant 51 aller-retours SQLite.
+            async with get_async_connection() as db:
+                cursor = await db.execute(
                     """
-                    SELECT child_task_id 
-                    FROM dag_edges 
-                    WHERE session_id = ? AND parent_task_id = ?
+                    SELECT e.child_task_id
+                    FROM dag_edges e
+                    JOIN dag_tasks parent ON parent.session_id = e.session_id AND parent.task_id = e.parent_task_id
+                    WHERE e.session_id = ?
+                      AND e.child_task_id IN (
+                          SELECT child_task_id FROM dag_edges WHERE session_id = ? AND parent_task_id = ?
+                      )
+                    GROUP BY e.child_task_id
+                    HAVING SUM(CASE WHEN parent.status != 'success' THEN 1 ELSE 0 END) = 0
                     """,
-                    (session_id, parent_id)
+                    (session_id, session_id, parent_id)
                 )
-                children = [row[0] for row in cursor.fetchall()]
-                
-                ready_children = []
-                for child_id in children:
-                    # Vérifier si tous les parents de cet enfant sont à 'success'
-                    cursor_parents = conn.execute(
-                        """
-                        SELECT COUNT(*) 
-                        FROM dag_edges e
-                        JOIN dag_tasks parent ON parent.session_id = e.session_id AND parent.task_id = e.parent_task_id
-                        WHERE e.session_id = ? 
-                          AND e.child_task_id = ?
-                          AND parent.status != 'success'
-                        """,
-                        (session_id, child_id)
-                    )
-                    unresolved_count = cursor_parents.fetchone()[0]
-                    if unresolved_count == 0:
-                        ready_children.append(child_id)
-                return ready_children
+                rows = cursor.fetchall()
+                rows = await rows if inspect.isawaitable(rows) else rows
+                return [row[0] for row in rows]
 
         # Boucle principale réactive
         while (not queue.empty() or running_jobs) and not has_error:
-            # 1. Lancer toutes les tâches prêtes dans la queue
-            while not queue.empty():
+            # 1. Lancer les tâches prêtes dans la limite du plafond de concurrence
+            # [#T111] Fan-out borné par budget restant + débit cumulé des clés API actives ;
+            # les tâches non lancées cette passe restent en queue et repartiront dès
+            # qu'un job se termine (running_jobs se libère).
+            concurrency_cap = self._compute_concurrency_cap(budget)
+            while not queue.empty() and len(running_jobs) < concurrency_cap:
                 try:
                     priority, t_id = queue.get_nowait()
                 except asyncio.QueueEmpty:
@@ -367,7 +416,7 @@ class DAGRunner:
                             })
 
                         # Déverrouiller de manière réactive les tâches descendantes
-                        newly_ready_ids = _get_newly_ready_children(finished_id)
+                        newly_ready_ids = await _get_newly_ready_children(finished_id)
                         for child_id in newly_ready_ids:
                             if tasks_status.get(child_id) == "pending":
                                 child_payload = tasks_by_id[child_id]
@@ -1080,88 +1129,117 @@ class DAGRunner:
         """
         parent_id = parent_task.task_id or "subgraph"
 
-        logger.info(
-            f"[DAG] 🔀 Subgraph '{parent_id}' démarré : "
-            f"{len(sub_tasks)} sous-tâches"
-        )
-
-        if on_event:
-            await on_event("subgraph_started", {
-                "parent_task_id": parent_id,
-                "sub_task_count": len(sub_tasks),
-                "sub_tasks": [
-                    {"task_id": t.task_id, "objective": t.task_objective[:80]}
-                    for t in sub_tasks
-                ],
-            })
-
-        # Propager le contexte du parent dans toutes les sous-tâches
-        for sub in sub_tasks:
-            if parent_task.relevant_context:
-                sub.relevant_context = (
-                    f"--- CONTEXTE PARENT (Subgraph '{parent_id}') ---\n"
-                    f"{parent_task.relevant_context or ''}\n\n"
-                    f"{sub.relevant_context or ''}"
-                ).strip()
-            # Préfixer les task_id pour éviter les collisions
-            if sub.task_id and not sub.task_id.startswith(f"{parent_id}_"):
-                sub.task_id = f"{parent_id}_{sub.task_id}"
-
-        # Exécuter le sous-DAG via le même DAGRunner (récursion)
-        sub_status, sub_has_error = await self.execute_dag(
-            sub_tasks, max_session_tokens, on_event
-        )
-
-        # Agréger les résultats des sous-tâches
-        sub_results = []
-        sub_errors = []
-        for task_id, status in sub_status.items():
-            # Chercher le résultat dans l'historique du moteur
-            matching = [
-                h for h in self._engine.state.history
-                if h.metadata and h.metadata.get("task_id") == task_id
-            ]
-            if matching:
-                last = matching[-1]
-                if last.status == "success":
-                    sub_results.append(
-                        f"[{task_id}] {last.result_data or 'OK'}"
-                    )
-                else:
-                    sub_errors.append(
-                        f"[{task_id}] ❌ {last.error_message or 'Échec'}"
-                    )
-
-        if on_event:
-            await on_event("subgraph_completed", {
-                "parent_task_id": parent_id,
-                "status": "error" if sub_has_error else "success",
-                "success_count": len(sub_results),
-                "error_count": len(sub_errors),
-            })
-
-        if sub_has_error and not sub_results:
+        # [#T111] Garde-fou anti-boucle : plafonner la profondeur de récursion des
+        # subgraphs (execute_subgraph → execute_dag → ... → execute_subgraph), inspiré
+        # du `recursion_limit` LangGraph. Sans ce plafond, un subgraph qui se
+        # ré-invoque lui-même (ex: re-plan récursif) récurserait indéfiniment.
+        if self._subgraph_depth >= MAX_SUBGRAPH_DEPTH:
+            logger.error(
+                f"[DAG] ⛔ Profondeur maximale de subgraph atteinte ({MAX_SUBGRAPH_DEPTH}) "
+                f"pour '{parent_id}' — arrêt anti-boucle."
+            )
+            if on_event:
+                await on_event("loop_limit_exceeded", {
+                    "kind": "subgraph_depth",
+                    "limit": MAX_SUBGRAPH_DEPTH,
+                    "parent_task_id": parent_id,
+                })
             return StateUpdate(
                 agent_name="dag_runner",
                 status="error",
                 error_message=(
-                    f"Subgraph '{parent_id}' échoué : "
-                    + "; ".join(sub_errors)
+                    f"Profondeur maximale de subgraph ({MAX_SUBGRAPH_DEPTH}) "
+                    f"dépassée pour '{parent_id}'"
                 ),
-                metadata={"subgraph": parent_id, "errors": sub_errors},
+                metadata={"subgraph": parent_id},
             )
 
-        aggregated = "\n\n".join(sub_results)
-        if sub_errors:
-            aggregated += "\n\n--- ERREURS ---\n" + "\n".join(sub_errors)
+        self._subgraph_depth += 1
+        try:
+            logger.info(
+                f"[DAG] 🔀 Subgraph '{parent_id}' démarré (profondeur {self._subgraph_depth}) : "
+                f"{len(sub_tasks)} sous-tâches"
+            )
 
-        return StateUpdate(
-            agent_name="dag_runner",
-            status="success" if not sub_has_error else "partial",
-            result_data=aggregated,
-            metadata={
-                "subgraph": parent_id,
-                "success_count": len(sub_results),
-                "error_count": len(sub_errors),
-            },
-        )
+            if on_event:
+                await on_event("subgraph_started", {
+                    "parent_task_id": parent_id,
+                    "sub_task_count": len(sub_tasks),
+                    "sub_tasks": [
+                        {"task_id": t.task_id, "objective": t.task_objective[:80]}
+                        for t in sub_tasks
+                    ],
+                })
+
+            # Propager le contexte du parent dans toutes les sous-tâches
+            for sub in sub_tasks:
+                if parent_task.relevant_context:
+                    sub.relevant_context = (
+                        f"--- CONTEXTE PARENT (Subgraph '{parent_id}') ---\n"
+                        f"{parent_task.relevant_context or ''}\n\n"
+                        f"{sub.relevant_context or ''}"
+                    ).strip()
+                # Préfixer les task_id pour éviter les collisions
+                if sub.task_id and not sub.task_id.startswith(f"{parent_id}_"):
+                    sub.task_id = f"{parent_id}_{sub.task_id}"
+
+            # Exécuter le sous-DAG via le même DAGRunner (récursion)
+            sub_status, sub_has_error = await self.execute_dag(
+                sub_tasks, max_session_tokens, on_event
+            )
+
+            # Agréger les résultats des sous-tâches
+            sub_results = []
+            sub_errors = []
+            for task_id, status in sub_status.items():
+                # Chercher le résultat dans l'historique du moteur
+                matching = [
+                    h for h in self._engine.state.history
+                    if h.metadata and h.metadata.get("task_id") == task_id
+                ]
+                if matching:
+                    last = matching[-1]
+                    if last.status == "success":
+                        sub_results.append(
+                            f"[{task_id}] {last.result_data or 'OK'}"
+                        )
+                    else:
+                        sub_errors.append(
+                            f"[{task_id}] ❌ {last.error_message or 'Échec'}"
+                        )
+
+            if on_event:
+                await on_event("subgraph_completed", {
+                    "parent_task_id": parent_id,
+                    "status": "error" if sub_has_error else "success",
+                    "success_count": len(sub_results),
+                    "error_count": len(sub_errors),
+                })
+
+            if sub_has_error and not sub_results:
+                return StateUpdate(
+                    agent_name="dag_runner",
+                    status="error",
+                    error_message=(
+                        f"Subgraph '{parent_id}' échoué : "
+                        + "; ".join(sub_errors)
+                    ),
+                    metadata={"subgraph": parent_id, "errors": sub_errors},
+                )
+
+            aggregated = "\n\n".join(sub_results)
+            if sub_errors:
+                aggregated += "\n\n--- ERREURS ---\n" + "\n".join(sub_errors)
+
+            return StateUpdate(
+                agent_name="dag_runner",
+                status="success" if not sub_has_error else "partial",
+                result_data=aggregated,
+                metadata={
+                    "subgraph": parent_id,
+                    "success_count": len(sub_results),
+                    "error_count": len(sub_errors),
+                },
+            )
+        finally:
+            self._subgraph_depth -= 1

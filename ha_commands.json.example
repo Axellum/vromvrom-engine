@@ -1,0 +1,92 @@
+{
+  "_comment": "Exemple de commandes vocales HA — copier vers ha_commands.json et adapter à votre installation.",
+  "commands": [
+    {
+      "phrases": [
+        "allume le salon",
+        "allume la lumiere du salon",
+        "allume la lumière du salon",
+        "mets la lumiere du salon",
+        "mets le salon"
+      ],
+      "service": "light.turn_on",
+      "entity_id": "light.living_room"
+    },
+    {
+      "phrases": [
+        "eteins le salon",
+        "éteins le salon",
+        "eteins la lumiere du salon",
+        "éteins la lumière du salon",
+        "coupe le salon"
+      ],
+      "service": "light.turn_off",
+      "entity_id": "light.living_room"
+    },
+    {
+      "phrases": [
+        "allume la chambre",
+        "allume la lumiere de la chambre"
+      ],
+      "service": "light.turn_on",
+      "entity_id": "light.bedroom"
+    },
+    {
+      "phrases": [
+        "eteins la chambre",
+        "éteins la chambre",
+        "eteins la lumiere de la chambre"
+      ],
+      "service": "light.turn_off",
+      "entity_id": "light.bedroom"
+    },
+    {
+      "phrases": [
+        "ouvre le volet du salon",
+        "ouvre les volets du salon",
+        "monte le volet du salon"
+      ],
+      "service": "script.blind_action",
+      "entity_id": "",
+      "service_data": {"action": "open"}
+    },
+    {
+      "phrases": [
+        "ferme le volet du salon",
+        "ferme les volets du salon",
+        "baisse le volet du salon",
+        "descend les volets du salon"
+      ],
+      "service": "script.blind_action",
+      "entity_id": "",
+      "service_data": {"action": "close"}
+    },
+    {
+      "phrases": [
+        "stop",
+        "stoppe",
+        "arrete le volet",
+        "stop les volets du salon"
+      ],
+      "service": "script.blind_action",
+      "entity_id": "",
+      "service_data": {"action": "stop"}
+    },
+    {
+      "phrases": [
+        "allume la clim du salon",
+        "allume la climatisation du salon"
+      ],
+      "service": "climate.turn_on",
+      "entity_id": "climate.living_room"
+    },
+    {
+      "phrases": [
+        "eteins la clim du salon",
+        "éteins la clim du salon"
+      ],
+      "service": "climate.turn_off",
+      "entity_id": "climate.living_room"
+    }
+  ]
+}

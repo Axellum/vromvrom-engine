@@ -1,4 +1,4 @@
-﻿"""
+"""
 ha_fuzzy_matcher.py — Matching flou d'entités Home Assistant sans LLM.
 
 Workflow :
@@ -19,11 +19,12 @@ Date : 2026-06-06
 
 import asyncio
 import logging
-import time
+import os
 import re
-from difflib import SequenceMatcher
-from typing import Optional
+import time
 from dataclasses import dataclass
+from difflib import SequenceMatcher
+
 from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
 
 try:
@@ -54,14 +55,16 @@ ACTION_KEYWORDS_OFF = {"éteins", "ferme", "désactive", "arrête", "coupe", "st
 ACTION_KEYWORDS_TOG = {"bascule", "inverse", "toggle"}
 
 # Seuil de confiance minimum pour un match sans LLM (0.0 à 1.0)
-FUZZY_MATCH_THRESHOLD = 0.65        # difflib (fallback)
-FUZZY_MATCH_THRESHOLD_EMB = 0.75   # cosinus embeddings LM Studio
+FUZZY_MATCH_THRESHOLD = 0.68        # difflib (fallback) — STT vocal Tab5
+FUZZY_MATCH_THRESHOLD_EMB = 0.72   # cosinus embeddings LM Studio
+# Si le 2e candidat est à moins de ce delta du meilleur → ambigu, refus
+FUZZY_AMBIGUITY_DELTA = 0.08
 
 # Durée de vie du cache des entités en secondes
 ENTITY_CACHE_TTL = 60.0
 
-# URL LM Studio pour les embeddings (modèle léger local)
-LM_STUDIO_URL = "http://127.0.0.1:1234"
+# URL LM Studio pour les embeddings (PC dev par défaut ; override via .env Deck)
+LM_STUDIO_URL = os.environ.get("LM_STUDIO_URL", "http://${LM_STUDIO_HOST:-192.168.1.x}:1234").rstrip("/")
 LM_STUDIO_EMBED_MODEL = "nomic-embed-text"
 LM_STUDIO_EMBED_TIMEOUT = 3.0  # secondes
 
@@ -76,21 +79,34 @@ class FuzzyMatchResult:
     action: str            # "on" | "off" | "toggle"
 
     def to_response_text(self) -> str:
-        """Génère la phrase de confirmation pour TTS."""
+        """Génère la phrase de confirmation pour TTS (friendly_name naturel)."""
+        from core.vocal_tts_cache import canonical_text_for_ha_action
+
+        cached = canonical_text_for_ha_action(self.entity_id, self.service)
+        if cached:
+            return cached
+
         verb_map = {
             "on":     {"light": "allumée", "switch": "activé", "cover": "ouvert",
-                       "fan": "allumé", "climate": "allumé", "media_player": "lancé",
+                       "fan": "allumé", "climate": "allumée", "media_player": "lancé",
                        "input_boolean": "activé"},
             "off":    {"light": "éteinte", "switch": "désactivé", "cover": "fermé",
-                       "fan": "arrêté", "climate": "éteint", "media_player": "mis en pause",
+                       "fan": "arrêté", "climate": "éteinte", "media_player": "en pause",
                        "input_boolean": "désactivé"},
             "toggle": {"light": "basculée", "switch": "basculé", "cover": "basculé",
-                       "fan": "basculé", "climate": "basculé", "media_player": "basculé",
+                       "fan": "basculé", "climate": "basculée", "media_player": "basculé",
                        "input_boolean": "basculé"},
         }
         domain = self.entity_id.split(".")[0]
         verbe = verb_map.get(self.action, {}).get(domain, "exécuté")
-        return f"{self.friendly_name} {verbe}."
+        name = (self.friendly_name or "").strip()
+        if domain == "light":
+            if name:
+                return f"Lumière {name.lower()} {verbe}."
+            return f"Lumière {verbe}."
+        if name:
+            return f"{name} {verbe}."
+        return "Commande exécutée."
 
 
 class HAFuzzyMatcher:
@@ -118,7 +134,7 @@ class HAFuzzyMatcher:
         # Cache des embeddings pré-calculés par entity_id
         self._entity_embeddings: dict[str, list] = {}   # entity_id → vecteur
         self._embeddings_ts: float = 0.0                # timestamp de dernière mise à jour
-        self._lm_studio_online: Optional[bool] = None   # None = inconnu, True/False après premier appel
+        self._lm_studio_online: bool | None = None   # None = inconnu, True/False après premier appel
 
         # [P0-1.5] Contexte TLS HA centralisé (vérifié par défaut ; opt-out explicite).
         self._ssl_ctx = ha_ssl_context()
@@ -164,7 +180,7 @@ class HAFuzzyMatcher:
         filtered = [w for w in words if w not in stop_words]
         return " ".join(filtered) if filtered else text
 
-    async def _embed(self, text: str) -> Optional[list]:
+    async def _embed(self, text: str) -> list | None:
         """
         Calcule l'embedding vectoriel d'un texte via LM Studio.
         Retourne None si LM Studio est hors ligne (fallback vers difflib).
@@ -306,7 +322,17 @@ class HAFuzzyMatcher:
 
         return min(1.0, max(score_name, score_id) + bonus)
 
-    async def find_entity(self, prompt: str) -> Optional[FuzzyMatchResult]:
+    @staticmethod
+    def _is_ambiguous(scores: list[float], threshold: float) -> bool:
+        """True si deux entités sont trop proches en score (risque de mauvaise action)."""
+        if len(scores) < 2:
+            return False
+        ordered = sorted(scores, reverse=True)
+        if ordered[0] < threshold:
+            return False
+        return (ordered[0] - ordered[1]) < FUZZY_AMBIGUITY_DELTA
+
+    async def find_entity(self, prompt: str) -> FuzzyMatchResult | None:
         """
         Point d'entrée principal : cherche l'entité HA la plus proche du prompt.
 
@@ -338,13 +364,25 @@ class HAFuzzyMatcher:
                 query_emb = await self._embed(prompt)
                 if query_emb:
                     used_embeddings = True
+                    emb_scores: list[float] = []
+                    emb_best_entity = None
+                    emb_best_score = 0.0
                     for entity_id, emb in self._entity_embeddings.items():
                         score = self._cosine(query_emb, emb)
-                        if score > best_score:
-                            best_score = score
-                            best_entity = entities.get(entity_id)
+                        emb_scores.append(score)
+                        if score > emb_best_score:
+                            emb_best_score = score
+                            emb_best_entity = entities.get(entity_id)
 
                     threshold = FUZZY_MATCH_THRESHOLD_EMB
+                    if self._is_ambiguous(emb_scores, threshold):
+                        logger.info(
+                            f"[HA FUZZY] Match ambigu (embeddings) pour : '{prompt}' "
+                            f"(meilleur={emb_best_score:.3f})"
+                        )
+                        return None
+                    best_score = emb_best_score
+                    best_entity = emb_best_entity
                     if best_score >= threshold and best_entity:
                         domain = best_entity["domain"]
                         service = ACTION_SERVICE_MAP.get(domain, {}).get(
@@ -368,11 +406,20 @@ class HAFuzzyMatcher:
             logger.debug("[HA FUZZY] Cosinus < seuil, bascule sur difflib")
         best_score = 0.0
         best_entity = None
+        difflib_scores: list[float] = []
         for entity_info in entities.values():
             score = self._score_entity(normalized, entity_info)
+            difflib_scores.append(score)
             if score > best_score:
                 best_score = score
                 best_entity = entity_info
+
+        if self._is_ambiguous(difflib_scores, FUZZY_MATCH_THRESHOLD):
+            logger.info(
+                f"[HA FUZZY] Match ambigu (difflib) pour : '{prompt}' "
+                f"(meilleur={best_score:.2f})"
+            )
+            return None
 
         if best_score < FUZZY_MATCH_THRESHOLD or best_entity is None:
             method = "emb+difflib" if used_embeddings else "difflib"
@@ -408,10 +455,10 @@ class HAFuzzyMatcher:
 # Singleton global (chargé une fois au démarrage du moteur)
 # ──────────────────────────────────────────────────────────────────
 
-_fuzzy_matcher_instance: Optional[HAFuzzyMatcher] = None
+_fuzzy_matcher_instance: HAFuzzyMatcher | None = None
 
 
-def get_fuzzy_matcher() -> Optional[HAFuzzyMatcher]:
+def get_fuzzy_matcher() -> HAFuzzyMatcher | None:
     """Retourne l'instance singleton du fuzzy matcher (si configurée)."""
     return _fuzzy_matcher_instance
 

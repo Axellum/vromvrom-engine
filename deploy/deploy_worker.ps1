@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Deploie le Worker Standalone sur la Freebox VM via SSH/SCP.
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 context_self_healing.py — Module de validation automatique de la cohérence du contexte.
 
 Détecte les incohérences entre les fichiers Markdown de contexte (contexte_ia/)

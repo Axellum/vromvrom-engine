@@ -1,4 +1,4 @@
-﻿"""
+"""
 api/routes/ha.py — Routes API Home Assistant du Moteur.
 
 Extrait de gui_server.py lors du refactoring Semaine 3.

@@ -1,4 +1,4 @@
-﻿"""
+"""
 ha_entity_ingest.py — Ingestion automatique des entités domotiques dans le graphe de connaissances.
 
 Ce script :

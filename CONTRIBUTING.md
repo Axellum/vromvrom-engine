@@ -1,4 +1,4 @@
-﻿# Contribuer à vromvrom-engine
+# Contribuer à vromvrom-engine
 
 Merci de vouloir contribuer ! Ce projet est né d'un besoin personnel en domotique et a évolué vers quelque chose de potentiellement utile pour la communauté. Toute aide est bienvenue.
 

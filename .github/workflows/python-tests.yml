@@ -37,7 +37,9 @@ jobs:
       run: python scripts/oss_secrets_scan.py
 
     - name: Seed models registry DB
-      run: python seed_models_db.py
+      run: |
+        cp ha_commands.json.example ha_commands.json
+        python seed_models_db.py
 
     - name: Run Pytest
       run: |

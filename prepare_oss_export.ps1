@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Prépare le dossier OSS vromvrom-engine à partir du repo privé.
     Copie le code source en excluant les données personnelles et secrets.

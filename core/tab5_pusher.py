@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/tab5_pusher.py — Push d'alertes et suggestions vers le Tab5 M5Stack via HA.
 
 Communication moteur → Tab5 par entités Home Assistant :

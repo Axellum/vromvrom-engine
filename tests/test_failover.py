@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/test_failover.py — Tests unitaires Phase 4 : Failover MQTT + SQLite Sync
 ══════════════════════════════════════════════════════════════════════════════
 

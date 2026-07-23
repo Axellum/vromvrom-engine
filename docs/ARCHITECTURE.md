@@ -1,4 +1,4 @@
-﻿# Architecture du vromvrom-engine — V11
+# Architecture du vromvrom-engine — V11
 
 > **Dernière mise à jour** : 2026-06-12  
 > **Version code** : V11 (Circuit Breaker V12 intégré)  

@@ -1,0 +1,95 @@
+# GÉNÉRÉ par scripts/gen_ha_local_fallback.py — NE PAS ÉDITER À LA MAIN.
+# Source de vérité : ha_commands.json (moteur). Régénérer après modif.
+# Noyau de secours : commandes vitales servies par HA Assist LOCAL quand
+# le moteur (Steam Deck) est injoignable.
+Tab5CoreClimateSalonDaikinap71273ClimOff:
+  action:
+  - service: climate.turn_off
+    target:
+      entity_id: climate.salon_daikinap71273_clim
+  speech:
+    text: Climatisation éteinte.
+Tab5CoreClimateSalonDaikinap71273ClimOn:
+  action:
+  - service: climate.turn_on
+    target:
+      entity_id: climate.salon_daikinap71273_clim
+  speech:
+    text: Climatisation allumée.
+Tab5CoreLightH60082Off:
+  action:
+  - service: light.turn_off
+    target:
+      entity_id: light.h6008_2
+  speech:
+    text: Lumière éteinte.
+Tab5CoreLightH60082On:
+  action:
+  - service: light.turn_on
+    target:
+      entity_id: light.h6008_2
+  speech:
+    text: Lumière allumée.
+Tab5CoreLightH6008Off:
+  action:
+  - service: light.turn_off
+    target:
+      entity_id: light.h6008
+  speech:
+    text: Lumière éteinte.
+Tab5CoreLightH6008On:
+  action:
+  - service: light.turn_on
+    target:
+      entity_id: light.h6008
+  speech:
+    text: Lumière allumée.
+Tab5CoreLightH600cOff:
+  action:
+  - service: light.turn_off
+    target:
+      entity_id: light.h600c
+  speech:
+    text: Lumière éteinte.
+Tab5CoreLightH600cOn:
+  action:
+  - service: light.turn_on
+    target:
+      entity_id: light.h600c
+  speech:
+    text: Lumière allumée.
+Tab5CoreLightSalonOff:
+  action:
+  - service: light.turn_off
+    target:
+      entity_id: light.salon
+  speech:
+    text: Lumière éteinte.
+Tab5CoreLightSalonOn:
+  action:
+  - service: light.turn_on
+    target:
+      entity_id: light.salon
+  speech:
+    text: Lumière allumée.
+Tab5CoreVoletClose:
+  action:
+  - data:
+      action: close
+    service: script.tab5_volet_action
+  speech:
+    text: Volet fermé.
+Tab5CoreVoletOpen:
+  action:
+  - data:
+      action: open
+    service: script.tab5_volet_action
+  speech:
+    text: Volet ouvert.
+Tab5CoreVoletStop:
+  action:
+  - data:
+      action: stop
+    service: script.tab5_volet_action
+  speech:
+    text: Volet arrêté.

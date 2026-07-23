@@ -1,0 +1,63 @@
+# ─────────────────────────────────────────────────────────────────────────
+# ToolMaker Validate (#T207) — Sandbox distante du ToolMakerAgent
+#
+# Exécute le code candidat généré par le LLM dans une VM GitHub jetable,
+# jamais dans l'interpréteur du moteur (l'ancienne "sandbox" locale était
+# un subprocess.run sans isolation → RCE). La VM n'a par construction
+# aucun accès au LAN (Deck, Home Assistant) et le GITHUB_TOKEN du job n'a
+# aucune permission : le code candidat ne peut ni toucher au dépôt ni aux
+# API GitHub.
+#
+# Déclenché par le push d'une branche éphémère toolmaker/validate-* créée
+# par core/toolmaker_sandbox.py, qui interroge ensuite le verdict (la
+# conclusion du run) via l'API REST Actions puis supprime la branche.
+# ─────────────────────────────────────────────────────────────────────────
+name: ToolMaker Validate
+
+on:
+  push:
+    branches:
+      - 'toolmaker/validate-**'
+
+# Aucun droit accordé au token du job (fail-closed).
+permissions: {}
+
+concurrency:
+  group: toolmaker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (sans credentials persistés)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Exécution du code candidat (timeout 30s)
+        run: |
+          set +e
+          output=$(timeout 30 python .toolmaker_sandbox/candidate_full.py 2>&1)
+          status=$?
+          echo "--- sortie du candidat ---"
+          echo "$output"
+          echo "---------------------------"
+          if [ $status -eq 124 ]; then
+            echo "Verdict : timeout 30s dépassé"
+            exit 1
+          fi
+          # Même sémantique que l'ancienne sandbox locale : le bloc de test
+          # injecté imprime SANDBOX_OK si l'outil s'exécute correctement.
+          if echo "$output" | grep -q "SANDBOX_OK"; then
+            echo "Verdict : SANDBOX_OK"
+            exit 0
+          fi
+          echo "Verdict : échec (SANDBOX_OK absent de la sortie)"
+          exit 1

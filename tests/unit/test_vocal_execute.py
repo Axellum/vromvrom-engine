@@ -106,3 +106,122 @@ def test_fuzzy_threshold_tab5_vocal():
     assert FUZZY_MATCH_THRESHOLD == 0.68
     assert FUZZY_MATCH_THRESHOLD_EMB >= 0.72
     assert FUZZY_AMBIGUITY_DELTA == 0.08
+
+
+# ── Court-circuit HA déterministe (hors verrou global + hors routeur) ──
+
+@pytest.mark.asyncio
+async def test_ha_shortcut_returns_none_without_match(monkeypatch):
+    """Aucune commande reconnue → None (la cascade normale doit prendre le relais)."""
+    from api.routes import agents
+    from services.execute_service import HACommandMatch  # noqa: F401
+
+    async def _no_match(_prompt):
+        return None
+
+    monkeypatch.setattr(agents, "resolve_ha_command_for_execute", _no_match)
+    body = agents.ExecuteRequestBody(user_prompt="raconte ta vie", source={"type": "tab5", "mode": "ha"})
+    src = RequestSource(type=SourceType.TAB5, mode=ModeType.HA)
+    assert await agents._try_ha_deterministic_shortcut(body, src, "sess_none") is None
+
+
+@pytest.mark.asyncio
+async def test_ha_shortcut_executes_and_returns_command(temp_runtime_db, monkeypatch):
+    """Commande reconnue → exécution HA + réponse ha_command (métadonnée shortcut)."""
+    from api.routes import agents
+    from services.execute_service import HACommandMatch
+
+    async def _match(_prompt):
+        return HACommandMatch(
+            service="script.tab5_volet_action",
+            entity_id="",
+            matched_phrase="volet:close",
+            service_data={"action": "close"},
+        )
+
+    async def _exec(service, entity, service_data=None, **_kw):
+        assert service == "script.tab5_volet_action"
+        assert service_data == {"action": "close"}
+        return True, "Volet fermé."
+
+    monkeypatch.setattr(agents, "resolve_ha_command_for_execute", _match)
+    monkeypatch.setattr(agents, "execute_ha_service", _exec)
+    body = agents.ExecuteRequestBody(user_prompt="ferme le volet du salon", source={"type": "tab5", "mode": "ha"})
+    src = RequestSource(type=SourceType.TAB5, mode=ModeType.HA, tts_enabled=True)
+
+    result = await agents._try_ha_deterministic_shortcut(body, src, "sess_ok")
+    assert result is not None
+    assert result["response"] == "Volet fermé."
+    assert result["agents_used"] == ["ha_command"]
+    assert result["history"][0]["metadata"]["shortcut"] is True
+
+
+@pytest.mark.asyncio
+async def test_ha_shortcut_bypasses_global_lock(temp_runtime_db, monkeypatch):
+    """Le bénéfice clé : une commande HA passe même si une exécution IHM tourne (pas de 409)."""
+    import asyncio as _asyncio
+
+    from api.routes import agents
+    from services.execute_service import HACommandMatch
+
+    class _FakeState:
+        def __init__(self):
+            # Simule une exécution IHM en cours → l'ancien code aurait renvoyé 409.
+            self.execution_state = {"status": "running"}
+            self.execution_lock = _asyncio.Lock()
+
+    fake_state = _FakeState()
+
+    async def _match(_prompt):
+        return HACommandMatch(
+            service="light.turn_on", entity_id="light.salon",
+            matched_phrase="allume le salon", service_data=None,
+        )
+
+    async def _exec(service, entity, service_data=None, **_kw):
+        return True, "Lumière allumée."
+
+    monkeypatch.setattr(agents, "get_app_state", lambda: fake_state)
+    monkeypatch.setattr(agents, "resolve_ha_command_for_execute", _match)
+    monkeypatch.setattr(agents, "execute_ha_service", _exec)
+
+    body = agents.ExecuteRequestBody(user_prompt="allume le salon", source={"type": "tab5", "mode": "ha"})
+    result = await agents.execute_chat(body, _auth=None)
+
+    # Pas de 409 levé, réponse HA renvoyée, et l'état IHM "running" resté intact.
+    assert result["response"] == "Lumière allumée."
+    assert result["agents_used"] == ["ha_command"]
+    assert fake_state.execution_state["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_ha_state_query_shortcut_bypasses_lock(temp_runtime_db, monkeypatch):
+    """Une question d'état est lue et répond, même IHM 'running' (avant l'action)."""
+    import asyncio as _asyncio
+
+    from api.routes import agents
+
+    class _FakeState:
+        def __init__(self):
+            self.execution_state = {"status": "running"}
+            self.execution_lock = _asyncio.Lock()
+
+    fake_state = _FakeState()
+
+    async def _fake_ha_state(_entity):
+        return {"state": "off", "attributes": {}}
+
+    # Patche la lecture HA au niveau du module ha_state_query (import tardif dans le shortcut).
+    import services.ha_state_query as hsq
+    monkeypatch.setattr(hsq, "read_ha_state", _fake_ha_state)
+    monkeypatch.setattr(agents, "get_app_state", lambda: fake_state)
+
+    body = agents.ExecuteRequestBody(
+        user_prompt="est-ce que la clim est allumee ?",
+        source={"type": "tab5", "mode": "ha"},
+    )
+    result = await agents.execute_chat(body, _auth=None)
+
+    assert result["response"] == "La climatisation est éteinte."
+    assert result["agents_used"] == ["ha_state_query"]
+    assert fake_state.execution_state["status"] == "running"

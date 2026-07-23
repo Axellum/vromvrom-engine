@@ -24,11 +24,11 @@ import asyncio
 import json
 import logging
 import threading
-import requests
-from requests.adapters import HTTPAdapter
-from typing import Dict, Any
+from typing import Any
 
 import httpx  # [D5] client HTTP async natif
+import requests
+from requests.adapters import HTTPAdapter
 
 from core.llm_timeouts import get_timeout
 
@@ -161,14 +161,14 @@ class OpenAICompatibleProvider:
         extra_headers : Dict de headers HTTP supplémentaires (ex: OpenRouter)
         timeout       : Tuple (connect_timeout, read_timeout) en secondes
     """
-    
+
     def __init__(
         self,
         provider_name: str,
         base_url: str,
         api_key: str,
         model: str,
-        extra_headers: Dict[str, str] = None,
+        extra_headers: dict[str, str] = None,
         timeout: tuple = None,
     ):
         self.provider_name = provider_name
@@ -176,7 +176,7 @@ class OpenAICompatibleProvider:
         self.api_key = api_key
         self.model = model
         self.timeout = timeout if timeout is not None else get_timeout("openai_compat")
-        
+
         # Construction des headers HTTP standard + optionnels
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -184,7 +184,7 @@ class OpenAICompatibleProvider:
         }
         if extra_headers:
             self.headers.update(extra_headers)
-    
+
     def _record_usage(self, usage: dict, session_id: str = None):
         """Enregistre la consommation de tokens dans le tracker centralisé."""
         if not usage:
@@ -199,7 +199,7 @@ class OpenAICompatibleProvider:
             )
         except Exception as e:
             logger.debug(f"[{self.provider_name}] Erreur token_tracker : {e}")
-    
+
     def _estimate_and_record_stream_usage(self, messages: list, total_text: str, session_id: str = None):
         """Estime les tokens en mode streaming (l'API ne renvoie pas l'usage en stream)."""
         try:
@@ -213,11 +213,11 @@ class OpenAICompatibleProvider:
             )
         except Exception as e:
             logger.debug(f"[{self.provider_name}] Erreur estimation streaming : {e}")
-    
+
     # ──────────────────────────────────────────────────────────────
     # generate() — Appel standard (non-streaming)
     # ──────────────────────────────────────────────────────────────
-    
+
     def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
         """Génère une réponse complète (non-streaming) via l'API OpenAI-compatible."""
         messages = kwargs.get("messages")
@@ -226,21 +226,21 @@ class OpenAICompatibleProvider:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
-        
+
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": kwargs.get("temperature", 0.0),
         }
-        
+
         # Support des outils (function calling)
         if "tools" in kwargs:
             payload["tools"] = kwargs["tools"]
-        
+
         # Support du max_tokens si fourni
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
-        
+
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate)")
         # Utilisation du pool HTTP persistant (réutilisé entre les appels)
         _http = SharedHTTPPool.get_session()
@@ -248,12 +248,12 @@ class OpenAICompatibleProvider:
             self.base_url, headers=self.headers, json=payload, timeout=self.timeout,
         )
         response.raise_for_status()
-        
+
         resp_json = response.json()
         self._record_usage(resp_json.get("usage"), session_id=kwargs.get("session_id"))
-        
+
         message = resp_json["choices"][0]["message"]
-        
+
         # Si le LLM a décidé d'appeler un outil, retourner l'objet message entier
         if "tool_calls" in message:
             return message
@@ -310,14 +310,14 @@ class OpenAICompatibleProvider:
     # ──────────────────────────────────────────────────────────────
     # generate_structured() — Réponse JSON forcée
     # ──────────────────────────────────────────────────────────────
-    
+
     def generate_structured(
         self, system_prompt: str, user_prompt: str,
-        schema: Dict[str, Any], **kwargs,
-    ) -> Dict[str, Any]:
+        schema: dict[str, Any], **kwargs,
+    ) -> dict[str, Any]:
         """Génère une réponse JSON structurée via response_format json_object."""
         sys_prompt = system_prompt + "\nTu DOIS répondre UNIQUEMENT au format JSON strict."
-        
+
         payload = {
             "model": self.model,
             "messages": [
@@ -327,10 +327,10 @@ class OpenAICompatibleProvider:
             "response_format": {"type": "json_object"},
             "temperature": kwargs.get("temperature", 0.0),
         }
-        
+
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
-        
+
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_structured)")
         # Pool HTTP persistant
         _http = SharedHTTPPool.get_session()
@@ -338,21 +338,33 @@ class OpenAICompatibleProvider:
             self.base_url, headers=self.headers, json=payload, timeout=self.timeout,
         )
         response.raise_for_status()
-        
+
         resp_json = response.json()
         self._record_usage(resp_json.get("usage"), session_id=kwargs.get("session_id"))
-        
+
         content = resp_json["choices"][0]["message"].get("content", "{}")
         try:
             return json.loads(content)
         except json.JSONDecodeError:
+            # Le thinking DeepSeek peut précéder le JSON — on l'extrait via raw_decode
+            try:
+                decoder = json.JSONDecoder()
+                for m in __import__("re").finditer(r"[{\[]", content):
+                    try:
+                        obj, _ = decoder.raw_decode(content, m.start())
+                        if isinstance(obj, (dict, list)):
+                            return obj
+                    except json.JSONDecodeError:
+                        continue
+            except Exception:
+                pass
             logger.error(f"{self.provider_name} n'a pas retourné un JSON valide: {content[:200]}")
             return {}
-    
+
     # ──────────────────────────────────────────────────────────────
     # generate_stream() — Streaming SSE natif
     # ──────────────────────────────────────────────────────────────
-    
+
     def generate_stream(self, system_prompt: str, user_prompt: str, **kwargs):
         """
         Streaming natif via stream=true (Server-Sent Events).
@@ -366,14 +378,18 @@ class OpenAICompatibleProvider:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
-        
+
         payload = {
             "model": self.model,
             "messages": messages,
             "temperature": kwargs.get("temperature", 0.0),
             "stream": True,
+            # Extension quasi-universelle chez les APIs OpenAI-compatibles
+            # (OpenAI, DeepSeek, Mistral, OpenRouter...) : demande un dernier
+            # chunk SSE avec le vrai usage, pour ne PAS avoir à l'estimer.
+            "stream_options": {"include_usage": True},
         }
-        
+
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_stream)")
         # Pool HTTP persistant (stream=True via Session)
         _http = SharedHTTPPool.get_session()
@@ -382,8 +398,9 @@ class OpenAICompatibleProvider:
             timeout=self.timeout, stream=True,
         )
         response.raise_for_status()
-        
+
         total_tokens = ""
+        real_usage = None
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
@@ -393,18 +410,36 @@ class OpenAICompatibleProvider:
                 break
             try:
                 chunk = json.loads(data_str)
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                # Chunk final avec stream_options.include_usage : "choices"
+                # vide/absent, "usage" rempli — capturé mais rien à yield dessus.
+                chunk_usage = chunk.get("usage")
+                if chunk_usage:
+                    real_usage = chunk_usage
+                choices = chunk.get("choices") or []
+                delta = choices[0].get("delta", {}) if choices else {}
                 token = delta.get("content", "")
                 if token:
                     total_tokens += token
                     yield {"token": token, "done": False, "usage": None}
             except json.JSONDecodeError:
                 continue
-        
-        # Estimation des tokens en streaming (l'API ne fournit pas l'usage)
-        self._estimate_and_record_stream_usage(
-            messages, total_tokens, session_id=kwargs.get("session_id"),
-        )
+
+        if real_usage:
+            # Le provider a bien renvoyé l'usage réel via stream_options —
+            # pas besoin d'estimer.
+            from core.token_tracker import record_usage
+            record_usage(
+                self.model,
+                real_usage.get("prompt_tokens", 0),
+                real_usage.get("completion_tokens", 0),
+                session_id=kwargs.get("session_id"),
+            )
+        else:
+            # Provider ignore stream_options.include_usage (pas tous ne le
+            # supportent) : repli sur l'estimation chars/4.
+            self._estimate_and_record_stream_usage(
+                messages, total_tokens, session_id=kwargs.get("session_id"),
+            )
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -484,7 +519,17 @@ OPENAI_COMPAT_PROVIDERS = {
         "base_url": "http://127.0.0.1:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "qwen2.5-coder:7b",
-        "description": "Ollama Local PC — Inférence locale ultra-rapide sur RTX 5070 Ti",
+        "description": "Ollama Local PC — Inférence locale ultra-rapide sur GPU NVIDIA local",
+    },
+    "ollama_pc": {
+        # Même IP LAN que LMStudioProvider (192.168.1.x, carte Ethernet LAN) — contrairement
+        # à ollama_local (127.0.0.1), joignable depuis le Deck en prod. Prérequis côté PC :
+        # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (écoute LAN) + pare-feu Windows ouvert
+        # sur 11434 pour le LAN, sinon connect timeout (repli cloud silencieux, pas d'erreur bruyante).
+        "base_url": "http://192.168.1.x:11434/v1/chat/completions",
+        "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
+        "default_model": "domotique-qwen7b:q4",
+        "description": "Ollama PC via LAN — joignable depuis le Deck (GPU NVIDIA local, fine-tune domotique)",
     },
 }
 
@@ -507,17 +552,17 @@ def create_provider(
         ValueError si le provider_id n'existe pas dans le registre
     """
     import os
-    
+
     if provider_id not in OPENAI_COMPAT_PROVIDERS:
         raise ValueError(
             f"Provider '{provider_id}' inconnu. "
             f"Disponibles : {list(OPENAI_COMPAT_PROVIDERS.keys())}"
         )
-    
+
     config = OPENAI_COMPAT_PROVIDERS[provider_id]
     resolved_key = api_key or os.environ.get(config["env_key"], "")
     resolved_model = model or config["default_model"]
-    
+
     return OpenAICompatibleProvider(
         provider_name=provider_id.capitalize(),
         base_url=config["base_url"],

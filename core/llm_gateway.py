@@ -1,9 +1,23 @@
+"""
+core/llm_gateway.py — Passerelle unifiée d'accès aux ~18 providers LLM.
+
+Instancie et orchestre tous les providers (DeepSeek, Gemini natif/compat,
+Claude natif/CLI, Mistral, Cohere, Cerebras, OpenRouter, xAI, MiniMax,
+DeepInfra, GitHub Models, LM Studio/Ollama locaux...) derrière une interface
+unique. Sélectionne le provider par tier via ProviderScorer (core/provider_scorer.py :
+coût + quota + solde + latence live), applique le Circuit Breaker par modèle
+(core/llm/circuit_breaker.py) et bascule en cascade sur échec.
+
+Voir aussi : contexte_ia/03_Software/CARTOGRAPHIE_MOTEUR.md §3.2 pour le détail
+des relations avec les autres modules de ce groupe (elo_scorer, budget_guard,
+key_pool, semantic_cache...).
+"""
 import copy
-import os
 import json
 import logging
+import os
 import threading
-from typing import Dict, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -18,14 +32,14 @@ except ImportError:
 # Imports des modules découpés [v12.1.0]
 from core.llm.circuit_breaker import CircuitBreaker
 from core.llm.providers.base import LLMProvider
-from core.llm.providers.gemini import GeminiProvider, GeminiCLIProvider
 from core.llm.providers.deepseek import (
     ClaudeInstructionsWrapper,
+    FallbackProvider,
     LMStudioProvider,
     OllamaDeckProvider,
-    FallbackProvider,
-    _make_claude
+    _make_claude,
 )
+from core.llm.providers.gemini import GeminiCLIProvider, GeminiProvider
 
 # Import du provider natif Gemini (caching + grounding)
 try:
@@ -77,7 +91,7 @@ class LLMGateway:
         gem_free_key = gemini_key or os.environ.get("GEMINI_API_KEY")
         # Clé payante de secours (s'il y en a une, sinon on fallback sur la clé gratuite si billing activé)
         gem_paid_key = os.environ.get("GEMINI_PAYANT_API_KEY") or gem_free_key
-        
+
         mistral_key = os.environ.get("MISTRAL_API_KEY")
         if not mistral_key:
             logger.warning(
@@ -85,7 +99,7 @@ class LLMGateway:
                 "les providers Mistral seront désactivés. "
                 "Ajoutez MISTRAL_API_KEY=... dans moteur_agents/.env"
             )
-        
+
         cohere_key = os.environ.get("COHERE_API_KEY")
         if not cohere_key:
             logger.info(
@@ -93,7 +107,7 @@ class LLMGateway:
                 "les providers Cohere seront désactivés. "
                 "Ajoutez COHERE_API_KEY=... dans moteur_agents/.env"
             )
-        
+
         cerebras_key = os.environ.get("CEREBRAS_API_KEY")
         if not cerebras_key:
             logger.info(
@@ -101,7 +115,7 @@ class LLMGateway:
                 "les providers Cerebras seront désactivés. "
                 "Ajoutez CEREBRAS_API_KEY=... dans moteur_agents/.env"
             )
-        
+
         openrouter_key = os.environ.get("OPENROUTER_API_KEY")
         if not openrouter_key:
             logger.info(
@@ -109,7 +123,7 @@ class LLMGateway:
                 "les providers OpenRouter seront désactivés. "
                 "Ajoutez OPENROUTER_API_KEY=... dans moteur_agents/.env"
             )
-            
+
         xai_key = os.environ.get("XAI_API_KEY")
         if not xai_key:
             logger.info(
@@ -117,7 +131,7 @@ class LLMGateway:
                 "les providers xAI seront désactivés. "
                 "Ajoutez XAI_API_KEY=... dans moteur_agents/.env"
             )
-            
+
         minimax_key = os.environ.get("MINIMAX_API_KEY")
         if not minimax_key:
             logger.info(
@@ -125,7 +139,7 @@ class LLMGateway:
                 "les providers MiniMax seront désactivés. "
                 "Ajoutez MINIMAX_API_KEY=... dans moteur_agents/.env"
             )
-            
+
         deepinfra_key = os.environ.get("DEEPINFRA_API_KEY")
         if not deepinfra_key:
             logger.info(
@@ -160,12 +174,12 @@ class LLMGateway:
             )
 
 
-        
+
         # Instanciation des 9 providers OpenAI-compatibles via la factory
         # Remplace ~1500 lignes de classes dupliquées par des appels config-driven
-        from core.openai_compat_provider import OpenAICompatibleProvider, OPENAI_COMPAT_PROVIDERS
-        
-        def _make_compat(provider_id: str, model: str, api_key: str) -> OpenAICompatibleProvider:
+        from core.openai_compat_provider import OPENAI_COMPAT_PROVIDERS, OpenAICompatibleProvider
+
+        def _make_compat(provider_id: str, model: str, api_key: str, timeout: tuple = None) -> OpenAICompatibleProvider:
             """Crée un provider OpenAI-compatible à partir du registre centralisé."""
             config = OPENAI_COMPAT_PROVIDERS.get(provider_id, {})
             return OpenAICompatibleProvider(
@@ -174,8 +188,9 @@ class LLMGateway:
                 api_key=api_key,
                 model=model,
                 extra_headers=config.get("extra_headers"),
+                timeout=timeout,
             )
-        
+
         # --- DeepSeek ---
         _ds = {}
         if ds_key:
@@ -187,7 +202,7 @@ class LLMGateway:
                 "deepseek-v4-flash": _make_compat("deepseek", "deepseek-chat", ds_key),
                 "deepseek-v4-pro": _make_compat("deepseek", "deepseek-chat", ds_key),
             }
-            
+
         # --- Mistral ---
         _mistral = {}
         if mistral_key:
@@ -197,7 +212,7 @@ class LLMGateway:
                 "codestral-latest": _make_compat("mistral", "codestral-latest", mistral_key),
                 "open-mistral-nemo": _make_compat("mistral", "open-mistral-nemo", mistral_key),
             }
-            
+
         # --- Cohere ---
         _cohere = {}
         if cohere_key:
@@ -208,7 +223,7 @@ class LLMGateway:
                 "command-r-plus-latest": _make_compat("cohere", "command-r-plus-08-2024", cohere_key),
                 "command-r-latest": _make_compat("cohere", "command-r-08-2024", cohere_key),
             }
-            
+
         # --- Cerebras ---
         _cerebras = {}
         if cerebras_key:
@@ -217,7 +232,7 @@ class LLMGateway:
                 "gpt-oss-120b": _make_compat("cerebras", "gpt-oss-120b", cerebras_key),
                 "zai-glm-4.7": _make_compat("cerebras", "zai-glm-4.7", cerebras_key),
             }
-  
+
         # --- OpenRouter ---
         _openrouter = {}
         if openrouter_key:
@@ -226,7 +241,7 @@ class LLMGateway:
                 "meta-llama/llama-3.3-70b-instruct:free": _make_compat("openrouter", "meta-llama/llama-3.3-70b-instruct:free", openrouter_key),
                 "meta-llama/llama-3.2-3b-instruct:free": _make_compat("openrouter", "meta-llama/llama-3.2-3b-instruct:free", openrouter_key),
             }
-            
+
         # --- xAI (Grok) ---
         _xai = {}
         if xai_key:
@@ -238,7 +253,7 @@ class LLMGateway:
                 "grok-4.20-multi-agent": _make_compat("xai", "grok-4.20-multi-agent-0309", xai_key),
                 "grok-build": _make_compat("xai", "grok-build-0.1", xai_key),
             }
-            
+
         # --- MiniMax ---
         # Gamme complète validée par test live (2026-06-16)
         # Endpoint officiel : https://api.minimax.io/v1/chat/completions
@@ -286,7 +301,7 @@ class LLMGateway:
                 "minimax-m2":                 _make_minimax("MiniMax-M2"),
                 # NOTE : MiniMax-M1 et MiniMax-Text-01 non supportés par le plan actuel
             }
-            
+
         # --- DeepInfra ---
         _deepinfra = {}
         if deepinfra_key:
@@ -321,7 +336,7 @@ class LLMGateway:
                 "glm-4.5": _make_compat("zhipu", "glm-4.5", zhipu_key),
                 "glm-4.5-air": _make_compat("zhipu", "glm-4.5-air", zhipu_key),
             }
-            
+
         # --- Anthropic API directe (ANTHROPIC_API_KEY, indépendant du CLI Claude Pro) ---
         _anthropic_native = {}
         if anthropic_key:
@@ -352,9 +367,19 @@ class LLMGateway:
             "domotique-qwen7b:q4": _make_compat("ollama_local", "domotique-qwen7b:q4", "ollama"),
             "qwen2.5-coder:7b": _make_compat("ollama_local", "qwen2.5-coder:7b", "ollama"),
             "deepseek-r1:8b": _make_compat("ollama_local", "deepseek-r1:8b", "ollama"),
+            # Variante joignable en LAN (192.168.1.x) depuis le Deck — cf. commentaire
+            # dans OPENAI_COMPAT_PROVIDERS["ollama_pc"]. Utilisée par le fast path vocal
+            # (FAST_PATH_PROVIDERS) pour du local-first même quand le moteur tourne sur le Deck.
+            # Timeout dédié (connect 2s, read 15s) — PAS la famille "lmstudio" (120s de read) :
+            # mesuré en direct le 16/07, un modèle Ollama "froid" (pas encore chargé en VRAM)
+            # met 30s+ à répondre au premier appel. Le budget vocal Discussion est de 20s au
+            # total (source_router.py, ModeType.CHAT) : un read_timeout de 15s laisse encore
+            # de la marge pour basculer sur le cloud dans le budget, plutôt que de faire
+            # attendre l'utilisateur ~30-90s en silence sur un cold start.
+            "ollama_pc": _make_compat("ollama_pc", "domotique-qwen7b:q4", "ollama", timeout=(2.0, 15.0)),
         }
-            
-        self.providers: Dict[str, LLMProvider] = {
+
+        self.providers: dict[str, LLMProvider] = {
             **_ds,
             **_mistral,
             **_cohere,
@@ -370,7 +395,7 @@ class LLMGateway:
 
             "local": LMStudioProvider(),
             # === STEAM DECK EDGE AI (Ollama RDNA2) ===
-            # Endpoint réseau local : http://${OLLAMA_HOST:-localhost}:11434
+            # Endpoint réseau local : http://192.168.1.x:11434
             # Disponibilité vérifiée dynamiquement via ping_available()
             # Tiers recommandés : parsing_logs, yaml_format, resume_court
             "deck_ollama":       OllamaDeckProvider(),                              # phi3:mini par défaut
@@ -398,12 +423,12 @@ class LLMGateway:
             "gemini-3.5-flash-high-cli": GeminiCLIProvider(mode="chat", model_name="gemini-3.5-flash-high-cli"),
             "gemini-3.5-flash-medium-cli": GeminiCLIProvider(mode="chat", model_name="gemini-3.5-flash-medium-cli"),
         }
-        
+
         # Choix du provider Gemini : Natif (caching + grounding) ou OpenAI-compatible (fallback)
         _GeminiClass = GeminiNativeProvider if GeminiNativeProvider else GeminiProvider
         _provider_type = "Natif (caching+grounding)" if GeminiNativeProvider else "OpenAI-compatible (legacy)"
         logger.info(f"[LLMGateway] Provider Gemini sélectionné : {_provider_type}")
-        
+
         # 1. Enregistrement des versions gratuites (clé gratuite AI Studio)
         if gem_free_key:
             if GeminiNativeProvider:
@@ -432,7 +457,7 @@ class LLMGateway:
                 self.providers["gemini-3.5-flash-free"] = GeminiProvider(api_key=gem_free_key, model="gemini-3.5-flash")
                 self.providers["gemini-3.1-flash-lite-free"] = GeminiProvider(api_key=gem_free_key, model="gemini-3.1-flash-lite")
                 self.providers["gemini-2.5-flash-free"] = GeminiProvider(api_key=gem_free_key, model="gemini-2.5-flash")
-            
+
             # Compatibilité et fallbacks historiques vers gratuit par défaut
             self.providers["gemini"] = self.providers["gemini-3.5-flash-free"]
             self.providers["gemini-flash"] = self.providers["gemini-3.5-flash-free"]
@@ -446,7 +471,7 @@ class LLMGateway:
             logger.info(f"✅ Provider Gemini Gratuit ({_provider_type}) activé avec succès.")
         else:
             logger.warning("Clé GEMINI_API_KEY (gratuite) non fournie.")
-            
+
         # 2. Enregistrement des versions payantes (clé payante GCP)
         # Enregistrées uniquement si GEMINI_PAYANT_API_KEY est explicitement définie dans le .env
         gem_paid_key = os.environ.get("GEMINI_PAYANT_API_KEY")
@@ -507,8 +532,8 @@ class LLMGateway:
             logger.info(f"✅ Provider Gemini Payant ({_provider_type}) activé avec succès.")
         else:
             logger.info("Clé GEMINI_PAYANT_API_KEY absente du .env — les providers GCP payants sont désactivés.")
-        
-    def get_access_map(self) -> Dict[str, Dict[str, Any]]:
+
+    def get_access_map(self) -> dict[str, dict[str, Any]]:
         """
         Retourne la carte d'accès des modèles disponibles (clés configurées).
         """
@@ -540,18 +565,18 @@ class LLMGateway:
                 provider_type = "github"
             elif "local" in name or "deck_ollama" in name:
                 provider_type = "local"
-            
+
             # Récupérer l'objet provider interne si ClaudeInstructionsWrapper
             actual_provider = provider
             if hasattr(provider, "provider"):
                 actual_provider = provider.provider
-                
+
             model_name = (
-                getattr(actual_provider, "model", None) 
-                or getattr(actual_provider, "model_name", None) 
+                getattr(actual_provider, "model", None)
+                or getattr(actual_provider, "model_name", None)
                 or name
             )
-            
+
             access_map[name] = {
                 "available": True,
                 "provider": provider_type,
@@ -559,7 +584,14 @@ class LLMGateway:
             }
         return access_map
 
-    def get_provider(self, name: str) -> LLMProvider:
+    def _get_raw_provider(self, name: str) -> LLMProvider:
+        """
+        Résolution interne SANS Circuit Breaker (ClaudeInstructionsWrapper seul).
+
+        Réservée à get_provider_for_tier(), qui applique déjà son propre wrapping
+        FallbackProvider/CircuitBreaker sur la liste complète du tier — passer par
+        get_provider() ici imbriquerait deux cascades (double CB, double retry).
+        """
         provider = self.providers.get(name.lower())
         if not provider:
             raise ValueError(f"Provider LLM inconnu : {name}")
@@ -568,6 +600,24 @@ class LLMGateway:
         if not isinstance(provider, FallbackProvider) and not isinstance(provider, ClaudeInstructionsWrapper):
             return ClaudeInstructionsWrapper(provider)
         return provider
+
+    def get_provider(self, name: str) -> LLMProvider:
+        """
+        [#T212] Accès direct par ID littéral (ex: planner_model="gemini-3.5-flash-free").
+
+        Retourne désormais une cascade d'un seul élément (FallbackProvider) : l'appel
+        passe ainsi par le MÊME wrapping Circuit Breaker / retry 429 / cache sémantique
+        que le chemin get_provider_for_tier(), au lieu de contourner le CB comme avant.
+        Le nom de CB utilisé est la clé du registre (name.lower()), soit le même espace
+        de nommage que les modèles résolus par tier.
+
+        Lève toujours ValueError si le nom est inconnu (contrat inchangé pour les
+        appelants qui s'en servent comme test de disponibilité).
+        """
+        raw = self._get_raw_provider(name)
+        if isinstance(raw, FallbackProvider):
+            return raw
+        return FallbackProvider([(name.lower(), raw)])
 
     def stream(self, provider_name: str, system_prompt: str, user_prompt: str, **kwargs):
         """
@@ -580,7 +630,14 @@ class LLMGateway:
         yield from provider.generate_stream(system_prompt, user_prompt, **kwargs)
 
     def _resolve_tier_models(self, tier: str, config: dict) -> tuple[str, list]:
-        """[T133] Résout un nom de tier (avec alias) en (actual_tier, allowed_models)."""
+        """
+        [T133][T183-migration] Résout un nom de tier (avec alias) en (actual_tier, allowed_models).
+
+        Source de vérité : models_registry.db (colonne routing_tier, filtrée sur
+        status='active') via core.models_db.get_models_for_tier(). config.json["tiers"]
+        et le default_map ne servent plus que de filet de sécurité si la DB ne renvoie
+        rien (ex: DB absente, routing_tier pas encore renseigné pour ce tier).
+        """
         tier = tier.lower()
         tier_mapping = {
             "flash": "leger",
@@ -594,8 +651,17 @@ class LLMGateway:
         if actual_tier not in ["leger", "moyen", "fort", "automatique"]:
             actual_tier = "moyen"
 
-        tiers_config = config.get("tiers", {})
-        allowed_models = tiers_config.get(actual_tier, [])
+        try:
+            from core.models_db import get_models_for_tier
+            db_models = get_models_for_tier(actual_tier)
+            allowed_models = [m["id"] for m in db_models]
+        except Exception as e:
+            logger.warning(f"[LLMGateway] get_models_for_tier({actual_tier}) indisponible ({e}), repli sur config.json.")
+            allowed_models = []
+
+        if not allowed_models:
+            tiers_config = config.get("tiers", {})
+            allowed_models = tiers_config.get(actual_tier, [])
 
         if not allowed_models:
             default_map = {
@@ -605,6 +671,22 @@ class LLMGateway:
                 "automatique": ["local", "gemini-3.5-flash", "deepseek-chat", "gemini-cli", "deepseek-reasoner", "claude", "gemini-2.5-pro"]
             }
             allowed_models = default_map.get(actual_tier, ["gemini-3.5-flash"])
+
+        # [routing_policy] Exclusions volontaires du routage automatique, quelle
+        # que soit la source (config.json OU models_registry.db). Cas d'usage :
+        # claude-fable-5 est délibérément hors tiers (décision Axel 07/2026,
+        # anti auto-escalade vers le modèle le plus cher) — ce filtre garantit
+        # qu'un ajout ultérieur en DB (routing_tier) ne le réintroduira pas.
+        # L'accès EXPLICITE via get_provider("claude-fable-5") reste possible.
+        excluded = set(config.get("routing_policy", {}).get("excluded_models", []))
+        if excluded:
+            filtered = [m for m in allowed_models if m not in excluded]
+            if len(filtered) != len(allowed_models):
+                logger.info(
+                    f"[LLMGateway] routing_policy : modèle(s) exclu(s) du tier '{actual_tier}' : "
+                    f"{sorted(set(allowed_models) - set(filtered))}"
+                )
+            allowed_models = filtered
 
         return actual_tier, allowed_models
 
@@ -626,7 +708,9 @@ class LLMGateway:
         providers_list = []
         for model in allowed_models:
             try:
-                provider = self.get_provider(model)
+                # [#T212] Résolution brute : le FallbackProvider construit ci-dessous
+                # applique déjà le Circuit Breaker sur chaque modèle de la liste.
+                provider = self._get_raw_provider(model)
                 providers_list.append((model, provider))
             except ValueError:
                 logger.warning(f"Modèle {model} non disponible ou clé API manquante.")
@@ -641,7 +725,7 @@ class LLMGateway:
         if not providers_list:
             for fallback_model in ["gemini-3.5-flash", "deepseek-chat", "local"]:
                 try:
-                    providers_list.append((fallback_model, self.get_provider(fallback_model)))
+                    providers_list.append((fallback_model, self._get_raw_provider(fallback_model)))
                     break
                 except ValueError:
                     continue
@@ -679,7 +763,7 @@ class LLMGateway:
                 with CircuitBreaker._registry_lock:
                     for name, cb in CircuitBreaker._registry.items():
                         cb_status[name] = cb.to_dict()
-            
+
             providers_info = {}
             for name in self.providers:
                 providers_info[name] = {
@@ -687,7 +771,7 @@ class LLMGateway:
                     "circuit_breaker": cb_status.get(name, {"state": "CLOSED", "failure_count": 0}),
                     "type": type(self.providers[name]).__name__
                 }
-            
+
             return {
                 "providers": providers_info,
                 "circuit_breakers": cb_status,
@@ -816,15 +900,20 @@ def load_config(force_reload: bool = False) -> dict:
             "dreamer_enabled": True,
             "dreamer_idle_trigger_hours": 3,
             "routines_model": "fort",
+            # [#T202] Clone Git dédié aux tâches DreamCoder (branches task/*).
+            # Vide = repli sur le dossier du moteur (poste de dev). Sur le Deck
+            # (prod overlay sans dépôt légitime), pointer le clone dédié, ex:
+            # /home/deck/dev_station/moteur_agents_dreamcoder
+            "dreamcoder_repo_path": "",
         }
     }
     if os.path.exists(config_file):
         try:
-            with open(config_file, 'r', encoding='utf-8') as f:
+            with open(config_file, encoding='utf-8') as f:
                 data = json.load(f)
-                
+
                 needs_migration = False
-                
+
                 # Migration des anciens IDs pour les rôles d'agents
                 if "planner_model" in data:
                     new_val = migrate_old_gemini_id(data["planner_model"])
@@ -841,7 +930,7 @@ def load_config(force_reload: bool = False) -> dict:
                     if new_val != data["antigravity_model"]:
                         data["antigravity_model"] = new_val
                         needs_migration = True
-                
+
                 # Migration des anciens IDs dans les tiers
                 if "tiers" not in data:
                     data["tiers"] = default_config["tiers"]
@@ -856,7 +945,7 @@ def load_config(force_reload: bool = False) -> dict:
                             if new_list != data["tiers"][tier_key]:
                                 data["tiers"][tier_key] = new_list
                                 needs_migration = True
-                
+
                 # Injection des defaults pour persistent_agents (daemon, dreamer)
                 if "persistent_agents" not in data:
                     data["persistent_agents"] = default_config["persistent_agents"]
@@ -867,7 +956,7 @@ def load_config(force_reload: bool = False) -> dict:
                         if pa_key not in data["persistent_agents"]:
                             data["persistent_agents"][pa_key] = pa_default
                             needs_migration = True
-                
+
                 if needs_migration:
                     try:
                         # [PHASE 1 - D1] Écriture protégée par FileLock (fichier partagé).
@@ -891,4 +980,3 @@ def load_config(force_reload: bool = False) -> dict:
         except Exception as e:
             logger.error(f"Erreur lors du chargement de config.json: {e}")
     return copy.deepcopy(default_config)
-

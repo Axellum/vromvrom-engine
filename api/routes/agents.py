@@ -77,7 +77,7 @@ def _ha_conversational_response(prompt: str) -> str | None:
     if words & _HA_GREETING_TOKENS or any(
         p in norm for p in ("comment vas", "ca va", "ça va", "qui es tu", "qui es-tu")
     ):
-        return "Bonjour, que veux-tu contrôler ?"
+        return "Bonjour Axel, que veux-tu contrôler ?"
 
     if words & _HA_THANKS_TOKENS or norm.startswith("merci"):
         return "De rien. Que veux-tu contrôler ?"
@@ -149,12 +149,208 @@ async def run_task(body: RunRequestBody):
     }
 
 
+async def _try_ha_state_query_shortcut(
+    body: "ExecuteRequestBody",
+    request_source,
+    session_id: str,
+) -> dict | None:
+    """
+    Question d'état domotique (« la clim est allumée ? », « le volet est ouvert ? »,
+    « il fait combien dans le salon ? »), AVANT le verrou global et le routeur.
+
+    Lecture live HA en Zero-LLM. Doit passer AVANT le court-circuit d'action car
+    « la lumière est allumée ? » contient un marqueur d'action (« allumée ») qui
+    serait sinon interprété comme un turn_on.
+
+    Retourne None si ce n'est pas une question d'état : la cascade continue.
+    """
+    from services.ha_state_query import resolve_ha_state_query
+
+    with VocalAuditTimer() as timer:
+        response_text = await resolve_ha_state_query(body.user_prompt)
+    if response_text is None:
+        return None
+
+    log_vocal_request(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    logger.info("[EXECUTE] 🏠🔎 HA état → %s", response_text)
+    result = build_ha_fast_path_response(
+        session_id,
+        response_text,
+        "ha_state_query",
+        {"routing_type": "ha_state_query"},
+    )
+    log_vocal_response(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        routing_type="ha_state_query",
+        agents_used=["ha_state_query"],
+        response_text=response_text,
+        latency_ms=timer.elapsed_ms,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    return result
+
+
+async def _try_ha_climate_relative_shortcut(
+    body: "ExecuteRequestBody",
+    request_source,
+    session_id: str,
+) -> dict | None:
+    """
+    Réglage clim RELATIF (« monte la clim de 2 degrés », « un peu plus chaud »),
+    AVANT le court-circuit d'action car « monte » serait pris pour un allumage.
+
+    Lit la consigne actuelle + applique le delta (Zero-LLM). None si ce n'est pas
+    un réglage relatif : la cascade continue.
+    """
+    from services.ha_climate_control import resolve_climate_relative
+
+    with VocalAuditTimer() as timer:
+        response_text = await resolve_climate_relative(body.user_prompt)
+    if response_text is None:
+        return None
+
+    log_vocal_request(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    logger.info("[EXECUTE] 🏠🌡️ HA clim relatif → %s", response_text)
+    result = build_ha_fast_path_response(
+        session_id,
+        response_text,
+        "ha_climate_relative",
+        {"routing_type": "ha_climate_relative"},
+    )
+    log_vocal_response(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        routing_type="ha_climate_relative",
+        agents_used=["ha_climate_relative"],
+        response_text=response_text,
+        latency_ms=timer.elapsed_ms,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    return result
+
+
+async def _try_ha_deterministic_shortcut(
+    body: "ExecuteRequestBody",
+    request_source,
+    session_id: str,
+) -> dict | None:
+    """
+    Court-circuit domotique déterministe, AVANT le verrou global et le routeur.
+
+    Tente le match ha_commands.json (exact/fuzzy) + matchers volet/clim/pièce.
+    Si une commande est reconnue, exécute le service HA et renvoie la réponse
+    SANS prendre state.execution_lock (fini les 409 concurrents IHM ↔ vocal) et
+    sans passer par le slow-path LLM du routeur (~200 ms économisés).
+
+    Retourne None si aucune commande déterministe n'est reconnue : l'appelant
+    poursuit alors la cascade normale (fuzzy entité, repli LLM, small-talk).
+    """
+    ha_cmd = await resolve_ha_command_for_execute(body.user_prompt)
+    if not ha_cmd:
+        return None
+
+    log_vocal_request(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    logger.info(
+        "[EXECUTE] 🏠⚡ HA court-circuit → %s(%s) data=%s phrase=%s",
+        ha_cmd.service, ha_cmd.entity_id, ha_cmd.service_data, ha_cmd.matched_phrase,
+    )
+    with VocalAuditTimer() as timer:
+        ok, response_text = await execute_ha_service(
+            ha_cmd.service,
+            ha_cmd.entity_id,
+            service_data=ha_cmd.service_data,
+        )
+    if ok:
+        result = build_ha_fast_path_response(
+            session_id,
+            response_text,
+            "ha_command",
+            {
+                "routing_type": "ha_command",
+                "service": ha_cmd.service,
+                "entity_id": ha_cmd.entity_id,
+                "service_data": ha_cmd.service_data,
+                "matched_phrase": ha_cmd.matched_phrase,
+                "shortcut": True,
+            },
+        )
+        routing_type, agents_used = "ha_command", ["ha_command"]
+    else:
+        logger.warning("[EXECUTE] HA court-circuit : appel HA échoué")
+        result = build_ha_mode_failure_response(session_id)
+        response_text = result["response"]
+        routing_type, agents_used = "ha_command_failed", ["ha_command_failed"]
+
+    log_vocal_response(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        routing_type=routing_type,
+        agents_used=agents_used,
+        response_text=response_text,
+        latency_ms=timer.elapsed_ms,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    return result
+
+
 @router.post("/api/execute")
 async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
     """
     Point d'entrée synchrone pour le chat conversationnel (IHM + vocal Tab5).
     """
     state = get_app_state()
+    session_id = f"chat_{uuid.uuid4().hex[:10]}"
+    request_source = parse_source(body.source)
+
+    # ── Fast paths domotiques (hors verrou global + hors routeur) ──
+    # Ni la lecture d'état ni une commande reconnue ne doivent bloquer l'IHM
+    # (verrou global → 409) ou payer le slow-path LLM du routeur.
+    if request_source.mode == ModeType.HA:
+        # 1) Question d'état AVANT l'action (« la lumière est allumée ? » contient
+        #    « allumée », qui serait sinon pris pour un turn_on).
+        state_reply = await _try_ha_state_query_shortcut(body, request_source, session_id)
+        if state_reply is not None:
+            return state_reply
+        # 2) Réglage clim relatif (« monte la clim de 2° ») AVANT l'action, sinon
+        #    « monte » serait pris pour un allumage.
+        relative_reply = await _try_ha_climate_relative_shortcut(body, request_source, session_id)
+        if relative_reply is not None:
+            return relative_reply
+        # 3) Commande domotique déterministe.
+        shortcut = await _try_ha_deterministic_shortcut(body, request_source, session_id)
+        if shortcut is not None:
+            return shortcut
 
     async with state.execution_lock:
         if state.execution_state.get("status") == "running":
@@ -167,8 +363,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
             "engine_state": None, "error_message": None,
         })
 
-    session_id = f"chat_{uuid.uuid4().hex[:10]}"
-    request_source = parse_source(body.source)
     suffix = request_source.get_system_prompt_suffix()
     execute_timeout = get_execute_timeout(request_source, "default")
 
@@ -285,66 +479,10 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                 logger.info("[EXECUTE] mode=ha bloque casual_chat → fast paths HA")
                 routing_type = "default"
 
-            # ── HA ha_commands.json (prioritaire, tolérant STT) ──
-            if request_source.mode == ModeType.HA:
-                ha_cmd = await resolve_ha_command_for_execute(body.user_prompt)
-                if ha_cmd:
-                    logger.info(
-                        "[EXECUTE] 🏠 HA Command → %s(%s) data=%s phrase=%s",
-                        ha_cmd.service, ha_cmd.entity_id, ha_cmd.service_data, ha_cmd.matched_phrase,
-                    )
-                    ok, response_text = await execute_ha_service(
-                        ha_cmd.service,
-                        ha_cmd.entity_id,
-                        service_data=ha_cmd.service_data,
-                    )
-                    if ok:
-                        agents_used = ["ha_command"]
-                        async with state.execution_lock:
-                            state.execution_state["status"] = "success"
-                        result = build_ha_fast_path_response(
-                            session_id,
-                            response_text,
-                            "ha_command",
-                            {
-                                "routing_type": "ha_command",
-                                "service": ha_cmd.service,
-                                "entity_id": ha_cmd.entity_id,
-                                "service_data": ha_cmd.service_data,
-                                "matched_phrase": ha_cmd.matched_phrase,
-                            },
-                        )
-                        log_vocal_response(
-                            session_id=session_id,
-                            user_prompt=body.user_prompt,
-                            source_type=request_source.type.value,
-                            source_mode=request_source.mode.value,
-                            routing_type="ha_command",
-                            agents_used=agents_used,
-                            response_text=response_text,
-                            latency_ms=timer.elapsed_ms,
-                            tts_enabled=request_source.tts_enabled,
-                            device_id=request_source.device_id,
-                        )
-                        return result
-                    logger.warning("[EXECUTE] HA command match mais appel HA échoué")
-                    if should_block_full_pipeline(request_source):
-                        async with state.execution_lock:
-                            state.execution_state["status"] = "success"
-                        result = build_ha_mode_failure_response(session_id)
-                        log_vocal_response(
-                            session_id=session_id,
-                            user_prompt=body.user_prompt,
-                            source_type=request_source.type.value,
-                            source_mode=request_source.mode.value,
-                            routing_type="ha_command_failed",
-                            agents_used=["ha_command_failed"],
-                            response_text=result["response"],
-                            latency_ms=timer.elapsed_ms,
-                            tts_enabled=request_source.tts_enabled,
-                            device_id=request_source.device_id,
-                        )
-                        return result
+            # NB : le match déterministe ha_commands.json (exact/fuzzy) est désormais
+            # traité en amont par _try_ha_deterministic_shortcut() — avant le verrou
+            # global et le routeur. Ici on ne garde que les paliers suivants de la
+            # cascade HA (fuzzy entité, repli LLM, small-talk).
 
             # ── Fast path discussion (avec RAG léger #T173) ──
             if routing_type == "casual_chat":

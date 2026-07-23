@@ -59,11 +59,18 @@ def apply_workload_override(config: dict, tier: str | None = None, model: str | 
 # ══════════════════════════════════════════════════════════════════
 
 FAST_PATH_SYSTEM_PROMPT = (
-    "Tu es l'assistant vocal, expert domotique et technologie. "
-    "Réponds en français, de façon concise et chaleureuse."
+    "Tu es l'assistant vocal d'Axel. "
+    "Réponds en français, 1 à 2 phrases max, chaleureux, sans markdown. "
+    "N'invente jamais d'état domotique, de météo ou d'agenda : "
+    "si tu n'as pas l'info, dis-le simplement."
 )
 
+# Cerebras gpt-oss-120b en tête : bench local 2026-07-21 ~430 ms TTFT
+# vs ~1,8 s Gemini 3.5 Flash free / DeepSeek (SSE mode=chat). Fallback cloud
+# si quota Cerebras (30 RPM) ou indispo.
 FAST_PATH_PROVIDERS = [
+    "gpt-oss-120b",
+    "ollama_pc",  # Ollama PC (RTX 5070Ti, fine-tune domotique) — local-first ; repli cloud si PC éteint (connect timeout 2s)
     "gemini-3.5-flash-free",
     "deepseek-chat",
     "gemini-2.5-flash-free",
@@ -81,6 +88,7 @@ async def run_fast_path(
     system_prompt_suffix: str = "",
     inject_project_context: bool = False,
     conversation_id: str | None = None,
+    enable_vocal_tools: bool = False,
 ) -> str | None:
     """
     Exécute le fast-path (casual_chat) en essayant les providers rapides dans l'ordre.
@@ -94,6 +102,7 @@ async def run_fast_path(
         gateway         : Instance LLMGateway
         token_tracker   : Instance TokenTracker
         fast_path_cache : TTLCache(maxsize=100, ttl=15) partagé depuis AppState
+        enable_vocal_tools : Boucle outils allowlist (HA/calendrier/web/mémoire)
 
     Returns:
         str  : Réponse du LLM si succès
@@ -127,11 +136,15 @@ async def run_fast_path(
     # ── Vérification du cache TTL (évite un appel LLM si prompt identique < 15s) ──
     # [#T194] L'override tier/modèle fait partie de la clé : une même question posée
     # en "fort" ne doit pas resservir la réponse cachée du tier "léger".
-    _override_key = f"{tier_override or ''}|{model_override or ''}|{conversation_id or ''}"
+    # Désactiver le cache TTL quand les outils sont actifs (commandes HA / web).
+    _override_key = (
+        f"{tier_override or ''}|{model_override or ''}|{conversation_id or ''}"
+        f"|tools={int(enable_vocal_tools)}"
+    )
     _cache_key = hashlib.md5(
         f"{system_prompt}||{_override_key}||{user_prompt}".encode()
     ).hexdigest()
-    _cached = fast_path_cache.get(_cache_key)
+    _cached = None if enable_vocal_tools else fast_path_cache.get(_cache_key)
 
     if _cached is not None:
         logger.info(f"[FAST_PATH] ⚡ Cache HIT (clé {_cache_key[:8]}…) — réponse instantanée")
@@ -157,6 +170,8 @@ async def run_fast_path(
             logger.warning(f"[FAST_PATH] Tier '{tier_override}' non résolu : {tier_err}")
     candidates.extend(FAST_PATH_PROVIDERS)
 
+    from core.vocal_tools import provider_supports_openai_tools, run_vocal_tool_loop
+
     for entry in candidates:
         if isinstance(entry, tuple):
             pname, fast_provider = entry
@@ -169,6 +184,19 @@ async def run_fast_path(
                 continue
 
         try:
+            # Mini allowlist outils (HA/calendrier/web/mémoire) si provider OpenAI-compat
+            if enable_vocal_tools and provider_supports_openai_tools(fast_provider):
+                logger.info(f"[FAST_PATH] Tentative outils → {pname}")
+                tool_text = await run_vocal_tool_loop(
+                    fast_provider,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    session_id=session_id,
+                )
+                if tool_text:
+                    response_text = tool_text
+                    break
+
             logger.info(f"[FAST_PATH] Tentative → {pname}")
             response_text = await loop.run_in_executor(
                 None,
@@ -178,6 +206,11 @@ async def run_fast_path(
                     session_id=session_id,
                 )
             )
+            # generate() peut renvoyer un message tool_calls si tools passés ailleurs
+            if isinstance(response_text, dict):
+                response_text = (response_text.get("content") or "").strip() or None
+                if not response_text:
+                    continue
             break  # Succès → sortir de la boucle
         except Exception as provider_err:
             logger.warning(f"[FAST_PATH] {pname} échoué : {provider_err}")
@@ -186,8 +219,9 @@ async def run_fast_path(
     if response_text is None:
         raise RuntimeError("Tous les providers fast path ont échoué")
 
-    # ── Mise en cache du résultat ──
-    fast_path_cache[_cache_key] = response_text
+    # ── Mise en cache du résultat (sauf chemin outils : états HA changeants) ──
+    if not enable_vocal_tools:
+        fast_path_cache[_cache_key] = response_text
 
     # ── Persistance BDD async non-bloquante (ne bloque pas la réponse HTTP) ──
     asyncio.create_task(_persist_fast_path_async(session_id, user_prompt, str(response_text)))

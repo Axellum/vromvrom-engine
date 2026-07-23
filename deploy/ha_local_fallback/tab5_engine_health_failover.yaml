@@ -1,0 +1,96 @@
+# ============================================================================
+# tab5_engine_health_failover.yaml — Auto-bascule du pipeline vocal Tab5.
+#
+# Objectif : garder DEUX agents (local + cloud/moteur) mais basculer tout seul
+# sur l'agent LOCAL quand le moteur (Steam Deck, http://192.168.1.x:8000) est
+# injoignable, puis restaurer le pipeline préféré à son retour.
+#
+# Dépend de la sonde publique /healthz du moteur (api/routes/health.py) et des
+# intents de secours (custom_sentences/fr/tab5_core.yaml + intent_script).
+#
+# Package HA : à inclure via `homeassistant: packages: !include_dir_named packages`.
+# ADAPTER les 2 constantes ci-dessous à ton installation :
+#   - MOTEUR_URL           : IP:port du moteur (défaut Deck)
+#   - PIPELINE_LOCAL       : libellé EXACT de l'option "pipeline local" du select
+#   - PIPELINE_MOTEUR      : libellé EXACT de l'option "pipeline moteur/cloud"
+# (Options visibles dans Paramètres → Vocal, ou l'état du select ci-dessous.)
+# ============================================================================
+
+# Entité select pilotant le pipeline du satellite (cf. docs/voice_assistant.md).
+# select.m5stack_tab5_home_assistant_hmi_assistant
+
+binary_sensor:
+  - platform: rest
+    name: "Moteur Tab5 en ligne"
+    unique_id: tab5_engine_online
+    resource: "http://192.168.1.x:8000/healthz"
+    method: GET
+    value_template: "{{ value_json.ok | default(false) }}"
+    device_class: connectivity
+    scan_interval: 30
+    timeout: 5
+
+input_text:
+  tab5_pipeline_prefere:
+    name: "Tab5 pipeline préféré (avant bascule)"
+    max: 255
+
+automation:
+  - id: tab5_engine_failover_to_local
+    alias: "Tab5 — bascule pipeline LOCAL si moteur injoignable"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.tab5_engine_online
+        to: "off"
+        for: {seconds: 60}
+      - platform: state
+        entity_id: binary_sensor.tab5_engine_online
+        to: "unavailable"
+        for: {seconds: 60}
+    variables:
+      pipeline_local: "PIPELINE_LOCAL"
+      select_id: select.m5stack_tab5_home_assistant_hmi_assistant
+    condition:
+      - condition: template
+        value_template: "{{ states(select_id) not in [pipeline_local, 'unknown', 'unavailable'] }}"
+    action:
+      # Mémorise le pipeline courant pour le restaurer au retour du moteur.
+      - service: input_text.set_value
+        target: {entity_id: input_text.tab5_pipeline_prefere}
+        data: {value: "{{ states(select_id) }}"}
+      - service: select.select_option
+        target: {entity_id: "{{ select_id }}"}
+        data: {option: "{{ pipeline_local }}"}
+      - service: persistent_notification.create
+        data:
+          title: "🔻 Tab5 : moteur injoignable"
+          message: "Pipeline vocal basculé sur l'agent LOCAL (secours)."
+
+  - id: tab5_engine_restore_preferred
+    alias: "Tab5 — restaure le pipeline préféré au retour du moteur"
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.tab5_engine_online
+        to: "on"
+        for: {seconds: 30}
+    variables:
+      select_id: select.m5stack_tab5_home_assistant_hmi_assistant
+      prefere: "{{ states('input_text.tab5_pipeline_prefere') }}"
+    condition:
+      - condition: template
+        value_template: "{{ prefere not in ['', 'unknown', 'unavailable'] }}"
+      - condition: template
+        value_template: "{{ states(select_id) != prefere }}"
+    action:
+      - service: select.select_option
+        target: {entity_id: "{{ select_id }}"}
+        data: {option: "{{ prefere }}"}
+      - service: input_text.set_value
+        target: {entity_id: input_text.tab5_pipeline_prefere}
+        data: {value: ""}
+      - service: persistent_notification.create
+        data:
+          title: "🔺 Tab5 : moteur de nouveau en ligne"
+          message: "Pipeline vocal restauré sur « {{ prefere }} »."

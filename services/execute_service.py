@@ -7,6 +7,7 @@ réponses d'échec mode domotique pour éviter la duplication agents.py / stream
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -48,6 +49,42 @@ _VOLET_COVER_ENTITY = "cover.volet_serre_rideau"
 _VOLET_SCRIPT = "script.tab5_volet_action"
 _VOLET_MOVING_ENTITY = "input_boolean.volet_serre_mouvement"
 _VOLET_STOP_WORDS = frozenset({"stop", "stoppe", "arrete", "arret", "arreter"})
+# Table pièce → entité clim (extensible : ajouter une ligne suffit pour une 2e clim).
+# La détection reste zéro-LLM et choisit l'entité selon la pièce citée, défaut = salon.
+_CLIMATE_ENTITIES: dict[str, str] = {
+    "salon": "climate.salon_daikinap71273_clim",
+}
+_CLIMATE_DEFAULT_ENTITY = _CLIMATE_ENTITIES["salon"]
+_CLIMATE_ENTITY = _CLIMATE_DEFAULT_ENTITY  # Rétro-compat (références existantes)
+_CLIMATE_KEYWORDS = frozenset({"clim", "climatisation", "climatiseur", "climatiser"})
+_CLIMATE_MODE_KEYWORDS: dict[str, str] = {
+    "froid": "cool", "rafraichis": "cool", "rafraichir": "cool",
+    "refroidis": "cool", "refroidir": "cool", "climatise": "cool",
+    "chaud": "heat", "chauffe": "heat", "chauffer": "heat", "chauffage": "heat",
+    "sec": "dry", "deshumidifie": "dry", "deshumidifier": "dry", "deshumidification": "dry",
+    "ventilation": "fan_only", "ventile": "fan_only", "ventiler": "fan_only", "brasse": "fan_only",
+}
+_CLIMATE_MODE_LABELS: dict[str, str] = {
+    "cool": "froid", "heat": "chaud", "dry": "sec", "fan_only": "ventilation", "off": "éteint",
+}
+# Plage Daikin usuelle — évite de capter un nombre sans rapport avec la température
+_CLIMATE_TEMP_RE = re.compile(r"\b(1[5-9]|2[0-9]|3[0-1])\b")
+# Nombres en lettres 15-31 : le STT écrit parfois « vingt-deux » au lieu de « 22 ».
+_CLIMATE_TEMP_WORDS: dict[str, int] = {
+    "quinze": 15, "seize": 16, "dix sept": 17, "dix huit": 18, "dix neuf": 19,
+    "vingt": 20, "vingt et un": 21, "vingt un": 21, "vingt deux": 22,
+    "vingt trois": 23, "vingt quatre": 24, "vingt cinq": 25, "vingt six": 26,
+    "vingt sept": 27, "vingt huit": 28, "vingt neuf": 29,
+    "trente": 30, "trente et un": 31, "trente un": 31,
+}
+# Alternation triée par longueur décroissante : « vingt deux » testé avant « vingt ».
+_CLIMATE_TEMP_WORDS_RE = re.compile(
+    r"\b(" + "|".join(sorted((re.escape(k) for k in _CLIMATE_TEMP_WORDS), key=len, reverse=True)) + r")\b"
+)
+# True : « régler + mode » émet set_hvac_mode PUIS set_temperature (2 appels) au
+# lieu d'un set_temperature portant hvac_mode — plus compatible (certains Daikin
+# rejettent hvac_mode dans set_temperature).
+_CLIMATE_SPLIT_HVAC_AND_TEMP = True
 _SALON_LIGHT_GROUP = "light.salon"
 _SALON_LIGHT_MEMBERS = (
     "light.sonoff_1001601d46",
@@ -190,6 +227,71 @@ def match_ha_volet_keywords(prompt: str) -> HACommandMatch | None:
     return _volet_script(script_action, f"volet:{script_action}")
 
 
+def resolve_climate_entity(norm: str) -> str:
+    """Choisit l'entité clim selon la pièce citée (défaut : salon)."""
+    for room, entity in _CLIMATE_ENTITIES.items():
+        if room in norm:
+            return entity
+    return _CLIMATE_DEFAULT_ENTITY
+
+
+def parse_climate_temperature(norm: str) -> int | None:
+    """Température cible 15-31 depuis chiffres OU nombres en lettres."""
+    digit = _CLIMATE_TEMP_RE.search(norm)
+    if digit:
+        return int(digit.group(1))
+    word = _CLIMATE_TEMP_WORDS_RE.search(norm.replace("-", " "))
+    if word:
+        return _CLIMATE_TEMP_WORDS[word.group(1)]
+    return None
+
+
+def match_ha_climate_command(prompt: str) -> HACommandMatch | None:
+    """
+    Réglage clim (température et/ou mode) — Zero-LLM.
+
+    Le on/off simple ("allume/éteins la clim du salon") reste couvert par
+    match_ha_room_keywords via _ROOM_ENTITIES["clim salon"] ; cette fonction
+    ne gère que le cas absent du fuzzy matcher : température cible et/ou
+    mode HVAC (froid/chaud/sec/ventilation), qui partaient auparavant en LLM
+    (lent, peu fiable — cause du « les LLM ont du mal à régler la clim »).
+    """
+    norm = normalize_ha_command_prompt(prompt)
+    if not norm:
+        return None
+    words = set(norm.split())
+    if not (words & _CLIMATE_KEYWORDS):
+        return None
+
+    temperature = parse_climate_temperature(norm)
+
+    mode = None
+    for word in words:
+        if word in _CLIMATE_MODE_KEYWORDS:
+            mode = _CLIMATE_MODE_KEYWORDS[word]
+            break
+
+    if temperature is None and mode is None:
+        return None  # Pas de température ni de mode : laisser le on/off existant gérer
+
+    service_data: dict[str, Any] = {}
+    if temperature is not None:
+        service = "climate.set_temperature"
+        service_data["temperature"] = temperature
+        if mode:
+            service_data["hvac_mode"] = mode
+    else:
+        service = "climate.set_hvac_mode"
+        service_data["hvac_mode"] = mode
+
+    return HACommandMatch(
+        service=service,
+        entity_id=resolve_climate_entity(norm),
+        matched_phrase=f"climate:{service}:{service_data}",
+        service_data=service_data,
+    )
+
+
 def match_ha_room_keywords(prompt: str) -> HACommandMatch | None:
     """
     Match pièce + action quand STT est trop bruité pour ha_commands exact/fuzzy.
@@ -274,6 +376,9 @@ def match_ha_command(prompt: str) -> HACommandMatch | None:
     volet = match_ha_volet_keywords(prompt)
     if volet:
         return volet
+    climate = match_ha_climate_command(prompt)
+    if climate:
+        return climate
     room = match_ha_room_keywords(prompt)
     return ensure_volet_via_script(room) if room else None
 
@@ -285,15 +390,13 @@ async def is_volet_moving() -> bool:
         return False
     url = f"{ha_url.rstrip('/')}/api/states/{_VOLET_MOVING_ENTITY}"
     headers = {"Authorization": f"Bearer {ha_token}"}
-    ssl_ctx = ha_ssl_context()
     try:
-        connector = aiohttp.TCPConnector(ssl=ssl_ctx)
-        async with aiohttp.ClientSession(connector=connector) as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                if resp.status != 200:
-                    return False
-                data = await resp.json()
-                return data.get("state") == "on"
+        session = _get_ha_session()
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            if resp.status != 200:
+                return False
+            data = await resp.json()
+            return data.get("state") == "on"
     except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
         logger.debug("[HA CMD] is_volet_moving skip : %s", exc)
         return False
@@ -355,6 +458,16 @@ def build_natural_ha_response(
             return f"Climatisation {name.lower()} allumée." if name else "Climatisation allumée."
         if "turn_off" in action:
             return f"Climatisation {name.lower()} éteinte." if name else "Climatisation éteinte."
+        if action in ("set_temperature", "set_hvac_mode"):
+            temp = (service_data or {}).get("temperature")
+            hvac = (service_data or {}).get("hvac_mode")
+            mode_txt = _CLIMATE_MODE_LABELS.get(hvac, "") if hvac else ""
+            if temp is not None and mode_txt:
+                return f"Climatisation réglée sur {temp} degrés, mode {mode_txt}."
+            if temp is not None:
+                return f"Climatisation réglée sur {temp} degrés."
+            if mode_txt:
+                return f"Climatisation en mode {mode_txt}."
     if domain == "cover":
         if "open" in action:
             return f"{name} ouvert." if name else "Volet ouvert."
@@ -460,6 +573,54 @@ def _read_ha_credentials() -> tuple[str, str]:
     return ha_token, ha_url
 
 
+# ── Session aiohttp partagée (keep-alive) pour les appels HA du chemin vocal ──
+# Chaque commande domotique ouvrait auparavant une ClientSession + un handshake
+# TLS complet (~50-150 ms sur le chemin critique). On réutilise une session
+# unique par boucle asyncio, recréée si fermée ou rattachée à une autre boucle
+# (redémarrage serveur / tests). Voir close_ha_session() pour l'arrêt propre.
+_ha_session: aiohttp.ClientSession | None = None
+_ha_session_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_ha_session() -> aiohttp.ClientSession:
+    """Retourne la session HA partagée, en la (re)créant au besoin."""
+    global _ha_session, _ha_session_loop
+    loop = asyncio.get_running_loop()
+    if _ha_session is None or _ha_session.closed or _ha_session_loop is not loop:
+        connector = aiohttp.TCPConnector(ssl=ha_ssl_context(), limit=8, ttl_dns_cache=300)
+        _ha_session = aiohttp.ClientSession(connector=connector)
+        _ha_session_loop = loop
+    return _ha_session
+
+
+async def close_ha_session() -> None:
+    """Ferme proprement la session HA partagée (à appeler au shutdown FastAPI)."""
+    global _ha_session
+    if _ha_session is not None and not _ha_session.closed:
+        await _ha_session.close()
+    _ha_session = None
+
+
+async def read_ha_state(entity_id: str) -> dict[str, Any] | None:
+    """Lit l'état live d'une entité HA (/api/states/<id>). None si indisponible."""
+    if not entity_id:
+        return None
+    ha_token, ha_url = _read_ha_credentials()
+    if not ha_token:
+        return None
+    url = f"{ha_url.rstrip('/')}/api/states/{entity_id}"
+    headers = {"Authorization": f"Bearer {ha_token}"}
+    try:
+        session = _get_ha_session()
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            if resp.status != 200:
+                return None
+            return await resp.json()
+    except (aiohttp.ClientError, TimeoutError, json.JSONDecodeError) as exc:
+        logger.debug("[HA STATE] read %s skip : %s", entity_id, exc)
+        return None
+
+
 async def execute_ha_service(
     ha_service: str,
     ha_entity: str,
@@ -492,47 +653,65 @@ async def execute_ha_service(
     payload: dict[str, Any] = dict(service_data) if service_data else {}
     if ha_entity and "entity_id" not in payload:
         payload["entity_id"] = ha_entity
-    ssl_ctx = ha_ssl_context()
-    connector = aiohttp.TCPConnector(ssl=ssl_ctx)
-    async with aiohttp.ClientSession(connector=connector) as http_session:
-        async with http_session.post(
-            api_url,
-            json=payload,
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
-            if resp.status == 200:
-                if response_text:
-                    return True, response_text
-                return True, build_natural_ha_response(
-                    ha_entity, ha_service, friendly_name, service_data=service_data,
-                )
-            resp_text = await resp.text()
-            logger.warning(
-                "[HA EXEC] Échec %s payload=%s : HTTP %s %s",
-                ha_service, payload, resp.status, resp_text[:120],
+    http_session = _get_ha_session()
+
+    # Compatibilité Daikin : régler le mode AVANT la température, en 2 appels
+    # (certains backends rejettent hvac_mode dans set_temperature). On garde
+    # service_data intact pour la phrase TTS ; seul le payload POST est allégé.
+    if (
+        _CLIMATE_SPLIT_HVAC_AND_TEMP
+        and ha_service == "climate.set_temperature"
+        and payload.get("hvac_mode")
+    ):
+        mode_payload = {"entity_id": ha_entity, "hvac_mode": payload.pop("hvac_mode")}
+        try:
+            async with http_session.post(
+                f"{ha_url.rstrip('/')}/api/services/climate/set_hvac_mode",
+                json=mode_payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as mode_resp:
+                if mode_resp.status != 200:
+                    logger.warning("[HA EXEC] set_hvac_mode préalable échoué : HTTP %s", mode_resp.status)
+        except (aiohttp.ClientError, TimeoutError) as exc:
+            logger.warning("[HA EXEC] set_hvac_mode préalable erreur : %s", exc)
+
+    async with http_session.post(
+        api_url,
+        json=payload,
+        headers=headers,
+        timeout=aiohttp.ClientTimeout(total=10),
+    ) as resp:
+        if resp.status == 200:
+            if response_text:
+                return True, response_text
+            return True, build_natural_ha_response(
+                ha_entity, ha_service, friendly_name, service_data=service_data,
             )
+        resp_text = await resp.text()
+        logger.warning(
+            "[HA EXEC] Échec %s payload=%s : HTTP %s %s",
+            ha_service, payload, resp.status, resp_text[:120],
+        )
 
     # Fallback : groupe light.salon → membres individuels
     if ha_entity == _SALON_LIGHT_GROUP and "turn_" in ha_service:
         action = ha_service.split(".", 1)[-1]
         any_ok = False
-        fallback_connector = aiohttp.TCPConnector(ssl=ssl_ctx)
-        async with aiohttp.ClientSession(connector=fallback_connector) as http_session:
-            for member in _SALON_LIGHT_MEMBERS:
-                async with http_session.post(
-                    f"{ha_url.rstrip('/')}/api/services/light/{action}",
-                    json={"entity_id": member},
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    if resp.status == 200:
-                        any_ok = True
-                    else:
-                        logger.debug(
-                            "[HA EXEC] Fallback membre %s : HTTP %s",
-                            member, resp.status,
-                        )
+        for member in _SALON_LIGHT_MEMBERS:
+            async with http_session.post(
+                f"{ha_url.rstrip('/')}/api/services/light/{action}",
+                json={"entity_id": member},
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    any_ok = True
+                else:
+                    logger.debug(
+                        "[HA EXEC] Fallback membre %s : HTTP %s",
+                        member, resp.status,
+                    )
         if any_ok:
             return True, build_natural_ha_response(_SALON_LIGHT_GROUP, ha_service, friendly_name)
         return False, "Je n'ai pas pu éteindre les lumières du salon."

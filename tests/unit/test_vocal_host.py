@@ -157,6 +157,7 @@ async def test_files_specialist_drive():
 
 @pytest.mark.asyncio
 async def test_handle_discussion_web_sync():
+    """WEB repasse par le spécialiste grounding (sync)."""
     with patch(
         "core.vocal_jobs.run_vocal_specialist",
         new_callable=AsyncMock,
@@ -172,6 +173,25 @@ async def test_handle_discussion_web_sync():
     assert result.async_job_id is None
     assert result.routing_type == "vocal_host_web"
     assert "24" in result.response_text or "Paris" in result.response_text
+
+
+@pytest.mark.asyncio
+async def test_handle_discussion_ha_command_zero_llm():
+    with patch(
+        "core.vocal_host._try_zero_llm_ha_command",
+        new_callable=AsyncMock,
+        return_value="Lumière chambre allumée.",
+    ):
+        result = await handle_discussion(
+            user_prompt="Allume la lumière de la chambre",
+            session_id="sess_ha",
+            gateway=MagicMock(),
+            token_tracker=MagicMock(),
+            fast_path_cache={},
+        )
+    assert result.routing_type == "discussion_ha_command"
+    assert "allumée" in result.response_text.lower()
+    assert "ha_command" in result.agents_used
 
 
 @pytest.mark.asyncio

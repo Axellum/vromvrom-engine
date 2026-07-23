@@ -69,14 +69,27 @@ _ASYNC_ACK: dict[VocalIntent, str] = {
     VocalIntent.DEEP: "Je prépare une réponse plus complète. Je te préviens quand c'est prêt.",
 }
 
-# Web + calendrier : réponse complète dans le même tour Assist (type Google Home).
+# Web + calendrier : spécialistes sync (grounding / OAuth) — plus fiable que Cerebras tools.
 _SYNC_SPECIALIST_INTENTS = frozenset({VocalIntent.WEB, VocalIntent.CALENDAR})
+
+# Lecture d'état HA (pas commande) → mini outils Cerebras.
+_HA_STATE_MARKERS = (
+    "temperature", "température", "humidite", "humidité",
+    "quelle temperature", "quelle température",
+    "est ce que", "est-ce que", "c est allume", "c'est allumé",
+    "etat de", "état de", "niveau de", "combien de degres", "combien de degrés",
+)
 
 
 def _normalize_prompt(text: str) -> str:
     t = unicodedata.normalize("NFKC", text or "").lower().strip()
     t = re.sub(r"[^\w\sàâäéèêëïîôùûüç'-]", " ", t, flags=re.UNICODE)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def _looks_like_ha_state_query(prompt: str) -> bool:
+    norm = _normalize_prompt(prompt)
+    return any(m in norm for m in _HA_STATE_MARKERS)
 
 
 def classify_vocal_intent(prompt: str) -> tuple[VocalIntent, float]:
@@ -130,6 +143,7 @@ async def _run_sync_discussion(
     model_override: str | None,
     routing_type: str,
     agent_name: str,
+    enable_vocal_tools: bool = False,
 ) -> str:
     from core.vocal_tts_cache import sanitize_discussion_tts
     from services.pipeline_service import run_fast_path
@@ -143,13 +157,36 @@ async def _run_sync_discussion(
         tier_override=tier_override,
         model_override=model_override,
         system_prompt_suffix=system_prompt_suffix,
-        inject_project_context=True,
+        # RAG projet = bruit + latence en vocal ; outils HA suffisent pour les faits.
+        inject_project_context=False,
         conversation_id=conversation_id,
+        enable_vocal_tools=enable_vocal_tools,
     )
     text = sanitize_discussion_tts(raw or "")
     if not text:
         raise RuntimeError("Réponse discussion vide")
     return text
+
+
+async def _try_zero_llm_ha_command(user_prompt: str) -> str | None:
+    """Commandes domotiques déterministes (même chemin que mode Domotique)."""
+    from services.execute_service import execute_ha_service, resolve_ha_command_for_execute
+
+    ha_cmd = await resolve_ha_command_for_execute(user_prompt)
+    if not ha_cmd:
+        return None
+    logger.info(
+        "[VOCAL_HOST] Zero-LLM HA → %s(%s)",
+        ha_cmd.service, ha_cmd.entity_id,
+    )
+    ok, text = await execute_ha_service(
+        ha_cmd.service,
+        ha_cmd.entity_id,
+        service_data=ha_cmd.service_data,
+    )
+    if ok and text:
+        return text
+    return "Je n'ai pas pu exécuter cette commande."
 
 
 async def _process_vocal_job(
@@ -212,6 +249,9 @@ async def handle_discussion(
 ) -> DiscussionHostResult:
     """
     Point d'entrée Host Discussion : chat sync ou job async selon intent.
+
+    Priorité : Zero-LLM HA (commandes) → spécialistes web/calendrier →
+    chat Cerebras (outils seulement pour lecture d'état HA).
     """
     intent, score = classify_vocal_intent(user_prompt)
     meta: dict[str, Any] = {
@@ -219,27 +259,22 @@ async def handle_discussion(
         "intent_score": round(score, 2),
     }
 
-    if intent == VocalIntent.CHAT:
-        text = await _run_sync_discussion(
-            user_prompt=user_prompt,
-            session_id=session_id,
-            gateway=gateway,
-            token_tracker=token_tracker,
-            fast_path_cache=fast_path_cache,
-            system_prompt_suffix=system_prompt_suffix,
-            conversation_id=conversation_id,
-            tier_override=tier_override,
-            model_override=model_override,
-            routing_type="discussion_chat",
-            agent_name="discussion_chat",
-        )
+    # 1) Commandes HA déterministes — rapide, zéro hallucination d'entité
+    try:
+        ha_tts = await _try_zero_llm_ha_command(user_prompt)
+    except Exception as exc:
+        logger.warning("[VOCAL_HOST] Zero-LLM HA échec : %s", exc)
+        ha_tts = None
+    if ha_tts:
+        meta["ha_zero_llm"] = True
         return DiscussionHostResult(
-            response_text=text,
-            agents_used=["discussion_chat", "vocal_host"],
-            routing_type="discussion_chat",
+            response_text=ha_tts,
+            agents_used=["ha_command", "vocal_host"],
+            routing_type="discussion_ha_command",
             metadata=meta,
         )
 
+    # 2) Web / calendrier — spécialistes (grounding / OAuth), pas Cerebras tools
     if intent in _SYNC_SPECIALIST_INTENTS:
         from core.vocal_jobs import run_vocal_specialist
 
@@ -266,6 +301,33 @@ async def handle_discussion(
             agents_used=[f"discussion_{intent.value}", "vocal_host"],
             routing_type=f"vocal_host_{intent.value}",
             metadata=meta,
+        )
+
+    # 3) Chat (éventuellement lecture état HA via outils)
+    if intent == VocalIntent.CHAT:
+        use_tools = _looks_like_ha_state_query(user_prompt)
+        text = await _run_sync_discussion(
+            user_prompt=user_prompt,
+            session_id=session_id,
+            gateway=gateway,
+            token_tracker=token_tracker,
+            fast_path_cache=fast_path_cache,
+            system_prompt_suffix=system_prompt_suffix,
+            conversation_id=conversation_id,
+            tier_override=tier_override,
+            model_override=model_override,
+            routing_type="discussion_chat",
+            agent_name="discussion_chat",
+            enable_vocal_tools=use_tools,
+        )
+        agents = ["discussion_chat", "vocal_host"]
+        if use_tools:
+            agents.append("vocal_tools")
+        return DiscussionHostResult(
+            response_text=text,
+            agents_used=agents,
+            routing_type="discussion_chat",
+            metadata={**meta, "vocal_tools": use_tools},
         )
 
     from core.vocal_jobs import create_vocal_job

@@ -64,3 +64,41 @@ def test_volet_imperative_still_matches():
     m2 = match_ha_command("ouvre les volets du salon")
     assert m2 is not None
     assert m2.service_data == {"action": "open"}
+
+
+def test_climate_temperature_and_mode():
+    m = match_ha_command("mets la clim a 21 en mode froid")
+    assert m is not None
+    assert m.service == "climate.set_temperature"
+    assert m.entity_id == "climate.salon_daikinap71273_clim"
+    assert m.service_data == {"temperature": 21, "hvac_mode": "cool"}
+
+
+def test_climate_temperature_only():
+    m = match_ha_command("regle la clim sur 19")
+    assert m is not None
+    assert m.service == "climate.set_temperature"
+    assert m.service_data == {"temperature": 19}
+
+
+def test_climate_mode_only():
+    m = match_ha_command("mets la clim en mode chaud")
+    assert m is not None
+    assert m.service == "climate.set_hvac_mode"
+    assert m.service_data == {"hvac_mode": "heat"}
+
+
+def test_climate_without_temp_or_mode_falls_back_to_on_off():
+    """« allume la clim du salon » : sans temp/mode, le fast-path clim ne doit pas intercepter."""
+    m = match_ha_command("allume la clim du salon")
+    assert m is not None
+    assert m.service == "climate.turn_on"
+
+
+def test_build_natural_climate_temperature_response():
+    text = build_natural_ha_response(
+        "climate.salon_daikinap71273_clim",
+        "climate.set_temperature",
+        service_data={"temperature": 21, "hvac_mode": "cool"},
+    )
+    assert text == "Climatisation réglée sur 21 degrés, mode froid."

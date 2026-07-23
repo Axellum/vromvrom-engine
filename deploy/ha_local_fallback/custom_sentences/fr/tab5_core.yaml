@@ -1,0 +1,117 @@
+# GÉNÉRÉ par scripts/gen_ha_local_fallback.py — NE PAS ÉDITER À LA MAIN.
+# Source de vérité : ha_commands.json (moteur). Régénérer après modif.
+# Noyau de secours : commandes vitales servies par HA Assist LOCAL quand
+# le moteur (Steam Deck) est injoignable.
+intents:
+  Tab5CoreClimateSalonDaikinap71273ClimOff:
+    data:
+    - sentences:
+      - arrete la clim salon
+      - eteins la clim du salon
+      - éteins la clim du salon
+  Tab5CoreClimateSalonDaikinap71273ClimOn:
+    data:
+    - sentences:
+      - allume la clim du salon
+      - allume la climatisation du salon
+      - demarre la clim salon
+  Tab5CoreLightH60082Off:
+    data:
+    - sentences:
+      - eteins la chambre
+      - eteins la lumiere de la chambre
+      - eteins les lumieres de la chambre
+      - éteins la chambre
+      - éteins la lumière de la chambre
+      - éteins les lumières de la chambre
+  Tab5CoreLightH60082On:
+    data:
+    - sentences:
+      - allume la chambre
+      - allume la lumiere de la chambre
+      - mets la chambre
+  Tab5CoreLightH6008Off:
+    data:
+    - sentences:
+      - eteins le chevet salon
+      - éteins le chevet salon
+  Tab5CoreLightH6008On:
+    data:
+    - sentences:
+      - allume la lumiere chevet salon
+      - allume le chevet salon
+  Tab5CoreLightH600cOff:
+    data:
+    - sentences:
+      - eteins le spot pied
+      - éteins le spot pied
+  Tab5CoreLightH600cOn:
+    data:
+    - sentences:
+      - allume la lumiere pied
+      - allume le spot pied
+  Tab5CoreLightSalonOff:
+    data:
+    - sentences:
+      - coupe la lumiere du salon
+      - coupe le salon
+      - coupe les lumieres du salon
+      - eteindre la lumiere du salon
+      - eteindre les lumieres du salon
+      - eteins la lumiere du salon
+      - eteins le salon
+      - eteins les lumieres du salon
+      - éteindre la lumière du salon
+      - éteins la lumière du salon
+      - éteins le salon
+      - éteins les lumières du salon
+  Tab5CoreLightSalonOn:
+    data:
+    - sentences:
+      - allume la lumiere du salon
+      - allume la lumiere salon
+      - allume la lumière du salon
+      - allume le salon
+      - allumee le salon
+      - allumé le salon
+      - mets la lumiere du salon
+      - mets la lumière du salon
+      - mets le salon
+      - salon allume
+  Tab5CoreVoletClose:
+    data:
+    - sentences:
+      - baisse le volet du salon
+      - baisse le volet serre
+      - baisse les volets du salon
+      - descend le volet du salon
+      - descend les volets du salon
+      - descends les volets du salon
+      - ferme le volet de la serre
+      - ferme le volet du salon
+      - ferme le volet serre
+      - ferme les volets du salon
+  Tab5CoreVoletOpen:
+    data:
+    - sentences:
+      - monte le volet du salon
+      - monte le volet serre
+      - monte les volets du salon
+      - ouvre le volet de la serre
+      - ouvre le volet du salon
+      - ouvre le volet serre
+      - ouvre les volets du salon
+  Tab5CoreVoletStop:
+    data:
+    - sentences:
+      - arrete
+      - arrete le volet
+      - arrete les volets du salon
+      - arrête
+      - arrête le volet
+      - stop
+      - stop le volet
+      - stop les volets
+      - stop les volets du salon
+      - stoppe
+language: fr

@@ -1,0 +1,559 @@
+{
+  "subscriptions": [
+    {
+      "name": "Claude Pro",
+      "cost_monthly_usd": 20.0,
+      "billing_period": "Mensuel",
+      "rolling_window_hours": 5,
+      "estimated_messages_limit": 45,
+      "hourly_token_limit": 1500000,
+      "monthly_token_limit": 35000000,
+      "models": [
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "claude-opus-4-5",
+        "claude-sonnet-4-5"
+      ],
+      "advantages": "Modèle de développement de pointe. SWE-bench 88.2%, OSWorld 94.5%.",
+      "recommended_use": "Tâches complexes d'écriture et de refactoring de code (Tier Fort)."
+    },
+    {
+      "name": "Gemini Advanced (Google One AI Pro)",
+      "cost_monthly_usd": 19.99,
+      "billing_period": "Mensuel",
+      "rolling_window_hours": 5,
+      "estimated_messages_limit": 50,
+      "hourly_token_limit": 4000000,
+      "monthly_token_limit": 100000000,
+      "models": [
+        "gemini-3.5-flash-high-cli",
+        "gemini-3.5-flash-medium-cli",
+        "gemini-cli"
+      ],
+      "advantages": "Immense fenêtre (1M-2M), Antigravity IDE inclus, très rapide.",
+      "recommended_use": "Lecture gros fichiers, analyse globale, Tier Fort/Moyen."
+    }
+  ],
+  "apis": [
+    {
+      "name": "Gemini Free Tier (AI Studio)",
+      "type": "Free Tier",
+      "rates": {
+        "gemini-2.5-flash": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0
+        },
+        "gemini-2.5-flash-lite": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Free Tier AI Studio — ultra-rapide 350ms TTFT, 150 tok/s. Successeur 2.0 Flash Lite"
+        },
+        "gemini-3-flash-preview": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Preview AI Studio — Gemini 3 Flash avant release stable, thinking inclus"
+        },
+        "gemini-3-pro-image": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Free Tier AI Studio — génération images Pro 2026, haute fidélité"
+        },
+        "gemini-3.1-flash-image": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Free Tier AI Studio — génération images native via Gemini 3.1 Flash"
+        },
+        "gemini-3.1-flash-lite": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0
+        },
+        "gemini-3.1-pro-preview": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0
+        },
+        "gemini-3.5-flash": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0
+        },
+        "gemini-robotics-er-1.6-preview": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Preview expérimental — contrôle robotique (Embodied Reasoning), usage non-production"
+        }
+      },
+      "advantages": "5 clés Free Tier rotatives via KeyPool. Cache implicite gratuit."
+    },
+    {
+      "name": "GitHub Models",
+      "type": "Free Tier",
+      "rates": {
+        "github/gpt-4o": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "GitHub Models gratuit — GPT-4o via Azure AI, quota développeur, 10 RPM"
+        },
+        "github/gpt-4o-mini": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "GitHub Models gratuit — GPT-4o Mini via Azure AI, rapide, 10 RPM"
+        },
+        "github/meta-llama-3.1-405b-instruct": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "GitHub Models gratuit — LLaMA 3.1 405B, très puissant, quota limité"
+        },
+        "github/meta-llama-3.3-70b-instruct": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "GitHub Models gratuit — LLaMA 3.3 70B via Azure, MMLU 88%"
+        }
+      },
+      "advantages": "Inférence gratuite pour développeurs via Azure AI."
+    },
+    {
+      "name": "Cerebras API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "gpt-oss-120b": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Plan Gratuit (Cerebras)"
+        },
+        "zai-glm-4.7": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Plan Gratuit (Cerebras)"
+        }
+      },
+      "advantages": "Plan Gratuit (1M tokens/jour). Vitesse exceptionnelle."
+    },
+    {
+      "name": "OpenRouter API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "anthropic/claude-3.5-sonnet": {
+          "input_cost_per_m": 3.0,
+          "output_cost_per_m": 15.0,
+          "note": "Payant"
+        },
+        "anthropic/claude-sonnet-5": {
+          "input_cost_per_m": 2.0,
+          "output_cost_per_m": 10.0,
+          "note": "Payant"
+        },
+        "google/gemma-4-26b-a4b-it:free": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "OpenRouter gratuit — Gemma 4 MoE 26B (4B actifs), vision, instruction-tuned"
+        },
+        "meta-llama/llama-3.2-3b-instruct:free": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Plan Gratuit (OpenRouter)"
+        },
+        "meta-llama/llama-3.3-70b-instruct:free": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Plan Gratuit (OpenRouter)"
+        },
+        "moonshotai/kimi-k2.7-code": {
+          "input_cost_per_m": 0.74,
+          "output_cost_per_m": 3.5,
+          "note": "Sorti 12/06/2026. Alternative moins chère disponible : moonshotai/kimi-k2-thinking (~$0.60/$2.50)."
+        },
+        "nvidia/nemotron-3-ultra-550b-a55b:free": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "OpenRouter gratuit — NVIDIA 550B MoE (55B actifs), thinking, MMLU 92%+. Quota limité"
+        },
+        "openai/gpt-5.2": {
+          "input_cost_per_m": 1.75,
+          "output_cost_per_m": 14.0,
+          "note": "GPT-5.5 existe aussi sur OpenRouter (plus récent) mais pricing non confirmé au 03/07/2026 — à vérifier avant de basculer dessus."
+        },
+        "openai/gpt-oss-20b:free": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "OpenRouter gratuit — OpenAI open-weights 20B. Rapide, bon généraliste"
+        },
+        "qwen/qwen3-coder:free": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "OpenRouter gratuit — Qwen3 Coder, SWE-bench fort, thinking mode, code agentic"
+        },
+        "qwen/qwen3.7-max": {
+          "input_cost_per_m": 1.25,
+          "output_cost_per_m": 3.75
+        }
+      },
+      "advantages": "Modèles gratuits et payants. Alternatives en cas de pannes de tiers."
+    },
+    {
+      "name": "Anthropic API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "claude-fable-5": {
+          "input_cost_per_m": 10.0,
+          "output_cost_per_m": 50.0,
+          "note": "Thinking toujours actif (non désactivable). Nécessite rétention de données ≥30 jours (indisponible en ZDR). Tarif nettement supérieur à Opus — réserver aux tâches qui le justifient."
+        },
+        "claude-sonnet-5": {
+          "input_cost_per_m": 2.0,
+          "output_cost_per_m": 10.0,
+          "note": "Tarif d'intro 2.0$/10.0$ par M tokens jusqu'au 31/08/2026 (puis 3.0$/15.0$). Thinking adaptatif actif par défaut."
+        }
+      },
+      "advantages": "API native avec accès aux Batchs"
+    },
+    {
+      "name": "Zhipu AI (Z.ai)",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "glm-4.5": {
+          "input_cost_per_m": 0.28,
+          "output_cost_per_m": 1.1,
+          "input_cache_hit_cost_per_m": 0.05,
+          "note": "Idéal comme base économique pour des tâches simples."
+        },
+        "glm-4.5-air": {
+          "input_cost_per_m": 0.2,
+          "output_cost_per_m": 1.1
+        },
+        "glm-4.6": {
+          "input_cost_per_m": 0.55,
+          "output_cost_per_m": 2.2
+        },
+        "glm-4.7": {
+          "input_cost_per_m": 0.55,
+          "output_cost_per_m": 2.2,
+          "input_cache_hit_cost_per_m": 0.11,
+          "note": "Très abordable, grand historique de stabilité."
+        },
+        "glm-5": {
+          "input_cost_per_m": 1.0,
+          "output_cost_per_m": 3.2,
+          "note": "Dépassé par glm-5.1/glm-5.2. Prix à confirmer (sources divergentes au 03/07/2026: $1.00-1.40 input)."
+        },
+        "glm-5-turbo": {
+          "input_cost_per_m": 0.96,
+          "output_cost_per_m": 3.58,
+          "input_cache_hit_cost_per_m": 0.25,
+          "note": "Rapport coût/performance imbattable, latence minimale, haute cadence."
+        },
+        "glm-5.1": {
+          "input_cost_per_m": 1.0,
+          "output_cost_per_m": 3.2,
+          "note": "⚠️ Prix à vérifier avant usage intensif — sources divergentes au 03/07/2026 ($0.95-1.40 input / $3.15-4.40 output)."
+        },
+        "glm-5.2": {
+          "input_cost_per_m": 1.1,
+          "output_cost_per_m": 3.86,
+          "input_cache_hit_cost_per_m": 0.28,
+          "note": "Contexte de 1M tokens, licence MIT open-source, excellentes performances en agentique complexe."
+        }
+      },
+      "advantages": "Famille GLM — excellent en code/agentique et en chinois. ZHIPU_API_KEY active."
+    },
+    {
+      "name": "Mistral AI API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "codestral-latest": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Plan Experiment (Gratuit)"
+        },
+        "devstral-latest": {
+          "input_cost_per_m": 0.4,
+          "output_cost_per_m": 2.0,
+          "input_cache_hit_cost_per_m": 0.04,
+          "note": "Plan Experiment — agentic coding SOTA, SWE-bench 62%. Concurrent Sonnet pour code"
+        },
+        "magistral-medium-latest": {
+          "input_cost_per_m": 2.0,
+          "output_cost_per_m": 5.0,
+          "input_cache_hit_cost_per_m": 0.2,
+          "note": "Payant — raisonnement CoT. Concurrent DeepSeek R1 et o3-mini. Thinking tokens inclus"
+        },
+        "magistral-small-latest": {
+          "input_cost_per_m": 0.5,
+          "output_cost_per_m": 1.5,
+          "input_cache_hit_cost_per_m": 0.05,
+          "note": "Plan Experiment — raisonnement léger gratuit, très bon rapport qualité/coût"
+        },
+        "ministral-14b-latest": {
+          "input_cost_per_m": 0.2,
+          "output_cost_per_m": 0.2,
+          "input_cache_hit_cost_per_m": 0.02,
+          "note": "Plan Experiment — edge 14B, faible coût $0.20/M symétrique, agents locaux"
+        },
+        "mistral-large-latest": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Plan Experiment (Gratuit)"
+        },
+        "mistral-medium-latest": {
+          "input_cost_per_m": 0.5,
+          "output_cost_per_m": 1.5,
+          "input_cache_hit_cost_per_m": 0.05,
+          "note": "Plan Experiment — Mistral Medium 3.5, polyvalent, vision, français"
+        },
+        "mistral-ocr-latest": {
+          "input_cost_per_m": 0.25,
+          "output_cost_per_m": 0.25,
+          "note": "Plan Experiment — OCR/PDF natif, $0.25/M pages. Lit tableaux et formules"
+        },
+        "open-mistral-nemo": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Plan Experiment (Gratuit)"
+        }
+      },
+      "advantages": "Plan Experiment (Gratuit). Excellent en français. Tokenizer optimisé."
+    },
+    {
+      "name": "Cohere API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "command-a-03-2025": {
+          "input_cost_per_m": 2.5,
+          "output_cost_per_m": 10.0,
+          "input_cache_hit_cost_per_m": 0.25,
+          "note": "Trial Key — nouveau flagship 2025, 256K contexte, agentic RAG. 20 RPM Trial"
+        },
+        "command-a-plus-05-2026": {
+          "input_cost_per_m": 2.5,
+          "output_cost_per_m": 10.0,
+          "input_cache_hit_cost_per_m": 0.25,
+          "note": "Trial Key — MoE 25B actifs, mai 2026. Vision+raisonnement, 48 langues. 20 RPM Trial"
+        },
+        "command-a-reasoning-08-2025": {
+          "input_cost_per_m": 2.5,
+          "output_cost_per_m": 10.0,
+          "input_cache_hit_cost_per_m": 0.25,
+          "note": "Trial Key — Command A + thinking CoT, août 2025. Concurrent Magistral"
+        },
+        "command-a-vision-07-2025": {
+          "input_cost_per_m": 2.5,
+          "output_cost_per_m": 10.0,
+          "input_cache_hit_cost_per_m": 0.25,
+          "note": "Trial Key — Command A avec vision multimodale, juillet 2025"
+        },
+        "command-r-08-2024": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Trial Key (Gratuit)"
+        },
+        "command-r-plus-08-2024": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.0,
+          "note": "Trial Key (Gratuit)"
+        }
+      },
+      "advantages": "Trial Key (Gratuit, 10 RPM). Champion du RAG et du Tool Calling."
+    },
+    {
+      "name": "DeepSeek API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "deepseek-chat": {
+          "input_cost_per_m": 0.14,
+          "output_cost_per_m": 0.28,
+          "input_cache_hit_cost_per_m": 0.003,
+          "note": "Alias legacy"
+        },
+        "deepseek-reasoner": {
+          "input_cost_per_m": 0.55,
+          "output_cost_per_m": 2.19,
+          "input_cache_hit_cost_per_m": 0.14,
+          "note": "Legacy R1"
+        },
+        "deepseek-v4-flash": {
+          "input_cost_per_m": 0.14,
+          "output_cost_per_m": 0.28,
+          "input_cache_hit_cost_per_m": 0.003
+        },
+        "deepseek-v4-pro": {
+          "input_cost_per_m": 0.435,
+          "output_cost_per_m": 0.87,
+          "input_cache_hit_cost_per_m": 0.004
+        }
+      },
+      "advantages": "Ratio coût/intelligence imbattable. V4-Flash à $0.14/$0.28/M."
+    },
+    {
+      "name": "DeepInfra API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "deepinfra/deepseek-r1": {
+          "input_cost_per_m": 0.55,
+          "output_cost_per_m": 2.19
+        },
+        "deepinfra/llama-3.3-70b-instruct": {
+          "input_cost_per_m": 0.23,
+          "output_cost_per_m": 0.23
+        },
+        "deepinfra/qwen-2.5-72b-instruct": {
+          "input_cost_per_m": 0.35,
+          "output_cost_per_m": 0.35
+        }
+      },
+      "advantages": "Hébergeur de modèles open-weights à bas coût. Llama 3.3, Qwen 2.5 et DeepSeek R1."
+    },
+    {
+      "name": "xAI API (Grok)",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "grok-4.20-0309-non-reasoning": {
+          "input_cost_per_m": 1.25,
+          "output_cost_per_m": 2.5
+        },
+        "grok-4.20-0309-reasoning": {
+          "input_cost_per_m": 1.25,
+          "output_cost_per_m": 2.5
+        },
+        "grok-4.20-multi-agent-0309": {
+          "input_cost_per_m": 1.25,
+          "output_cost_per_m": 2.5
+        },
+        "grok-4.3": {
+          "input_cost_per_m": 1.25,
+          "output_cost_per_m": 2.5
+        },
+        "grok-build-0.1": {
+          "input_cost_per_m": 1.0,
+          "output_cost_per_m": 2.0
+        },
+        "grok-imagine-image": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.07,
+          "note": "xAI — Génération image, $0.07/image. Basé sur Aurora (Aurora Image Gen)"
+        },
+        "grok-imagine-video-1.5-preview": {
+          "input_cost_per_m": 0.0,
+          "output_cost_per_m": 0.5,
+          "note": "xAI Preview — génération vidéo ~$0.50+/vidéo. Non-production"
+        }
+      },
+      "advantages": "Modèles Grok-2 et Grok-Beta. Excellentes capacités de raisonnement."
+    },
+    {
+      "name": "MiniMax API",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "MiniMax-M2.5": {
+          "input_cost_per_m": 0.15,
+          "output_cost_per_m": 1.2,
+          "input_cache_hit_cost_per_m": 0.015,
+          "note": "MiniMax — Modèle stable précédent, $0.15/$1.20/M. Bon rapport qualité/coût"
+        },
+        "MiniMax-M2.7": {
+          "input_cost_per_m": 0.3,
+          "output_cost_per_m": 1.2,
+          "input_cache_hit_cost_per_m": 0.03,
+          "note": "MiniMax — 204K contexte, agentic+coding. $0.30/$1.20/M. Successeur M2.5"
+        },
+        "MiniMax-M2.7-highspeed": {
+          "input_cost_per_m": 0.6,
+          "output_cost_per_m": 2.4,
+          "input_cache_hit_cost_per_m": 0.06,
+          "note": "MiniMax Highspeed — 2x plus rapide, 2x plus cher. $0.60/$2.40/M. Agents temps réel"
+        },
+        "MiniMax-M3": {
+          "input_cost_per_m": 0.3,
+          "output_cost_per_m": 1.2,
+          "input_cache_hit_cost_per_m": 0.03,
+          "note": "MiniMax flagship — 1M contexte, multimodal text/image/video. $0.30/$1.20/M (≤512K)"
+        },
+        "minimax-m3": {
+          "input_cost_per_m": 1.2,
+          "output_cost_per_m": 1.2
+        }
+      },
+      "advantages": "Modèle d'écriture et de dialogue, performant en multilingue."
+    },
+    {
+      "name": "Gemini API (GCP Payant)",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "gemini-2.5-flash-paid": {
+          "input_cost_per_m_eur": 0.256515,
+          "output_cost_per_m_eur": 2.137625,
+          "cached_input_per_m_eur": 0.025651
+        },
+        "gemini-2.5-pro-paid": {
+          "input_cost_per_m_eur": 1.068812,
+          "output_cost_per_m_eur": 8.5505,
+          "cached_input_per_m_eur": 0.106881
+        },
+        "gemini-3-pro-preview-paid": {
+          "input_cost_per_m_eur": 1.7101,
+          "output_cost_per_m_eur": 10.2606
+        },
+        "gemini-3-pro-short-paid": {
+          "input_cost_per_m_eur": 1.7101,
+          "output_cost_per_m_eur": 10.2606,
+          "note": "Alias court"
+        },
+        "gemini-3.1-flash-lite-paid": {
+          "input_cost_per_m_eur": 0.213762,
+          "output_cost_per_m_eur": 1.282575,
+          "cached_input_per_m_eur": 0.021376
+        },
+        "gemini-3.1-pro-customtools-paid": {
+          "input_cost_per_m_eur": 1.7101,
+          "output_cost_per_m_eur": 10.2606
+        },
+        "gemini-3.1-pro-preview-paid": {
+          "input_cost_per_m_eur": 1.7101,
+          "output_cost_per_m_eur": 10.2606
+        },
+        "gemini-3.5-flash-paid": {
+          "input_cost_per_m_eur": 1.282575,
+          "output_cost_per_m_eur": 7.69545,
+          "cached_input_per_m_eur": 0.128257
+        }
+      },
+      "advantages": "Tarifs GCP en EUR. Search Grounding débloqué. Context Caching -90%."
+    },
+    {
+      "name": "Anthropic GCP",
+      "type": "Pay-as-you-go",
+      "rates": {
+        "claude-opus-4-8-gcp": {
+          "input_cost_per_m": 5.0,
+          "output_cost_per_m": 25.0,
+          "note": "Most intelligent Opus model, deeper reasoning for enterprise workflows"
+        },
+        "claude-sonnet-4-6-gcp": {
+          "input_cost_per_m": 3.0,
+          "output_cost_per_m": 15.0,
+          "note": "Frontier intelligence at scale, Agent Platform API, global endpoint"
+        }
+      },
+      "advantages": null
+    }
+  ],
+  "local": {
+    "name": "LM Studio (Local)",
+    "cost_monthly_usd": 0.0,
+    "endpoints": [
+      "http://192.168.1.x:1234/v1/chat/completions"
+    ],
+    "status": "ACTIF",
+    "models": [
+      "deepseek-coder-v2-lite",
+      "gemma-4-26b-a4b",
+      "gemma-4-31b",
+      "gemma-4-e4b",
+      "nomic-embed-text-v1.5",
+      "qwen2.5-14b-instruct-1m",
+      "qwen2.5-coder-32b",
+      "qwen3-coder-next",
+      "qwen3.6-35b-a3b"
+    ],
+    "advantages": "RTX 5070 Ti (16GB VRAM), 9 modèles chargés. Coût zéro, confidentialité totale."
+  }
+}

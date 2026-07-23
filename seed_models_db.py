@@ -1,4 +1,4 @@
-﻿"""
+"""
 seed_models_db.py — Peuplement initial de models_registry.db.
 
 Script idempotent (INSERT OR REPLACE) qui peuple la BDD depuis :

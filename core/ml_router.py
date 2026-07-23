@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/ml_router.py — Classifieur ML pour le routing des requêtes.
 
 Remplace le slow-path LLM par une LogisticRegression sklearn

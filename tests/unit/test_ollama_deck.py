@@ -1,4 +1,4 @@
-﻿"""
+"""
 tests/unit/test_ollama_deck.py
 Tests unitaires pour OllamaDeckProvider et la méthode get_deck_provider() de LLMGateway.
 Les tests mockent requests pour ne pas dépendre du réseau.

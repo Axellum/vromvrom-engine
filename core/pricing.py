@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core/pricing.py — Barème de prix unifié (P1-2.4).
 
@@ -18,9 +17,10 @@ Un petit barème de repli (`FALLBACK_PRICING`) couvre les alias/legacy absents d
 JSON (ex. alias "gemini", "minimax", "claude") et le cas où le fichier manque.
 """
 
-import os
+import datetime
 import json
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,7 @@ def load_pricing_table() -> dict:
         return _cache["table"]
 
     try:
-        with open(_PRICING_FILE, "r", encoding="utf-8") as f:
+        with open(_PRICING_FILE, encoding="utf-8") as f:
             data = json.load(f)
         table = _build_table(data)
         _cache["table"] = table
@@ -112,6 +112,26 @@ def load_pricing_table() -> dict:
     except Exception as e:
         logger.warning(f"[PRICING] Échec du chargement de pricing_strategy.json : {e} — repli sur FALLBACK_PRICING.")
         return {}
+
+
+def is_deepseek_peak_hours(now_utc: datetime.datetime) -> bool:
+    """
+    Détermine si l'instant donné en UTC correspond aux heures de pic de DeepSeek.
+    
+    À partir de mi-juillet 2026 (le 15 juillet inclusivement), les heures de pic sont :
+    - 1:00 AM à 4:00 AM UTC (9:00 AM à 12:00 noon UTC+8)
+    - 6:00 AM à 10:00 AM UTC (2:00 PM à 6:00 PM UTC+8)
+    """
+    if now_utc.date() < datetime.date(2026, 7, 15):
+        return False
+        
+    t = now_utc.time()
+    peak1_start = datetime.time(1, 0)
+    peak1_end = datetime.time(4, 0)
+    peak2_start = datetime.time(6, 0)
+    peak2_end = datetime.time(10, 0)
+    
+    return (peak1_start <= t <= peak1_end) or (peak2_start <= t <= peak2_end)
 
 
 def get_model_pricing(model: str) -> dict:
@@ -133,13 +153,26 @@ def get_model_pricing(model: str) -> dict:
         return dict(_FREE)
 
     table = load_pricing_table()
+    res = None
     if m in table:
-        return table[m]
-    for key in sorted(table, key=len, reverse=True):
-        if key in m:
-            return table[key]
+        res = dict(table[m])
+    else:
+        for key in sorted(table, key=len, reverse=True):
+            if key in m:
+                res = dict(table[key])
+                break
+        if res is None:
+            for key, price in FALLBACK_PRICING.items():
+                if key in m:
+                    res = dict(price)
+                    break
+            if res is None:
+                res = dict(_FREE)
 
-    for key, price in FALLBACK_PRICING.items():
-        if key in m:
-            return price
-    return dict(_FREE)
+    # Tarification pic-creux pour DeepSeek à partir de mi-juillet 2026
+    if "deepseek" in m and res:
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        if is_deepseek_peak_hours(now_utc):
+            res = {k: v * 2.0 for k, v in res.items()}
+
+    return res

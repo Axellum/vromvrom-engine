@@ -1,16 +1,21 @@
 {
-  "_comment": "Exemple de commandes vocales HA — copier vers ha_commands.json et adapter à votre installation.",
+  "_comment": "Phrases exactes après normalisation router (minuscules, sans accents finaux). entity_id vérifiés contre HA Freebox live 2026-07-14.",
   "commands": [
     {
       "phrases": [
         "allume le salon",
         "allume la lumiere du salon",
         "allume la lumière du salon",
+        "allume la lumiere salon",
+        "allumé le salon",
+        "allumee le salon",
         "mets la lumiere du salon",
-        "mets le salon"
+        "mets la lumière du salon",
+        "mets le salon",
+        "salon allume"
       ],
       "service": "light.turn_on",
-      "entity_id": "light.living_room"
+      "entity_id": "light.salon"
     },
     {
       "phrases": [
@@ -18,46 +23,99 @@
         "éteins le salon",
         "eteins la lumiere du salon",
         "éteins la lumière du salon",
+        "eteins les lumieres du salon",
+        "éteins les lumières du salon",
+        "eteindre la lumiere du salon",
+        "éteindre la lumière du salon",
+        "eteindre les lumieres du salon",
+        "coupe la lumiere du salon",
+        "coupe les lumieres du salon",
         "coupe le salon"
       ],
       "service": "light.turn_off",
-      "entity_id": "light.living_room"
+      "entity_id": "light.salon"
     },
     {
       "phrases": [
         "allume la chambre",
-        "allume la lumiere de la chambre"
+        "allume la lumiere de la chambre",
+        "mets la chambre"
       ],
       "service": "light.turn_on",
-      "entity_id": "light.bedroom"
+      "entity_id": "light.h6008_2"
     },
     {
       "phrases": [
         "eteins la chambre",
         "éteins la chambre",
-        "eteins la lumiere de la chambre"
+        "eteins la lumiere de la chambre",
+        "éteins la lumière de la chambre",
+        "eteins les lumieres de la chambre",
+        "éteins les lumières de la chambre"
       ],
       "service": "light.turn_off",
-      "entity_id": "light.bedroom"
+      "entity_id": "light.h6008_2"
     },
     {
       "phrases": [
+        "allume le chevet salon",
+        "allume la lumiere chevet salon"
+      ],
+      "service": "light.turn_on",
+      "entity_id": "light.h6008"
+    },
+    {
+      "phrases": [
+        "eteins le chevet salon",
+        "éteins le chevet salon"
+      ],
+      "service": "light.turn_off",
+      "entity_id": "light.h6008"
+    },
+    {
+      "phrases": [
+        "allume le spot pied",
+        "allume la lumiere pied"
+      ],
+      "service": "light.turn_on",
+      "entity_id": "light.h600c"
+    },
+    {
+      "phrases": [
+        "eteins le spot pied",
+        "éteins le spot pied"
+      ],
+      "service": "light.turn_off",
+      "entity_id": "light.h600c"
+    },
+    {
+      "phrases": [
+        "ouvre le volet serre",
+        "ouvre le volet de la serre",
+        "monte le volet serre",
         "ouvre le volet du salon",
         "ouvre les volets du salon",
-        "monte le volet du salon"
+        "monte le volet du salon",
+        "monte les volets du salon"
       ],
-      "service": "script.blind_action",
+      "service": "script.tab5_volet_action",
       "entity_id": "",
       "service_data": {"action": "open"}
     },
     {
       "phrases": [
+        "ferme le volet serre",
+        "ferme le volet de la serre",
+        "baisse le volet serre",
         "ferme le volet du salon",
         "ferme les volets du salon",
         "baisse le volet du salon",
-        "descend les volets du salon"
+        "descend le volet du salon",
+        "descends les volets du salon",
+        "descend les volets du salon",
+        "baisse les volets du salon"
       ],
-      "service": "script.blind_action",
+      "service": "script.tab5_volet_action",
       "entity_id": "",
       "service_data": {"action": "close"}
     },
@@ -65,28 +123,54 @@
       "phrases": [
         "stop",
         "stoppe",
+        "arrete",
+        "arrête",
         "arrete le volet",
-        "stop les volets du salon"
+        "arrête le volet",
+        "stop le volet",
+        "stop les volets",
+        "stop les volets du salon",
+        "arrete les volets du salon"
       ],
-      "service": "script.blind_action",
+      "service": "script.tab5_volet_action",
       "entity_id": "",
       "service_data": {"action": "stop"}
     },
     {
       "phrases": [
         "allume la clim du salon",
-        "allume la climatisation du salon"
+        "allume la climatisation du salon",
+        "demarre la clim salon"
       ],
       "service": "climate.turn_on",
-      "entity_id": "climate.living_room"
+      "entity_id": "climate.salon_daikinap71273_clim"
     },
     {
       "phrases": [
         "eteins la clim du salon",
-        "éteins la clim du salon"
+        "éteins la clim du salon",
+        "arrete la clim salon"
       ],
       "service": "climate.turn_off",
-      "entity_id": "climate.living_room"
+      "entity_id": "climate.salon_daikinap71273_clim"
+    },
+    {
+      "phrases": [
+        "active le micro",
+        "active le wake word",
+        "active okay nabu"
+      ],
+      "service": "switch.turn_on",
+      "entity_id": "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+    },
+    {
+      "phrases": [
+        "desactive le micro",
+        "désactive le micro",
+        "coupe le wake word"
+      ],
+      "service": "switch.turn_off",
+      "entity_id": "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
     }
   ]
 }

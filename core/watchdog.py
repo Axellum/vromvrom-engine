@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/watchdog.py — Watchdog MQTT 24/7 pour la domotique.
 
 Architecture 3 niveaux :

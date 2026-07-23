@@ -16,15 +16,16 @@ Auteur : Antigravity IDE + Axel
 Date : 2026-06-06
 """
 
-import os
-import hmac
-import time
 import hashlib
+import hmac
+import logging
+import os
 import secrets
 import threading
-import logging
-from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import time
+
+from fastapi import Depends, HTTPException, Request, status, WebSocket
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def _get_api_key() -> str:
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".env")
         env_path = os.path.normpath(env_path)
         if os.path.exists(env_path):
-            with open(env_path, "r", encoding="utf-8") as f:
+            with open(env_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith("MOTEUR_API_KEY="):
@@ -236,3 +237,66 @@ def invalidate_key_cache():
     global _api_key_cache
     _api_key_cache = None
     logger.info("[AUTH] Cache MOTEUR_API_KEY invalidé.")
+
+
+async def require_websocket_auth(
+    websocket: WebSocket,
+) -> str:
+    """
+    Dépendance FastAPI : authentification obligatoire pour les connexions WebSockets.
+    
+    Accepte :
+      - Un ticket éphémère à usage unique dans l'URL (?ticket=<ticket>)
+      - Un token Bearer dans l'URL (?token=<token>) pour rétrocompatibilité
+      - Un en-tête standard 'Authorization: Bearer <MOTEUR_API_KEY>' (si envoyé par le client)
+      
+    Ferme la connexion avec le code 1008 (Policy Violation) et lève WebSocketDisconnect
+    si le token/ticket est absent ou invalide.
+    """
+    import hmac
+    from fastapi import WebSocketDisconnect
+
+    required_key = _get_api_key()
+
+    # Fail-closed : pas de clé serveur → refus (jamais d'accès libre).
+    if not required_key:
+        logger.error(
+            "[AUTH] ❌ MOTEUR_API_KEY non configurée : refus fail-closed sur WebSocket."
+        )
+        await websocket.close(code=1008)
+        raise WebSocketDisconnect(1008)
+
+    # 1. Vérification via ticket éphémère (SSE/WS)
+    ticket = websocket.query_params.get("ticket", "")
+    if ticket:
+        if verify_and_consume_ticket(ticket):
+            return "ticket"
+        logger.warning("[AUTH] ❌ Ticket WebSocket invalide ou expiré.")
+        await websocket.close(code=1008)
+        raise WebSocketDisconnect(1008)
+
+    # 2. Vérification via token dans la query string (?token=)
+    token = websocket.query_params.get("token", "")
+
+    # 3. Alternative : vérification via header Authorization
+    if not token:
+        auth_header = websocket.headers.get("authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+
+    if not token:
+        logger.warning(
+            "[AUTH] ❌ Authentification WebSocket requise. Token ou ticket manquant."
+        )
+        await websocket.close(code=1008)
+        raise WebSocketDisconnect(1008)
+
+    if not hmac.compare_digest(token, required_key):
+        logger.warning(
+            f"[AUTH] ❌ Token WebSocket invalide reçu (empreinte {_fingerprint(token)})"
+        )
+        await websocket.close(code=1008)
+        raise WebSocketDisconnect(1008)
+
+    return token
+

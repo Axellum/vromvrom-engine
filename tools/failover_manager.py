@@ -1,4 +1,4 @@
-﻿"""
+"""
 tools/failover_manager.py — Antigravity Phase 4 : Gestionnaire de failover Deck (côté PC)
 ══════════════════════════════════════════════════════════════════════════════════════════
 

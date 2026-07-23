@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Prépare le dossier OSS vromvrom-engine à partir du repo privé.
     Copie le code source en excluant les données personnelles et secrets.
@@ -215,7 +215,9 @@ Write-Host ""
 Write-Host "Prochaines étapes :" -ForegroundColor Cyan
 Write-Host "  1. Vérifier le scan de sécurité ci-dessus"
 Write-Host "  2. cd H:\vromvrom-engine-oss"
-Write-Host "  3. git init && git remote add origin <URL_DU_REPO_GITHUB>"
-Write-Host "  4. git add -p   (revue patch par patch)"
-Write-Host "  5. git commit -m 'feat: initial OSS release — moteur multi-agents V12'"
-Write-Host "  6. git push -u origin main"
+Write-Host "  3. python scripts/oss_secrets_scan.py   (bloquant, même check que la CI)"
+Write-Host "  4. git checkout -b sync/YYYY-MM-DD"
+Write-Host "  5. git add -p   (revue patch par patch) && git commit"
+Write-Host "  6. git push -u origin HEAD && gh pr create"
+Write-Host "  7. Attendre CI vert (secrets scan + pytest) puis merger la PR"
+Write-Host "  ⛔ Ne jamais pousser directement sur main (branche protégée)."

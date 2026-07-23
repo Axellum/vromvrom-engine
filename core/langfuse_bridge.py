@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/langfuse_bridge.py — Axe 1 — Bridge Langfuse pour l'observabilité LLM avancée.
 
 Singleton qui envoie les traces (sessions, agents, appels LLM) vers une instance

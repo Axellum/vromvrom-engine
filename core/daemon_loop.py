@@ -1,4 +1,4 @@
-﻿"""
+"""
 core/daemon_loop.py — Boucle de fond asyncio pour le Démon Sentinelle 24/7.
 
 Service asyncio autonome (PAS un BaseAgent) lancé au startup de gui_server.py.

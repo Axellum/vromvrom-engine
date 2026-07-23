@@ -2,13 +2,16 @@ name: Python CI & Security
 
 on:
   pull_request:
-    branches: [ master ]
+    branches: [main]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   test-and-scan:
+    name: test-and-scan
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
@@ -24,17 +27,16 @@ jobs:
         python -m pip install --upgrade pip
         pip install bandit flake8
         if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        # requirements-dev.txt : pytest, pytest-asyncio, paramiko (requis par test_failover), etc.
         if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
 
     - name: Security Scan (Bandit)
       run: |
         bandit -r . -f custom -c pyproject.toml || true
-        # On ne bloque pas la CI pour Bandit au début, juste un warning
+
+    - name: OSS secrets / LAN IP scan (bloquant)
+      run: python scripts/oss_secrets_scan.py
 
     - name: Seed models registry DB
-      # Peuple models_registry.db à partir du catalogue statique (aucun secret/réseau requis).
-      # Requis par tests/test_models_db.py qui asserte l'existence et le contenu de la base.
       run: python seed_models_db.py
 
     - name: Run Pytest

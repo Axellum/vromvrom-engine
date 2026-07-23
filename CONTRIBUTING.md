@@ -9,6 +9,9 @@ Merci de vouloir contribuer ! Ce projet est né d'un besoin personnel en domotiq
 
 ## Workflow
 
+**Toute mise à jour de `main` passe par une Pull Request** (branche protégée) :
+CI obligatoire = scan anti-fuite OSS + pytest (+ Bandit informatif).
+
 ```bash
 # Forker le repo, puis :
 git clone https://github.com/<votre-username>/vromvrom-engine.git
@@ -22,14 +25,24 @@ git checkout -b fix/nom-du-bug
 # Installer les dépendances de dev
 pip install -r requirements-dev.txt
 
-# Travailler, puis lancer les tests
+# Travailler, puis lancer les vérifs locales
+python scripts/oss_secrets_scan.py
 pytest
 
 # Committer (convention Conventional Commits)
 git commit -m "feat(router): add OpenAI-compatible provider"
 
-# Ouvrir une PR sur GitHub
+# Pousser la branche et ouvrir une PR → attendre le CI vert → merge
 ```
+
+### Mainteneurs — sync depuis le miroir privé
+
+Ne **jamais** pousser directement sur `main`. Flux :
+
+1. Exporter / anonymiser (IP `192.168.0.x` → placeholders, aucun token/clé).
+2. Branche `sync/…` + PR.
+3. CI vert (`🔒 OSS secrets scan`, `🧪 Pytest`, `test-and-scan`).
+4. Merge de la PR uniquement.
 
 ## Conventions de code
 

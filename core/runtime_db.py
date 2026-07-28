@@ -473,6 +473,43 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_vocal_jobs_conv ON vocal_jobs(conversation_id, created_at DESC)"
     )
 
+    # ─── Comparatifs de modèles (IHM « Benchmarks ») ───
+    # Un run = un même prompt envoyé à N modèles ; un result = la mesure réelle
+    # pour un modèle donné (latence chronométrée côté serveur, jamais estimée).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS benchmark_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT UNIQUE NOT NULL,
+            prompt TEXT NOT NULL,
+            system_prompt TEXT,
+            created_at REAL NOT NULL,
+            finished_at REAL,
+            status TEXT NOT NULL DEFAULT 'running'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS benchmark_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            model TEXT NOT NULL,
+            status TEXT NOT NULL,
+            latency_ms REAL,
+            response_text TEXT,
+            response_chars INTEGER,
+            prompt_tokens INTEGER,
+            completion_tokens INTEGER,
+            cost_usd REAL,
+            error_message TEXT,
+            created_at REAL NOT NULL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_benchmark_results_run ON benchmark_results(run_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_benchmark_runs_created ON benchmark_runs(created_at DESC)"
+    )
+
     conn.commit()
 
 

@@ -41,7 +41,8 @@ VOCAL_TOOL_SYSTEM_SUFFIX = (
     "Pour une température/état : appelle ha_list puis ha_get_state. "
     "INTERDIT d'inventer une valeur, une entité ou un service. "
     "Si l'outil échoue ou renvoie unavailable, dis-le clairement. "
-    "Réponse finale : 1 phrase TTS, français, sans markdown, sans JSON."
+    "Réponse finale obligatoire : phrases françaises pour Axel (TTS). "
+    "INTERDIT de lire à voix haute du JSON, du code, ou le nom des outils."
 )
 
 # Lecture seule — les commandes passent par Zero-LLM (vocal_host).
@@ -109,16 +110,16 @@ def _ha_credentials() -> tuple[str, str]:
     return ha_url.rstrip("/"), ha_token
 
 
-def _ha_requests_verify() -> bool | str:
-    """Aligné sur core.ha_tls : False si HA_VERIFY_TLS=false, sinon CA bundle ou True."""
-    from core.ha_tls import ha_tls_verification_enabled
+def _ha_session():
+    """Session HTTP appliquant la politique TLS HA (cf. core.ha_tls).
 
-    if not ha_tls_verification_enabled():
-        return False
-    ca_bundle = os.environ.get("HA_CA_BUNDLE", "").strip()
-    if ca_bundle and os.path.exists(ca_bundle):
-        return ca_bundle
-    return True
+    Passe par une session plutôt que `verify=` seul : c'est le seul moyen de
+    porter un nom d'hôte imposé (HA_TLS_SERVER_HOSTNAME), nécessaire quand
+    HASS_URL vise une IP que le certificat ne couvre pas.
+    """
+    from core.ha_tls import ha_requests_session
+
+    return ha_requests_session()
 
 
 def _ha_headers(token: str) -> dict[str, str]:
@@ -132,11 +133,10 @@ def _tool_ha_list(query: str, domain: str = "") -> str:
     if not ha_token:
         return "Erreur: HASS_TOKEN absent."
     try:
-        resp = requests.get(
+        resp = _ha_session().get(
             f"{ha_url}/api/states",
             headers=_ha_headers(ha_token),
             timeout=10,
-            verify=_ha_requests_verify(),
         )
     except requests.RequestException as exc:
         return f"Erreur HA réseau: {exc}"
@@ -149,11 +149,20 @@ def _tool_ha_list(query: str, domain: str = "") -> str:
         entities = [e for e in entities if str(e.get("entity_id", "")).startswith(prefix)]
 
     q = (query or "").strip().lower()
-    matched = [
+    candidates = [
         e for e in entities
         if q in str(e.get("entity_id", "")).lower()
         or q in str(e.get("attributes", {}).get("friendly_name", "")).lower()
-    ][:20]
+    ]
+    # Prioriser les entités vivantes : un doublon mort (ex. capteur Sonoff cloud HS)
+    # ne doit pas masquer le capteur Zigbee actif quand les deux matchent la requête
+    # (« température salon » → le Sonoff unavailable cachait le thermomètre Zigbee vivant).
+    _DEAD_STATES = {"unavailable", "unknown", "none", ""}
+    alive = [
+        e for e in candidates
+        if str(e.get("state", "")).strip().lower() not in _DEAD_STATES
+    ]
+    matched = (alive or candidates)[:20]
 
     if not matched:
         return f"Aucune entité pour '{query}'."
@@ -179,11 +188,10 @@ def _tool_ha_get_state(entity_id: str) -> str:
     if not ha_token:
         return "Erreur: HASS_TOKEN absent."
     try:
-        resp = requests.get(
+        resp = _ha_session().get(
             f"{ha_url}/api/states/{entity_id}",
             headers=_ha_headers(ha_token),
             timeout=10,
-            verify=_ha_requests_verify(),
         )
     except requests.RequestException as exc:
         return f"Erreur HA réseau: {exc}"
@@ -255,12 +263,11 @@ def _tool_ha_call_service(
         return "Erreur: HASS_TOKEN absent."
 
     try:
-        resp = requests.post(
+        resp = _ha_session().post(
             f"{ha_url}/api/services/{domain}/{svc_name}",
             headers=_ha_headers(ha_token),
             json=svc_data,
             timeout=10,
-            verify=_ha_requests_verify(),
         )
     except requests.RequestException as exc:
         return f"Erreur HA réseau: {exc}"

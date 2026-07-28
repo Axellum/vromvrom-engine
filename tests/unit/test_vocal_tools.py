@@ -29,16 +29,45 @@ def test_ha_call_service_allow_light(monkeypatch):
     mock_resp.status_code = 200
     mock_resp.text = "[]"
 
-    with patch("requests.post", return_value=mock_resp) as post:
+    session = MagicMock()
+    session.post.return_value = mock_resp
+
+    with patch("core.vocal_tools._ha_session", return_value=session):
         with patch.dict("os.environ", {"HASS_TOKEN": "tok", "HASS_URL": "http://ha", "HA_VERIFY_TLS": "false"}):
             out = _tool_ha_call_service("light.chambre", "light.turn_on", {"brightness": 120})
     assert out.startswith("OK:")
-    post.assert_called_once()
-    args, kwargs = post.call_args
+    session.post.assert_called_once()
+    args, kwargs = session.post.call_args
     assert args[0].endswith("/api/services/light/turn_on")
     assert kwargs["json"]["entity_id"] == "light.chambre"
     assert kwargs["json"]["brightness"] == 120
-    assert kwargs.get("verify") is False
+
+
+def test_ha_list_prefers_alive_entities(monkeypatch):
+    """Un doublon mort (unavailable) ne doit pas masquer la source vivante."""
+    from core.vocal_tools import _tool_ha_list
+
+    payload = [
+        {"entity_id": "sensor.sonoff_salon_temperature",
+         "state": "unavailable",
+         "attributes": {"friendly_name": "01 Salon Temperature"}},
+        {"entity_id": "sensor.thermometre_salon_temperature",
+         "state": "23.3",
+         "attributes": {"friendly_name": "Thermometre salon", "unit_of_measurement": "°C"}},
+    ]
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = payload
+
+    session = MagicMock()
+    session.get.return_value = mock_resp
+
+    with patch("core.vocal_tools._ha_session", return_value=session):
+        with patch.dict("os.environ", {"HASS_TOKEN": "tok", "HASS_URL": "http://ha", "HA_VERIFY_TLS": "false"}):
+            out = _tool_ha_list("salon")
+
+    assert "thermometre_salon_temperature" in out       # source vivante conservée
+    assert "sonoff_salon_temperature" not in out         # doublon mort écarté
 
 
 def test_provider_supports_unwrap_fallback():

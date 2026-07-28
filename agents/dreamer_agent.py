@@ -16,13 +16,13 @@ Auteur : Antigravity IDE + Axel
 Créé le : 2026-05-30
 """
 
-import os
-import json
-import time
 import asyncio
+import json
 import logging
+import os
+import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Any
 
 logger = logging.getLogger("dreamer_agent")
 
@@ -33,11 +33,31 @@ _ENGINE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _REPORTS_DIR = os.path.join(_ENGINE_ROOT, "checkpoints", "dreamer_reports")
 
 
+def _dreamcoder_repo_root(pa_config: dict | None) -> str:
+    """
+    [#T202] Racine du dépôt de TRAVAIL DreamCoder (branches task/*, commits).
+
+    Sur le Deck, la prod est déployée par overlay tar SANS dépôt Git légitime
+    (décision Axel : jamais de `git init` dans le dossier de prod) : DreamCoder
+    doit travailler dans un CLONE dédié (ex: /home/deck/dev_station/
+    moteur_agents_dreamcoder/), configuré via
+    `persistent_agents.dreamcoder_repo_path` dans config.json.
+
+    Sans configuration explicite, repli sur _ENGINE_ROOT (poste de dev Windows,
+    où le dossier du moteur EST un vrai clone) — comportement historique.
+    Les rapports/checkpoints restent TOUJOURS dans _ENGINE_ROOT (runtime moteur).
+    """
+    configured = (pa_config or {}).get("dreamcoder_repo_path") or ""
+    if configured:
+        return os.path.abspath(configured)
+    return _ENGINE_ROOT
+
+
 # ──────────────────────────────────────────────────────────────────
 # État global du dreamer (exposé via l'API)
 # ──────────────────────────────────────────────────────────────────
 
-dreamer_state: Dict[str, Any] = {
+dreamer_state: dict[str, Any] = {
     "running": False,
     "enabled": False,
     "last_run_at": None,
@@ -51,7 +71,7 @@ dreamer_state: Dict[str, Any] = {
 }
 
 
-def _load_persistent_config() -> Dict[str, Any]:
+def _load_persistent_config() -> dict[str, Any]:
     """Charge la section persistent_agents depuis config.json."""
     try:
         from core.llm_gateway import load_config
@@ -66,26 +86,26 @@ def _load_persistent_config() -> Dict[str, Any]:
 # Extraction des données de la journée
 # ──────────────────────────────────────────────────────────────────
 
-def _extract_daily_sessions() -> Dict[str, Any]:
+def _extract_daily_sessions() -> dict[str, Any]:
     """
     Extrait les sessions et appels LLM des dernières 24h depuis session_history.db.
     Retourne un résumé structuré pour le prompt du dreamer.
     """
     try:
         from core.session_history import get_sessions, get_token_stats
-        
+
         # Récupérer les sessions des dernières 24h
         sessions = get_sessions(limit=50)
         cutoff = time.time() - 86400  # 24h
-        
+
         recent_sessions = [
             s for s in sessions
             if s.get("started_at", 0) >= cutoff
         ]
-        
+
         # Statistiques de tokens des dernières 24h
         token_stats = get_token_stats(since_hours=24)
-        
+
         # Extraire les erreurs et corrections
         errors = []
         corrections = []
@@ -100,7 +120,7 @@ def _extract_daily_sessions() -> Dict[str, Any]:
                     "objective": session.get("objective", "")[:100],
                     "result": session.get("result_summary", "")[:200],
                 })
-        
+
         return {
             "date": datetime.now().strftime("%Y-%m-%d"),
             "sessions_count": len(recent_sessions),
@@ -116,14 +136,14 @@ def _extract_daily_sessions() -> Dict[str, Any]:
         return {"error": str(e), "sessions_count": 0}
 
 
-def _extract_existing_lessons() -> List[Dict]:
+def _extract_existing_lessons() -> list[dict]:
     """
     Récupère les leçons existantes dans memory.db pour détecter les contradictions.
     """
     try:
         from memory.memory_db import MemoryDB
         db = MemoryDB.get_instance()
-        
+
         # Récupérer les faits de chaque catégorie
         counts = db.get_all_facts_count()
         all_facts = []
@@ -136,13 +156,13 @@ def _extract_existing_lessons() -> List[Dict]:
                     "content": f.get("content", "")[:150],
                     "score": f.get("relevance_score", 1.0),
                 })
-        
+
         return all_facts
     except Exception as e:
         logger.warning(f"[DREAMER] Erreur de lecture des leçons existantes: {e}")
         return []
 
-async def _consolidate_memory() -> Dict[str, int]:
+async def _consolidate_memory() -> dict[str, int]:
     """
     Exécute la consolidation mémoire en appelant les méthodes existantes.
     Réutilise exactement le même code que engine.py::_consolidate_memory().
@@ -151,32 +171,32 @@ async def _consolidate_memory() -> Dict[str, int]:
     Retourne un dict avec les compteurs d'actions effectuées.
     """
     actions = {"decayed": 0, "gc_summarized": 0, "gc_archived": 0, "lessons_added": 0}
-    
+
     try:
         from memory.memory_db import MemoryDB
         db = MemoryDB.get_instance()
-        
+
         logger.info("[DREAMER] [Consolidation BDD] 1. Lancement du decay de pertinence...")
         # 1. Decay des scores de pertinence (faits non consultés > 7 jours)
         actions["decayed"] = await asyncio.to_thread(db.decay_relevance, 0.03)
         if actions["decayed"] > 0:
             logger.info(f"[DREAMER] [Consolidation BDD] Decay appliqué sur {actions['decayed']} faits")
-        
+
         logger.info("[DREAMER] [Consolidation BDD] 2. Lancement du GC du graphe...")
         # 2. GC du graphe (observations > 15, entités temporaires > 30 jours)
         gc_result = await asyncio.to_thread(db.gc_graph_entities, 15, 30)
         actions["gc_summarized"] = gc_result.get("summarized", 0)
         actions["gc_archived"] = gc_result.get("archived", 0)
-        
+
         if actions["gc_summarized"] > 0 or actions["gc_archived"] > 0:
             logger.info(
                 f"[DREAMER] [Consolidation BDD] GC graphe: {actions['gc_summarized']} résumées, "
                 f"{actions['gc_archived']} archivées"
             )
-        
+
     except Exception as e:
         logger.error(f"[DREAMER] Erreur de consolidation mémoire: {e}", exc_info=True)
-    
+
     return actions
 
 
@@ -196,7 +216,7 @@ async def _compress_old_episodes() -> dict:
     """
     stats = {"compressed": 0, "purged": 0, "kept": 0, "error": None}
     try:
-        from memory.episodes import EpisodeStore, EPISODE_TTL_DAYS
+        from memory.episodes import EPISODE_TTL_DAYS, EpisodeStore
         from memory.memory_db import MemoryDB
 
         episode_store = EpisodeStore()
@@ -299,8 +319,8 @@ def _find_episode_file(episodes_dir: str, session_id: str) -> str:
     return ""
 
 
-async def _analyze_with_llm(daily_data: Dict, existing_lessons: List[Dict],
-                             pa_config: Dict) -> Optional[Dict]:
+async def _analyze_with_llm(daily_data: dict, existing_lessons: list[dict],
+                             pa_config: dict) -> dict | None:
     """
     Envoie un prompt structuré au LLM pour analyser la journée.
     
@@ -313,14 +333,14 @@ async def _analyze_with_llm(daily_data: Dict, existing_lessons: List[Dict],
     if daily_data.get("sessions_count", 0) == 0:
         logger.info("[DREAMER] [Analyse LLM] Aucune session à analyser — LLM non appelé")
         return None
-    
+
     try:
         from core.llm_gateway import LLMGateway, load_config
-        
+
         gateway = LLMGateway()
         config = load_config()
         dreamer_tier = pa_config.get("dreamer_model", "leger")
-        
+
         # Construire le prompt d'analyse
         system_prompt = """Tu es un agent de consolidation mémoire pour un système multi-agents domotique.
 Tu analyses les sessions de la journée écoulée et extrais les leçons apprises.
@@ -364,7 +384,7 @@ Réponds UNIQUEMENT avec le JSON, sans commentaire."""
         # Résoudre le provider pour le tier du dreamer
         model_name, provider = gateway.get_provider_for_tier(dreamer_tier, config)
         logger.info(f"[DREAMER] [Analyse LLM] Modèle résolu pour consolidation : {model_name} (provider: {type(provider).__name__})")
-        
+
         logger.info("[DREAMER] [Analyse LLM] Envoi de la requête au LLM (generate_async)...")
         response = await provider.generate_async(
             system_prompt=system_prompt,
@@ -373,17 +393,17 @@ Réponds UNIQUEMENT avec le JSON, sans commentaire."""
             temperature=0.3,
         )
         logger.info("[DREAMER] [Analyse LLM] Réponse reçue du LLM.")
-        
+
         # Parser la réponse JSON
         response_text = response.strip()
         # Nettoyer les balises markdown ```json ... ``` si présentes
         if response_text.startswith("```"):
             lines = response_text.split("\n")
             response_text = "\n".join(lines[1:-1])
-        
+
         analysis = json.loads(response_text)
         return analysis
-        
+
     except json.JSONDecodeError as je:
         logger.warning(f"[DREAMER] [Analyse LLM] Réponse LLM non-JSON: {je}. Réponse brute: {response[:200]}...")
         return None
@@ -392,17 +412,17 @@ Réponds UNIQUEMENT avec le JSON, sans commentaire."""
         return None
 
 
-def _apply_analysis(analysis: Dict) -> Dict[str, int]:
+def _apply_analysis(analysis: dict) -> dict[str, int]:
     """
     Applique les résultats de l'analyse LLM dans memory.db.
     Fonction synchrone exécutée dans un thread pour SQLite.
     """
     applied = {"lessons_added": 0, "facts_marked_obsolete": 0}
-    
+
     try:
         from memory.memory_db import MemoryDB
         db = MemoryDB.get_instance()
-        
+
         # 1. Ajouter les nouvelles leçons
         for lesson in analysis.get("new_lessons", []):
             try:
@@ -417,7 +437,7 @@ def _apply_analysis(analysis: Dict) -> Dict[str, int]:
                 applied["lessons_added"] += 1
             except Exception as le:
                 logger.warning(f"[DREAMER] Erreur d'ajout de leçon: {le}")
-        
+
         # 2. Marquer les faits obsolètes (réduire leur score de pertinence)
         for obsolete in analysis.get("obsolete_facts", []):
             title = obsolete.get("title", "")
@@ -441,25 +461,25 @@ def _apply_analysis(analysis: Dict) -> Dict[str, int]:
                                 conn.close()
                 except Exception as oe:
                     logger.warning(f"[DREAMER] Erreur de marquage obsolète: {oe}")
-        
+
         if applied["lessons_added"] > 0:
             logger.info(f"[DREAMER] [Appliquer Analyse] ✅ {applied['lessons_added']} leçon(s) ajoutée(s)")
         if applied["facts_marked_obsolete"] > 0:
             logger.info(f"[DREAMER] [Appliquer Analyse] 🗑️ {applied['facts_marked_obsolete']} fait(s) marqué(s) obsolètes")
-        
+
     except Exception as e:
         logger.error(f"[DREAMER] Erreur d'application de l'analyse: {e}", exc_info=True)
-    
+
     return applied
 
 
-def _save_report(report: Dict) -> str:
+def _save_report(report: dict) -> str:
     """Sauvegarde le rapport de consolidation dans un fichier JSON."""
     os.makedirs(_REPORTS_DIR, exist_ok=True)
-    
+
     filename = f"dreamer_report_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.json"
     filepath = os.path.join(_REPORTS_DIR, filename)
-    
+
     try:
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
@@ -471,10 +491,372 @@ def _save_report(report: Dict) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────
+# DreamCoder — traitement d'une tâche + boucle de drainage à durée réglable
+# ──────────────────────────────────────────────────────────────────
+
+async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: str,
+                                        orig_branch: str, bg: Any) -> dict[str, Any]:
+    """
+    Traite UNE tâche du backlog : prépare une branche Git dédiée, exécute le
+    pipeline complet dessus, commit si succès ou rollback+retry sinon, met à
+    jour le statut de la tâche. Logique reprise à l'identique de l'ancien
+    bloc inline de run_dreamer_cycle (étape 3.0) — extraite ici pour être
+    appelable en boucle par _run_dreamcoder_drain_loop().
+
+    :return: dict {"task_id", "title", "status", "branch", "cost_usd", "tokens_used", "error"}
+    """
+    import filelock
+
+    from core.backlog_db import update_task_status
+
+    task_id = task["id"]
+    result: dict[str, Any] = {
+        "task_id": task_id, "title": task["title"], "status": None,
+        "branch": None, "cost_usd": 0.0, "tokens_used": 0, "error": None,
+    }
+    logger.info(f"[DREAMER] [DreamCoder] Tâche trouvée : ID {task_id} - '{task['title']}'")
+    logger.info(f"[DREAMER] [DreamCoder] Provider alloué : {provider}")
+
+    # Configurer temporairement les modèles selon le provider alloué.
+    # 07/07 : rôles séparés — le provider de la cascade (gratuit/abonnement en
+    # priorité) fait l'EXÉCUTION brute (dégrossir), tandis que le PLANNER et le
+    # REVIEWER sont pilotés par un "gouverneur" fixe (DeepSeek par défaut,
+    # escaladé vers zai-glm-4.7 — GLM/Z.ai hébergé gratuitement via la clé
+    # Cerebras — sur une tâche déjà retentée au moins une fois, décision Axel
+    # 07/07 : "gratuit pour dégrossir, DeepSeek/Z.ai pour gouverner"). Le
+    # gouverneur ne passe PAS par la cascade BudgetGuard (appel direct par nom
+    # de modèle) donc il est protégé séparément par le plafond quotidien
+    # combiné (total_daily_budget_usd) : au-delà, on dégrade sur le modèle
+    # gratuit de l'exécuteur plutôt que de continuer à consommer le budget
+    # payant du gouverneur.
+    from core.llm_gateway import load_config
+    config = load_config()
+    temp_config = config.copy()
+
+    executor_model_map = {
+        "ollama": "ollama_local",
+        "lmstudio": "local",
+        "gemini-cli-abo": "gemini-3.5-flash-high-cli",
+        "claude-cli-abo": "claude-sonnet-4.6-thinking-cli",
+        "cerebras-free": "gpt-oss-120b",
+        "dashscope-coding": "dashscope/qwen3-coder-next",
+        "cohere-free": "command-r-plus-08-2024",
+        "mistral-free": "open-mistral-nemo",
+        "gemini-free": "gemini-3.5-flash-free",
+        "deepseek-free": "deepseek-chat",
+        "anthropic-claude-haiku": "claude-haiku-4-5",
+    }
+    executor_model = executor_model_map.get(provider, "deepseek-chat")
+    temp_config["executor_model"] = executor_model
+
+    dreamcoder_spent_today = await bg.get_scoped_spend_usd("dreamcoder", 86400.0)
+    total_cap = bg.config.get("total_daily_budget_usd", 1.0)
+    governor_within_budget = dreamcoder_spent_today < total_cap
+
+    if not governor_within_budget:
+        logger.warning(
+            f"[DREAMER] [DreamCoder] Plafond quotidien combiné atteint "
+            f"(${dreamcoder_spent_today:.4f}/{total_cap} USD) — gouverneur dégradé "
+            f"sur le modèle de l'exécuteur ('{executor_model}') pour cette tâche."
+        )
+        governor_model = executor_model
+    elif task.get("retries", 0) > 0:
+        # Escalade qualité : la tâche a déjà échoué au moins une fois, on monte
+        # en gamme sur un modèle GLM (gratuit via Cerebras) plutôt que de
+        # retenter avec le même gouverneur.
+        governor_model = "zai-glm-4.7"
+    else:
+        governor_model = "deepseek-chat"
+
+    temp_config["planner_model"] = governor_model
+    temp_config["reviewer_model"] = governor_model
+
+    # Préparer la branche éphémère de l'agent
+    from tools.git_safety import (
+        _run_git,
+        git_generate_semantic_commit_msg,
+        git_prepare_agent_branch,
+        git_rollback_checkpoint,
+    )
+
+    # [#T202] Toutes les opérations Git de la tâche ciblent le dépôt de travail
+    # DreamCoder (clone dédié si configuré, _ENGINE_ROOT sinon).
+    repo_root = _dreamcoder_repo_root(pa_config)
+
+    branch_name = await asyncio.to_thread(
+        git_prepare_agent_branch,
+        session_id=str(task_id),
+        repo_path=repo_root,
+        prefix="task/"
+    )
+
+    if branch_name.startswith("Erreur"):
+        logger.error(f"[DREAMER] [DreamCoder] Impossible de préparer la branche Git : {branch_name}")
+        await update_task_status(task_id, 'failed', error_message=branch_name)
+        result["status"] = "failed"
+        result["error"] = branch_name
+        return result
+
+    logger.info(f"[DREAMER] [DreamCoder] Branche Git créée : {branch_name}")
+    await update_task_status(task_id, 'running', git_branch=branch_name)
+    result["branch"] = branch_name
+
+    from core.app_state import get_app_state as _get_app_state
+    from services.pipeline_service import run_full_pipeline
+
+    # [#T202] Propager la racine de travail au pipeline (hooks Git/YAML/doc de
+    # l'Engine) et l'imposer dans le prompt : read_file/write_file résolvent les
+    # chemins relatifs contre le CWD du process serveur, pas contre le clone.
+    temp_config["repo_root"] = repo_root
+    work_prompt = (
+        f"[DÉPÔT DE TRAVAIL : {repo_root}]\n"
+        f"Règle stricte : utilise EXCLUSIVEMENT des chemins ABSOLUS sous cette "
+        f"racine pour read_file/write_file/run_terminal_command.\n\n"
+        f"{task['description']}"
+    )
+
+    router = _get_app_state().get_shared_router()
+    initial_payload, starting_agent = await router.analyze_request(task["description"])
+
+    async def sse_callback(event_type, data, engine_inst):
+        pass
+
+    session_id = f"task_{task_id}"
+
+    try:
+        logger.info("[DREAMER] [DreamCoder] Démarrage du pipeline de tâche...")
+        pipeline_result = await asyncio.wait_for(
+            run_full_pipeline(
+                user_prompt=work_prompt,
+                session_id=session_id,
+                initial_payload=initial_payload,
+                starting_agent=starting_agent,
+                on_event_callback=sse_callback,
+                config=temp_config
+            ),
+            timeout=600.0  # 10 minutes timeout
+        )
+
+        logger.info(f"[DREAMER] [DreamCoder] Pipeline terminé avec statut: {pipeline_result.get('status')}")
+
+        # Collecter les jetons utilisés
+        from core.token_tracker import get_session_total_tokens
+        tokens_used = get_session_total_tokens(session_id)
+
+        # Déterminer le coût
+        from core.runtime_db import get_connection
+        cost = 0.0
+        try:
+            with get_connection() as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(cost_usd), 0.0) FROM token_usage WHERE session_id = ?",
+                    (session_id,)
+                ).fetchone()
+                if row:
+                    cost = row[0]
+        except Exception as _ce:
+            logger.warning(f"[DREAMER] [DreamCoder] Impossible de lire le coût réel : {_ce}")
+
+        # Enregistrer la consommation
+        window_type = "hourly" if provider == "gemini-free" else "daily"
+        await bg.record_usage(
+            provider=provider,
+            tokens=tokens_used,
+            cost=cost,
+            model=temp_config["planner_model"],
+            window_type=window_type
+        )
+        result["tokens_used"] = tokens_used
+        result["cost_usd"] = cost
+
+        if pipeline_result.get("status") == "completed" or pipeline_result.get("status") == "success":
+            logger.info("[DREAMER] [DreamCoder] Tâche réussie. Enregistrement du commit...")
+            await asyncio.to_thread(_run_git, ["add", "-A"], repo_root)
+            commit_msg = await asyncio.to_thread(git_generate_semantic_commit_msg, repo_root, session_id)
+            await asyncio.to_thread(_run_git, ["commit", "-m", commit_msg], repo_root)
+
+            # Générer le diff
+            _, diff_out, _ = await asyncio.to_thread(_run_git, ["diff", "HEAD~1..HEAD"], repo_root)
+
+            # Créer le fichier de rapport de résultats
+            results_dir = os.path.join(_ENGINE_ROOT, "checkpoints", "dreamcoder_results")
+            os.makedirs(results_dir, exist_ok=True)
+            result_file = os.path.join(results_dir, f"task_{task_id}.json")
+
+            # Écriture sous verrou
+            lock = filelock.FileLock(result_file + ".lock")
+            with lock:
+                with open(result_file, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "task_id": task_id,
+                        "title": task["title"],
+                        "branch": branch_name,
+                        "diff": diff_out,
+                        "summary": pipeline_result.get("response", ""),
+                        "timestamp": time.time(),
+                        "tokens_used": tokens_used,
+                        "cost_usd": cost
+                    }, f, indent=2, ensure_ascii=False)
+
+            # Mettre à jour la base
+            await update_task_status(
+                task_id,
+                'completed',
+                result_summary=pipeline_result.get("response", "Succès sans résumé"),
+                tokens_used=tokens_used
+            )
+            result["status"] = "success"
+        else:
+            err_msg = pipeline_result.get("error") or "Le pipeline s'est terminé sur un échec."
+            raise RuntimeError(err_msg)
+
+    except Exception as pipeline_err:
+        logger.error(f"[DREAMER] [DreamCoder] Échec de l'exécution : {pipeline_err}")
+
+        # Cooldown du provider d'exécution (voir core/budget_guard.py::mark_provider_failed) —
+        # évite qu'un provider cassé (ex: CLI Gemini/Claude non trustée) soit
+        # re-sélectionné sur la tâche suivante du même cycle de drainage.
+        from core.budget_guard import mark_provider_failed
+        mark_provider_failed(provider)
+
+        # Rollback git
+        await asyncio.to_thread(git_rollback_checkpoint, repo_root)
+
+        # Supprimer la branche
+        await asyncio.to_thread(_run_git, ["checkout", orig_branch], repo_root)
+        await asyncio.to_thread(_run_git, ["branch", "-D", branch_name], repo_root)
+
+        # Incrémenter les tentatives
+        next_retries = task.get("retries", 0) + 1
+        status = "failed"
+        if next_retries >= 3:
+            status = "abandoned"
+            logger.warning(f"[DREAMER] [DreamCoder] Tâche {task_id} abandonnée après 3 échecs.")
+
+        await update_task_status(
+            task_id,
+            status,
+            error_message=str(pipeline_err),
+            retries=next_retries
+        )
+        result["status"] = status
+        result["error"] = str(pipeline_err)
+
+    finally:
+        # Retourner sur la branche d'origine
+        await asyncio.to_thread(_run_git, ["checkout", orig_branch], repo_root)
+
+    return result
+
+
+async def _run_dreamcoder_drain_loop(pa_config: dict) -> dict[str, Any]:
+    """
+    Boucle bornée en durée (dreamcoder_max_cycle_minutes) qui draine le
+    backlog tant qu'il reste du temps, du budget, et des tâches 'pending'.
+    Remplace l'ancien traitement d'une tâche unique par cycle. Ne contourne
+    JAMAIS la porte d'approbation Git humaine (PUT /api/backlog/tasks/{id}) :
+    chaque tâche réussie reste sur sa branche 'task/*' en attente de revue.
+    """
+    from core.backlog_db import get_next_task, update_task_status
+    from core.budget_guard import BudgetGuard
+    from tools.git_safety import _run_git
+
+    max_minutes = pa_config.get("dreamcoder_max_cycle_minutes", 12)
+    deadline = time.time() + max_minutes * 60
+    bg = BudgetGuard()
+
+    results: dict[str, Any] = {
+        "processed": 0, "success": 0, "failed": 0, "abandoned": 0, "paused": 0,
+        "total_cost_usd": 0.0, "total_tokens": 0,
+        "branches_awaiting_review": [], "tasks": [], "stopped_reason": None,
+    }
+
+    # [#T202] Dépôt de travail du cycle (clone dédié si configuré).
+    repo_root = _dreamcoder_repo_root(pa_config)
+
+    # [#T202] Rafraîchir le clone AVANT le cycle — UNIQUEMENT quand un clone
+    # dédié est explicitement configuré : jamais de pull automatique sur le
+    # dépôt de dev (_ENGINE_ROOT) sous les pieds d'Axel. --ff-only : un clone
+    # divergent (branches task/* locales non mergées) n'est jamais écrasé,
+    # le pull échoue proprement et le cycle continue sur l'état local.
+    if (pa_config or {}).get("dreamcoder_repo_path"):
+        pull_code, pull_out, pull_err = await asyncio.to_thread(
+            _run_git, ["pull", "--ff-only"], repo_root)
+        if pull_code == 0:
+            logger.info(f"[DREAMER] [DreamCoder] Clone rafraîchi ({repo_root}) : {pull_out.strip()[:120]}")
+        else:
+            logger.warning(
+                f"[DREAMER] [DreamCoder] pull --ff-only impossible sur {repo_root} "
+                f"({(pull_err or pull_out).strip()[:160]}) — cycle sur l'état local."
+            )
+
+    code, orig_branch, _ = await asyncio.to_thread(
+        _run_git, ["rev-parse", "--abbrev-ref", "HEAD"], repo_root)
+    orig_branch = orig_branch.strip() if (code == 0 and orig_branch) else "master"
+    logger.info(f"[DREAMER] [DreamCoder] Branche d'origine : {orig_branch}")
+
+    while True:
+        if time.time() >= deadline:
+            results["stopped_reason"] = "max_cycle_minutes_reached"
+            break
+
+        task = await get_next_task()
+        if not task:
+            results["stopped_reason"] = "backlog_empty"
+            break
+
+        # Budget vérifié À CHAQUE tâche (pas une fois en tête de cycle)
+        provider = await bg.get_available_provider()
+        if not provider:
+            logger.warning("[DREAMER] [DreamCoder] Aucun provider disponible (quotas épuisés).")
+            await update_task_status(task["id"], 'paused', error_message='quota_exhausted')
+            results["paused"] += 1
+            results["stopped_reason"] = "budget_exhausted"
+            break
+
+        task_result = await _process_one_dreamcoder_task(task, pa_config, provider, orig_branch, bg)
+        results["processed"] += 1
+        results["tasks"].append(task_result)
+        results["total_cost_usd"] += task_result.get("cost_usd", 0.0)
+        results["total_tokens"] += task_result.get("tokens_used", 0)
+        status = task_result.get("status")
+        if status == "success":
+            results["success"] += 1
+            if task_result.get("branch"):
+                results["branches_awaiting_review"].append(task_result["branch"])
+        elif status in ("failed", "abandoned", "paused"):
+            results[status] += 1
+        # Les tâches 'failed'/'abandoned' sortent naturellement de 'pending' :
+        # get_next_task() ne les re-sélectionnera pas au tour suivant, donc
+        # "continuer au-delà d'un abandon" ne demande aucun code spécial.
+
+    return results
+
+
+def _save_dreamcoder_cycle_report(results: dict) -> str:
+    """
+    Rapport agrégé de fin de cycle (tâches traitées/réussies/échouées/
+    abandonnées, coût total, branches en attente de revue). Vient EN PLUS
+    des fichiers task_{id}.json déjà écrits par tâche
+    (checkpoints/dreamcoder_results/), ne les remplace pas.
+    """
+    results_dir = os.path.join(_ENGINE_ROOT, "checkpoints", "dreamcoder_results")
+    os.makedirs(results_dir, exist_ok=True)
+    filepath = os.path.join(results_dir, f"cycle_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.json")
+    try:
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        return filepath
+    except Exception as e:
+        logger.error(f"[DREAMER] Erreur sauvegarde rapport de cycle DreamCoder : {e}")
+        return ""
+
+
+# ──────────────────────────────────────────────────────────────────
 # Pipeline principal du dreamer
 # ──────────────────────────────────────────────────────────────────
 
-async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
+async def run_dreamer_cycle(pa_config: dict) -> dict[str, Any]:
     """
     Exécute un cycle complet de consolidation mémoire.
     
@@ -486,17 +868,17 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
     5. Génération du rapport (Thread)
     """
     cycle_start = time.time()
-    
+
     logger.info("[DREAMER] 🌙 Démarrage du cycle de consolidation mémoire")
     dreamer_state["running"] = True
-    
+
     report = {
         "timestamp": datetime.now().isoformat(),
         "pipeline": {},
         "actions": {},
         "duration_ms": 0,
     }
-    
+
     try:
         anomalies = []
         # 1. Extraction (dans un thread)
@@ -507,7 +889,7 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
             "error_count": daily_data.get("error_count", 0),
         }
         logger.info(f"[DREAMER] [Etape 1/5] Sessions extraites : {daily_data.get('sessions_count', 0)}")
-        
+
         # 2. Consolidation automatique (decay, GC)
         logger.info("[DREAMER] [Etape 2/5] Lancement de la consolidation SQLite (decay/GC)...")
         consolidation = await _consolidate_memory()
@@ -568,8 +950,9 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
         # 2.8. Migration ChromaDB (mémoire vectorielle persistante)
         logger.info("[DREAMER] [Etape 2.8] Migration vers ChromaDB (s'il est disponible)...")
         try:
-            from memory.chroma_memory import get_chroma_memory
             import os
+
+            from memory.chroma_memory import get_chroma_memory
             _episodes_dir = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                 "memory", "episodes"
@@ -618,13 +1001,13 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
                 # Vérifier si l'utilisateur est inactif
                 from core.app_state import get_app_state
                 app_state = get_app_state()
-                
+
                 user_active = False
                 if app_state.execution_state.get("status") == "running":
                     logger.info("[DREAMER] [DreamCoder] L'utilisateur est actif (moteur running). Etape sautée.")
                     user_active = True
                     report["actions"]["dreamcoder"]["reason"] = "user_active_running"
-                
+
                 if not user_active:
                     min_idle = pa_config.get("dreamcoder_min_idle_hours", 1.0)
                     last_user_activity = 0
@@ -638,225 +1021,36 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
                                 last_user_activity = row[0]
                     except Exception as _ie:
                         logger.warning(f"[DREAMER] [DreamCoder] Erreur lors de la lecture des sessions : {_ie}")
-                    
+
                     idle_hours = (time.time() - last_user_activity) / 3600
                     if idle_hours < min_idle:
                         logger.info(f"[DREAMER] [DreamCoder] L'utilisateur a été actif récemment ({idle_hours:.2f}h < {min_idle}h). Etape sautée.")
                         user_active = True
                         report["actions"]["dreamcoder"]["reason"] = "user_active_recent"
                         report["actions"]["dreamcoder"]["idle_hours"] = round(idle_hours, 2)
-                
-                if not user_active:
-                    from core.backlog_db import get_next_task, update_task_status
-                    from core.budget_guard import BudgetGuard
-                    import filelock
-                    
-                    task = await get_next_task()
-                    if task:
-                        task_id = task["id"]
-                        logger.info(f"[DREAMER] [DreamCoder] Tâche trouvée : ID {task_id} - '{task['title']}'")
-                        report["actions"]["dreamcoder"]["task_processed"] = True
-                        report["actions"]["dreamcoder"]["task_id"] = task_id
-                        report["actions"]["dreamcoder"]["task_title"] = task["title"]
-                        
-                        # Vérifier le budget/provider disponible
-                        bg = BudgetGuard()
-                        provider = await bg.get_available_provider()
-                        if not provider:
-                            logger.warning(f"[DREAMER] [DreamCoder] Aucun provider disponible (quotas épuisés).")
-                            await update_task_status(task_id, 'paused', error_message='quota_exhausted')
-                            report["actions"]["dreamcoder"]["status"] = "paused"
-                            report["actions"]["dreamcoder"]["error"] = "quota_exhausted"
-                        else:
-                            logger.info(f"[DREAMER] [DreamCoder] Provider alloué : {provider}")
-                            report["actions"]["dreamcoder"]["allocated_provider"] = provider
-                            
-                            # Configurer temporairement les modèles selon le provider alloué
-                            from core.llm_gateway import load_config
-                            config = load_config()
-                            temp_config = config.copy()
-                            
-                            if provider == "ollama":
-                                # Runtime local préféré (cf. budget_guard) — clé gateway ollama_local
-                                temp_config["planner_model"] = "ollama_local"
-                                temp_config["executor_model"] = "ollama_local"
-                                temp_config["reviewer_model"] = "ollama_local"
-                            elif provider == "lmstudio":
-                                temp_config["planner_model"] = "local"
-                                temp_config["executor_model"] = "local"
-                                temp_config["reviewer_model"] = "local"
-                            elif provider == "gemini-free":
-                                temp_config["planner_model"] = "gemini-3.5-flash-free"
-                                temp_config["executor_model"] = "gemini-3.5-flash-free"
-                                temp_config["reviewer_model"] = "gemini-3.5-flash-free"
-                            elif provider == "deepseek-free":
-                                temp_config["planner_model"] = "deepseek-chat"
-                                temp_config["executor_model"] = "deepseek-chat"
-                                temp_config["reviewer_model"] = "deepseek-chat"
-                            elif provider == "anthropic-claude-haiku":
-                                temp_config["planner_model"] = "claude-haiku-4-5"
-                                temp_config["executor_model"] = "claude-haiku-4-5"
-                                temp_config["reviewer_model"] = "claude-haiku-4-5"
-                                
-                            # Préparer la branche éphémère de l'agent
-                            from tools.git_safety import git_prepare_agent_branch, git_rollback_checkpoint, git_generate_semantic_commit_msg, _run_git
-                            
-                            # Récupérer la branche d'origine
-                            code_branch, orig_branch, _ = await asyncio.to_thread(_run_git, ["rev-parse", "--abbrev-ref", "HEAD"], _ENGINE_ROOT)
-                            orig_branch = orig_branch.strip() if (code_branch == 0 and orig_branch) else "master"
-                            
-                            logger.info(f"[DREAMER] [DreamCoder] Branche d'origine : {orig_branch}")
-                            
-                            branch_name = await asyncio.to_thread(
-                                git_prepare_agent_branch,
-                                session_id=str(task_id),
-                                repo_path=_ENGINE_ROOT,
-                                prefix="task/"
-                            )
-                            
-                            if branch_name.startswith("Erreur"):
-                                logger.error(f"[DREAMER] [DreamCoder] Impossible de préparer la branche Git : {branch_name}")
-                                await update_task_status(task_id, 'failed', error_message=branch_name)
-                                report["actions"]["dreamcoder"]["status"] = "failed"
-                                report["actions"]["dreamcoder"]["error"] = branch_name
-                            else:
-                                logger.info(f"[DREAMER] [DreamCoder] Branche Git créée : {branch_name}")
-                                await update_task_status(task_id, 'running', git_branch=branch_name)
-                                
-                                # Lancer le pipeline complet
-                                from services.pipeline_service import run_full_pipeline
-                                from core.app_state import get_app_state as _get_app_state
 
-                                # [P1-2.1] Router canonique partagé (gateway/RAG/config câblés).
-                                router = _get_app_state().get_shared_router()
-                                initial_payload, starting_agent = await router.analyze_request(task["description"])
-                                
-                                async def sse_callback(event_type, data, engine_inst):
-                                    pass
-                                    
-                                session_id = f"task_{task_id}"
-                                
-                                try:
-                                    logger.info(f"[DREAMER] [DreamCoder] Démarrage du pipeline de tâche...")
-                                    result = await asyncio.wait_for(
-                                        run_full_pipeline(
-                                            user_prompt=task["description"],
-                                            session_id=session_id,
-                                            initial_payload=initial_payload,
-                                            starting_agent=starting_agent,
-                                            on_event_callback=sse_callback,
-                                            config=temp_config
-                                        ),
-                                        timeout=600.0 # 10 minutes timeout
-                                    )
-                                    
-                                    logger.info(f"[DREAMER] [DreamCoder] Pipeline terminé avec statut: {result.get('status')}")
-                                    
-                                    # Collecter les jetons utilisés
-                                    from core.token_tracker import get_session_total_tokens
-                                    tokens_used = get_session_total_tokens(session_id)
-                                    
-                                    # Déterminer le coût
-                                    from core.runtime_db import get_connection
-                                    cost = 0.0
-                                    try:
-                                        with get_connection() as conn:
-                                            row = conn.execute(
-                                                "SELECT COALESCE(SUM(cost_usd), 0.0) FROM token_usage WHERE session_id = ?",
-                                                (session_id,)
-                                            ).fetchone()
-                                            if row:
-                                                cost = row[0]
-                                    except Exception as _ce:
-                                        logger.warning(f"[DREAMER] [DreamCoder] Impossible de lire le coût réel : {_ce}")
-                                    
-                                    # Enregistrer la consommation
-                                    window_type = "hourly" if provider == "gemini-free" else "daily"
-                                    await bg.record_usage(
-                                        provider=provider,
-                                        tokens=tokens_used,
-                                        cost=cost,
-                                        model=temp_config["planner_model"],
-                                        window_type=window_type
-                                    )
-                                    
-                                    if result.get("status") == "completed" or result.get("status") == "success":
-                                        logger.info(f"[DREAMER] [DreamCoder] Tâche réussie. Enregistrement du commit...")
-                                        await asyncio.to_thread(_run_git, ["add", "-A"], _ENGINE_ROOT)
-                                        commit_msg = await asyncio.to_thread(git_generate_semantic_commit_msg, _ENGINE_ROOT, session_id)
-                                        await asyncio.to_thread(_run_git, ["commit", "-m", commit_msg], _ENGINE_ROOT)
-                                        
-                                        # Générer le diff
-                                        _, diff_out, _ = await asyncio.to_thread(_run_git, ["diff", "HEAD~1..HEAD"], _ENGINE_ROOT)
-                                        
-                                        # Créer le fichier de rapport de résultats
-                                        results_dir = os.path.join(_ENGINE_ROOT, "checkpoints", "dreamcoder_results")
-                                        os.makedirs(results_dir, exist_ok=True)
-                                        result_file = os.path.join(results_dir, f"task_{task_id}.json")
-                                        
-                                        # Écriture sous verrou
-                                        lock = filelock.FileLock(result_file + ".lock")
-                                        with lock:
-                                            with open(result_file, "w", encoding="utf-8") as f:
-                                                json.dump({
-                                                    "task_id": task_id,
-                                                    "title": task["title"],
-                                                    "branch": branch_name,
-                                                    "diff": diff_out,
-                                                    "summary": result.get("response", ""),
-                                                    "timestamp": time.time(),
-                                                    "tokens_used": tokens_used,
-                                                    "cost_usd": cost
-                                                }, f, indent=2, ensure_ascii=False)
-                                                
-                                        # Mettre à jour la base
-                                        await update_task_status(
-                                            task_id,
-                                            'completed',
-                                            result_summary=result.get("response", "Succès sans résumé"),
-                                            tokens_used=tokens_used
-                                        )
-                                        report["actions"]["dreamcoder"]["status"] = "success"
-                                    else:
-                                        err_msg = result.get("error") or "Le pipeline s'est terminé sur un échec."
-                                        raise RuntimeError(err_msg)
-                                        
-                                except Exception as pipeline_err:
-                                    logger.error(f"[DREAMER] [DreamCoder] Échec de l'exécution : {pipeline_err}")
-                                    
-                                    # Rollback git
-                                    await asyncio.to_thread(git_rollback_checkpoint, _ENGINE_ROOT)
-                                    
-                                    # Supprimer la branche
-                                    await asyncio.to_thread(_run_git, ["checkout", orig_branch], _ENGINE_ROOT)
-                                    await asyncio.to_thread(_run_git, ["branch", "-D", branch_name], _ENGINE_ROOT)
-                                    
-                                    # Incrémenter les tentatives
-                                    next_retries = task.get("retries", 0) + 1
-                                    status = "failed"
-                                    if next_retries >= 3:
-                                        status = "abandoned"
-                                        logger.warning(f"[DREAMER] [DreamCoder] Tâche {task_id} abandonnée après 3 échecs.")
-                                        
-                                    await update_task_status(
-                                        task_id,
-                                        status,
-                                        error_message=str(pipeline_err),
-                                        retries=next_retries
-                                    )
-                                    report["actions"]["dreamcoder"]["status"] = status
-                                    report["actions"]["dreamcoder"]["error"] = str(pipeline_err)
-                                    
-                                finally:
-                                    # Retourner sur la branche d'origine
-                                    await asyncio.to_thread(_run_git, ["checkout", orig_branch], _ENGINE_ROOT)
-                    else:
+                if not user_active:
+                    drain_results = await _run_dreamcoder_drain_loop(pa_config)
+                    report["actions"]["dreamcoder"] = {
+                        "status": "drained",
+                        "tasks_processed": drain_results["processed"],
+                        "tasks_succeeded": drain_results["success"],
+                        "tasks_failed": drain_results["failed"],
+                        "tasks_abandoned": drain_results["abandoned"],
+                        "tasks_paused": drain_results["paused"],
+                        "total_cost_usd": round(drain_results["total_cost_usd"], 6),
+                        "total_tokens": drain_results["total_tokens"],
+                        "branches_awaiting_review": drain_results["branches_awaiting_review"],
+                        "stopped_reason": drain_results["stopped_reason"],
+                    }
+                    if drain_results["processed"] > 0:
+                        await asyncio.to_thread(_save_dreamcoder_cycle_report, drain_results)
+                    elif drain_results["stopped_reason"] == "backlog_empty":
                         logger.info("[DREAMER] [DreamCoder] Aucune tâche éligible dans le backlog.")
-                        report["actions"]["dreamcoder"]["reason"] = "no_eligible_task"
             else:
                 logger.info("[DREAMER] [DreamCoder] DreamCoder désactivé par configuration.")
                 report["actions"]["dreamcoder"]["reason"] = "disabled"
-                
+
         except Exception as dreamcoder_err:
             logger.error(f"[DREAMER] [DreamCoder] Erreur générale DreamCoder : {dreamcoder_err}", exc_info=True)
             report["actions"]["dreamcoder"]["error"] = str(dreamcoder_err)
@@ -867,7 +1061,7 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
         existing_lessons = await asyncio.to_thread(_extract_existing_lessons)
         logger.info("[DREAMER] [Etape 3/5] Appel de l'analyse LLM...")
         analysis = await _analyze_with_llm(daily_data, existing_lessons, pa_config)
-        
+
         if analysis:
             report["pipeline"]["llm_analysis"] = {
                 "new_lessons": len(analysis.get("new_lessons", [])),
@@ -875,7 +1069,7 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
                 "contradictions": len(analysis.get("contradictions", [])),
                 "summary": analysis.get("summary", ""),
             }
-            
+
             # 4. Appliquer les résultats de l'analyse
             logger.info("[DREAMER] [Etape 4/5] Application des conclusions LLM dans memory.db...")
             applied = await asyncio.to_thread(_apply_analysis, analysis)
@@ -884,12 +1078,12 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
         else:
             logger.info("[DREAMER] [Etape 4/5] Pas d'analyse LLM nécessaire (ou sautée).")
             report["pipeline"]["llm_analysis"] = {"skipped": True}
-        
+
         # 5. Sauvegarder le rapport
         logger.info("[DREAMER] [Etape 5/5] Enregistrement du rapport...")
         report["duration_ms"] = round((time.time() - cycle_start) * 1000, 1)
         report_path = await asyncio.to_thread(_save_report, report)
-        
+
         # Mettre à jour l'état global
         dreamer_state["last_run_at"] = report["timestamp"]
         dreamer_state["last_run_duration_ms"] = report["duration_ms"]
@@ -899,11 +1093,11 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
             "summary": analysis.get("summary", "Consolidation automatique uniquement") if analysis else "Aucune session à analyser",
             "actions": report["actions"],
         }
-        
+
         logger.info(
             f"[DREAMER] 🌙 Cycle de consolidation complet terminé en {report['duration_ms']}ms !"
         )
-        
+
     except Exception as e:
         logger.error(f"[DREAMER] ❌ Erreur critique dans le cycle: {e}", exc_info=True)
         dreamer_state["last_error"] = {
@@ -912,7 +1106,7 @@ async def run_dreamer_cycle(pa_config: Dict) -> Dict[str, Any]:
         }
     finally:
         dreamer_state["running"] = False
-    
+
     return report
 
 
@@ -931,39 +1125,39 @@ async def dreamer_main_loop():
     Vérifie toutes les 5 minutes si l'une des conditions est remplie.
     """
     logger.info("[DREAMER] 🌙 Démarrage de la boucle autoDream")
-    
+
     # Attendre que le système soit initialisé
     await asyncio.sleep(15)
-    
+
     last_activity_check = time.time()
-    
+
     while True:
         # Relire la config à chaque itération
         pa_config = _load_persistent_config()
-        
+
         dreamer_state["enabled"] = pa_config.get("dreamer_enabled", True)
         dreamer_state["schedule"] = pa_config.get("dreamer_schedule", "02:00")
         dreamer_state["idle_trigger_hours"] = pa_config.get("dreamer_idle_trigger_hours", 3)
-        
+
         if not pa_config.get("dreamer_enabled", True):
             await asyncio.sleep(300)  # Vérifier toutes les 5 min si réactivé
             continue
-        
+
         should_run = False
         trigger_reason = ""
-        
+
         # Vérification 1 : Horaire fixe
         schedule_time = pa_config.get("dreamer_schedule", "02:00")
         try:
             now = datetime.now()
             target_hour, target_minute = map(int, schedule_time.split(":"))
-            
+
             # Calculer le prochain déclenchement
             target_dt = now.replace(hour=target_hour, minute=target_minute, second=0)
             if target_dt < now:
                 target_dt += timedelta(days=1)
             dreamer_state["next_scheduled"] = target_dt.isoformat()
-            
+
             # Déclencher si on est dans la fenêtre de 5 minutes autour de l'heure cible
             if now.hour == target_hour and target_minute <= now.minute < target_minute + 5:
                 # Vérifier qu'on n'a pas déjà fait un run aujourd'hui
@@ -973,7 +1167,7 @@ async def dreamer_main_loop():
                     trigger_reason = f"Horaire fixe ({schedule_time})"
         except Exception:
             pass
-        
+
         # Vérification 2 : Inactivité prolongée
         if not should_run:
             idle_hours = pa_config.get("dreamer_idle_trigger_hours", 3)
@@ -984,7 +1178,7 @@ async def dreamer_main_loop():
                     last_session_ts = recent[0].get("started_at", 0)
                     idle_since = time.time() - last_session_ts
                     idle_hours_actual = idle_since / 3600
-                    
+
                     if idle_hours_actual >= idle_hours:
                         # Vérifier qu'on n'a pas déjà consolidé dans les dernières idle_hours
                         last_run = dreamer_state.get("last_run_at", "")
@@ -1003,7 +1197,7 @@ async def dreamer_main_loop():
                             trigger_reason = f"Inactivité ({idle_hours_actual:.1f}h)"
             except Exception:
                 pass
-        
+
         # Exécuter le cycle si une condition est remplie
         if should_run:
             logger.info(f"[DREAMER] 🌙 Déclenchement: {trigger_reason}")
@@ -1011,7 +1205,7 @@ async def dreamer_main_loop():
                 await run_dreamer_cycle(pa_config)
             except Exception as e:
                 logger.error(f"[DREAMER] ❌ Erreur dans le cycle: {e}")
-        
+
         # Vérifier toutes les 5 minutes
         await asyncio.sleep(300)
 
@@ -1020,12 +1214,12 @@ async def dreamer_main_loop():
 # API publique
 # ──────────────────────────────────────────────────────────────────
 
-def get_dreamer_status() -> Dict[str, Any]:
+def get_dreamer_status() -> dict[str, Any]:
     """Retourne l'état complet du dreamer pour l'API."""
     return {**dreamer_state}
 
 
-async def trigger_dreamer_manual() -> Dict[str, Any]:
+async def trigger_dreamer_manual() -> dict[str, Any]:
     """Déclenche manuellement un cycle du dreamer (depuis l'IHM)."""
     pa_config = _load_persistent_config()
     return await run_dreamer_cycle(pa_config)

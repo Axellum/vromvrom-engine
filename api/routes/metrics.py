@@ -15,19 +15,23 @@ Endpoints :
 - GET /api/metrics/agents      : Performance par agent
 """
 
-import os
-import time
-import sqlite3
+import asyncio
 import logging
+import os
+import sqlite3
+import time
+import uuid
 from datetime import datetime
-from fastapi import APIRouter, Query
+
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["Métriques & Télémétrie"])
 
-from core.runtime_db import get_db_path, get_connection
+from core.runtime_db import get_connection, get_db_path
 
 # Chemins des bases de données
 _ENGINE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -104,17 +108,17 @@ async def get_elo_scores():
     try:
         from core.elo_scorer import get_all_scores, get_domain_leaderboard
         all_scores = get_all_scores()
-        
+
         # Extraire les domaines uniques
         domains = set()
         for model_domains in all_scores.values():
             domains.update(model_domains.keys())
-        
+
         # Leaderboards par domaine
         leaderboards = {}
         for domain in sorted(domains):
             leaderboards[domain] = get_domain_leaderboard(domain, top_n=10)
-        
+
         return {
             "scores": all_scores,
             "domains": sorted(domains),
@@ -138,6 +142,274 @@ async def get_cost_per_success_endpoint():
     except Exception as e:
         logger.warning(f"[METRICS] Erreur cost-per-success : {e}")
         return {"providers": {}}
+
+
+# ──────────────────────────────────────────────────────────────────
+# Comparatif de modèles (vue « Benchmarks » de l'IHM)
+#
+# Deux natures de données, jamais mélangées dans l'affichage :
+#  - « observed » : ce que les modèles ont RÉELLEMENT fait en production
+#    (token_usage + model_elo_scores + routing_decisions). Aucune estimation.
+#  - « runs »     : comparatifs déclenchés explicitement depuis l'IHM, dont la
+#    latence est chronométrée côté serveur autour de l'appel provider.
+# ──────────────────────────────────────────────────────────────────
+
+# Garde-fous : un comparatif déclenche de VRAIS appels LLM facturés.
+_BENCH_MAX_MODELS = 8
+_BENCH_MAX_TOKENS = 2048
+
+
+class BenchmarkRequest(BaseModel):
+    """Corps de POST /api/metrics/benchmarks — lance un comparatif réel."""
+    prompt: str = Field(..., min_length=1, description="Prompt envoyé à tous les modèles")
+    models: list[str] = Field(..., min_length=1, description="Modèles/tiers à comparer")
+    system_prompt: str | None = Field(None, description="Prompt système commun")
+    max_tokens: int | None = Field(512, ge=1, le=_BENCH_MAX_TOKENS)
+    temperature: float | None = Field(0.3, ge=0.0, le=2.0)
+
+
+def _observed_performance(since_ts: float) -> list:
+    """
+    Performance réellement observée par modèle, croisée depuis trois sources.
+
+    Rien n'est inventé : un champ absent en base reste `None` côté API, et l'IHM
+    affiche « — » plutôt qu'un zéro trompeur.
+    """
+    observed: dict[str, dict] = {}
+
+    # 1. Consommation réelle (token_usage) — appels, tokens, coût facturé.
+    for row in _safe_query(
+        _SESSION_DB,
+        "SELECT model, COUNT(*) AS calls, SUM(total_tokens) AS total_tokens, "
+        "SUM(cost_usd) AS cost_usd "
+        "FROM token_usage WHERE timestamp > ? GROUP BY model",
+        (since_ts,),
+    ):
+        model = row["model"]
+        if not model:
+            continue
+        calls = row["calls"] or 0
+        observed[model] = {
+            "model": model,
+            "calls": calls,
+            "total_tokens": row["total_tokens"] or 0,
+            "cost_usd": round(row["cost_usd"] or 0.0, 6),
+            "avg_cost_per_call_usd": round((row["cost_usd"] or 0.0) / calls, 6) if calls else None,
+            "elo": None,
+            "matches": None,
+            "win_rate": None,
+            "avg_latency_ms": None,
+            "success_rate": None,
+        }
+
+    # 2. Scores Elo (model_elo_scores) — agrégés sur tous les domaines.
+    for row in _safe_query(
+        _SESSION_DB,
+        "SELECT model_name, SUM(total_matches) AS matches, SUM(wins) AS wins, "
+        "SUM(losses) AS losses, AVG(elo_score) AS elo, AVG(avg_latency_ms) AS latency "
+        "FROM model_elo_scores GROUP BY model_name",
+    ):
+        model = row["model_name"]
+        if not model:
+            continue
+        entry = observed.setdefault(model, {
+            "model": model, "calls": 0, "total_tokens": 0, "cost_usd": 0.0,
+            "avg_cost_per_call_usd": None, "success_rate": None,
+        })
+        matches = row["matches"] or 0
+        entry["elo"] = round(row["elo"], 1) if row["elo"] is not None else None
+        entry["matches"] = matches
+        entry["win_rate"] = round((row["wins"] or 0) / matches * 100, 1) if matches else None
+        entry["avg_latency_ms"] = round(row["latency"], 1) if row["latency"] is not None else None
+
+    # 3. Latence et succès mesurés au routage (routing_decisions).
+    for row in _safe_query(
+        _ROUTING_DB,
+        "SELECT resolved_model, AVG(latency_ms) AS latency, COUNT(*) AS n, "
+        "SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS ok "
+        "FROM routing_decisions WHERE timestamp > ? AND resolved_model IS NOT NULL "
+        "GROUP BY resolved_model",
+        (since_ts,),
+    ):
+        model = row["resolved_model"]
+        if not model:
+            continue
+        entry = observed.setdefault(model, {
+            "model": model, "calls": 0, "total_tokens": 0, "cost_usd": 0.0,
+            "avg_cost_per_call_usd": None, "elo": None, "matches": None, "win_rate": None,
+        })
+        n = row["n"] or 0
+        # La latence de routage est une mesure directe : elle prime sur la moyenne Elo.
+        if row["latency"] is not None:
+            entry["avg_latency_ms"] = round(row["latency"], 1)
+        entry["success_rate"] = round((row["ok"] or 0) / n * 100, 1) if n else None
+
+    return sorted(observed.values(), key=lambda e: (e.get("calls") or 0), reverse=True)
+
+
+def _load_runs(limit: int) -> list:
+    """Charge les derniers comparatifs déclenchés depuis l'IHM, avec leurs résultats."""
+    runs = _safe_query(
+        _SESSION_DB,
+        "SELECT run_id, prompt, system_prompt, created_at, finished_at, status "
+        "FROM benchmark_runs ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    )
+    for run in runs:
+        run["results"] = _safe_query(
+            _SESSION_DB,
+            "SELECT model, status, latency_ms, response_text, response_chars, "
+            "prompt_tokens, completion_tokens, cost_usd, error_message "
+            "FROM benchmark_results WHERE run_id = ? ORDER BY latency_ms",
+            (run["run_id"],),
+        )
+    return runs
+
+
+@router.get("/api/metrics/benchmarks")
+async def get_benchmarks(
+    limit: int = Query(10, ge=1, le=50, description="Nombre de comparatifs retournés"),
+    period: str = Query("30d", description="Fenêtre pour la performance observée"),
+):
+    """
+    Comparatif des modèles : performance observée en production + comparatifs manuels.
+
+    Aucune donnée n'est simulée. Si une métrique n'a jamais été mesurée pour un
+    modèle, elle vaut `null` — c'est à l'IHM de l'afficher comme non mesurée.
+    """
+    period_map = {"1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600, "7d": 7 * 86400, "30d": 30 * 86400}
+    since_ts = time.time() - period_map.get(period, 30 * 86400)
+    return {
+        "period": period,
+        "generated_at": datetime.now().isoformat(),
+        "observed": _observed_performance(since_ts),
+        "runs": _load_runs(limit),
+    }
+
+
+def _bench_one(model: str, system_prompt: str, user_prompt: str,
+               max_tokens: int, temperature: float) -> dict:
+    """
+    Exécute le prompt sur un modèle et chronomètre l'appel. Bloquant : appelé via
+    asyncio.to_thread pour que les modèles soient comparés en parallèle.
+    """
+    from core.llm_gateway import LLMGateway
+
+    started = time.perf_counter()
+    try:
+        provider = LLMGateway().get_provider(model)
+        response = provider.generate(
+            system_prompt, user_prompt, temperature=temperature, max_tokens=max_tokens
+        )
+        elapsed_ms = (time.perf_counter() - started) * 1000
+
+        if isinstance(response, dict):
+            response = response.get("content", str(response))
+        text = str(response)
+
+        # Comptage de tokens : approximation explicite (les providers ne renvoient
+        # pas tous un usage). Le coût en découle, il est donc lui aussi approché —
+        # c'est signalé à l'IHM par `tokens_estimated`.
+        prompt_tokens = max(1, len(f"{system_prompt} {user_prompt}".split()))
+        completion_tokens = max(1, len(text.split()))
+
+        from core.pricing import get_model_pricing
+        price = get_model_pricing(model)
+        cost = prompt_tokens * price.get("input", 0.0) + completion_tokens * price.get("output", 0.0)
+
+        # La consommation réelle est comptabilisée comme n'importe quel appel moteur.
+        try:
+            from core.token_tracker import record_usage
+            record_usage(model, prompt_tokens, completion_tokens, cost_usd=cost)
+        except Exception as track_err:
+            logger.warning(f"[BENCH] Comptabilisation tokens impossible ({model}) : {track_err}")
+
+        return {
+            "model": model, "status": "success", "latency_ms": round(elapsed_ms, 1),
+            "response_text": text, "response_chars": len(text),
+            "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+            "cost_usd": round(cost, 6), "error_message": None,
+        }
+    except Exception as e:
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        logger.warning(f"[BENCH] Échec sur {model} : {e}")
+        return {
+            "model": model, "status": "error", "latency_ms": round(elapsed_ms, 1),
+            "response_text": None, "response_chars": 0,
+            "prompt_tokens": None, "completion_tokens": None,
+            "cost_usd": None, "error_message": str(e),
+        }
+
+
+@router.post("/api/metrics/benchmarks")
+async def run_benchmark(body: BenchmarkRequest):
+    """
+    Lance un comparatif réel : le même prompt est envoyé en parallèle à chaque
+    modèle, la latence est chronométrée côté serveur et la consommation est
+    comptabilisée normalement.
+
+    ⚠ Déclenche de vrais appels LLM facturés (plafonné à 8 modèles par run).
+    """
+    models = list(dict.fromkeys(m.strip() for m in body.models if m and m.strip()))
+    if not models:
+        raise HTTPException(status_code=400, detail="Aucun modèle valide fourni.")
+    if len(models) > _BENCH_MAX_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{len(models)} modèles demandés : maximum {_BENCH_MAX_MODELS} par comparatif.",
+        )
+
+    run_id = f"bench-{uuid.uuid4().hex[:12]}"
+    system_prompt = (body.system_prompt or "Tu es un assistant IA expert. Réponds de façon concise.").strip()
+    created_at = time.time()
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO benchmark_runs (run_id, prompt, system_prompt, created_at, status) "
+            "VALUES (?, ?, ?, ?, 'running')",
+            (run_id, body.prompt, system_prompt, created_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    results = await asyncio.gather(*[
+        asyncio.to_thread(
+            _bench_one, model, system_prompt, body.prompt,
+            body.max_tokens or 512, body.temperature if body.temperature is not None else 0.3,
+        )
+        for model in models
+    ])
+
+    finished_at = time.time()
+    conn = get_connection()
+    try:
+        for res in results:
+            conn.execute(
+                "INSERT INTO benchmark_results (run_id, model, status, latency_ms, response_text, "
+                "response_chars, prompt_tokens, completion_tokens, cost_usd, error_message, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (run_id, res["model"], res["status"], res["latency_ms"], res["response_text"],
+                 res["response_chars"], res["prompt_tokens"], res["completion_tokens"],
+                 res["cost_usd"], res["error_message"], finished_at),
+            )
+        conn.execute(
+            "UPDATE benchmark_runs SET finished_at = ?, status = ? WHERE run_id = ?",
+            (finished_at, "completed", run_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "run_id": run_id,
+        "prompt": body.prompt,
+        "created_at": created_at,
+        "finished_at": finished_at,
+        "status": "completed",
+        "results": results,
+    }
 
 
 @router.get("/api/metrics/routing")
@@ -212,13 +484,13 @@ def _get_agent_stats(since_ts: float) -> list:
         "GROUP BY model_name ORDER BY total_calls DESC",
         (since_ts,),
     )
-    
+
     for row in rows:
         total = row.get("total_calls", 1) or 1
         row["success_rate"] = round(
             (row.get("successes", 0) / total) * 100, 1
         )
-    
+
     return rows
 
 

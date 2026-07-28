@@ -21,12 +21,12 @@ Auteur : Antigravity IDE + Axel
 Date : 2026-06-06
 """
 
-import asyncio
 import logging
 import os
-from typing import Dict, List, Optional
 
 import aiohttp
+
+from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,8 @@ class Tab5Pusher:
 
     def __init__(
         self,
-        ha_url: Optional[str] = None,
-        ha_token: Optional[str] = None,
+        ha_url: str | None = None,
+        ha_token: str | None = None,
     ):
         """
         Args:
@@ -61,7 +61,7 @@ class Tab5Pusher:
         """
         self.ha_url   = ha_url   or os.environ.get("HA_URL", DEFAULT_HA_URL)
         self.ha_token = ha_token or os.environ.get("HA_TOKEN", "")
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
 
         if not self.ha_token:
             logger.warning("[TAB5 PUSHER] HA_TOKEN manquant — les push échoueront silencieusement")
@@ -70,7 +70,7 @@ class Tab5Pusher:
     # Internals
     # ──────────────────────────────────────────────────────────────
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self) -> dict[str, str]:
         """Headers Bearer pour l'API HA."""
         return {
             "Authorization": f"Bearer {self.ha_token}",
@@ -81,7 +81,10 @@ class Tab5Pusher:
         """Retourne (ou crée) la session aiohttp partagée."""
         if self._session is None or self._session.closed:
             timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
-            self._session = aiohttp.ClientSession(timeout=timeout)
+            # Sans ce connector, la session ignore la politique TLS HA et échoue
+            # sur un certificat qui ne couvre pas l'IP de HASS_URL.
+            connector = aiohttp.TCPConnector(ssl=ha_ssl_context())
+            self._session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         return self._session
 
     async def _post_state(self, entity_id: str, state: str) -> bool:
@@ -108,7 +111,7 @@ class Tab5Pusher:
                         f"[TAB5 PUSHER] ❌ {entity_id} HTTP {resp.status} : {body[:100]}"
                     )
                     return False
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"[TAB5 PUSHER] ⏱️ Timeout 3s pour {entity_id}")
             return False
         except aiohttp.ClientError as e:
@@ -170,7 +173,7 @@ class Tab5Pusher:
         logger.info(f"[TAB5 PUSHER] Push Dreamer report : {truncated[:60]}...")
         return await self._post_state(ENTITY_DREAMER, truncated)
 
-    async def push_anomaly_report(self, anomalies: List[Dict]) -> bool:
+    async def push_anomaly_report(self, anomalies: list[dict]) -> bool:
         """
         Formate et pousse un rapport d'anomalies domotiques.
 
@@ -214,7 +217,7 @@ class Tab5Pusher:
 # Singleton
 # ──────────────────────────────────────────────────────────────────
 
-_tab5_instance: Optional[Tab5Pusher] = None
+_tab5_instance: Tab5Pusher | None = None
 
 
 def get_tab5_pusher() -> Tab5Pusher:

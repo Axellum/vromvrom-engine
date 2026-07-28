@@ -34,6 +34,7 @@ async def search_ha_entities(
     """
     try:
         import asyncio
+
         import requests
 
         # Récupérer les entités HA via l'API
@@ -43,37 +44,40 @@ async def search_ha_entities(
         if not ha_token:
             return "❌ Variable HA_TOKEN non configurée dans .env. Impossible de contacter Home Assistant."
 
+        # [P0-1.5] passer par la session TLS centralisée, sinon HA en HTTPS échoue.
+        from core.ha_tls import ha_requests_session
+
         # [T121] requests est synchrone → to_thread pour ne pas geler l'event loop.
         response = await asyncio.to_thread(
-            requests.get,
+            ha_requests_session().get,
             f"{ha_url}/api/states",
             headers={"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"},
             timeout=10,
         )
-        
+
         if response.status_code != 200:
             return f"❌ HA API erreur {response.status_code}: {response.text[:200]}"
-        
+
         entities = response.json()
-        
+
         # Filtrage par domaine
         if domain:
             entities = [e for e in entities if e.get("entity_id", "").startswith(f"{domain}.")]
-        
+
         # Filtrage par query (recherche dans entity_id et friendly_name)
         query_lower = query.lower()
         matched = [
-            e for e in entities 
+            e for e in entities
             if query_lower in e.get("entity_id", "").lower()
             or query_lower in e.get("attributes", {}).get("friendly_name", "").lower()
         ]
-        
+
         if not matched:
             return f"🔍 Aucune entité trouvée pour '{query}'" + (f" dans le domaine '{domain}'" if domain else "")
-        
+
         # Limiter à 30 résultats
         matched = matched[:30]
-        
+
         lines = [f"🏠 **{len(matched)} entité(s)** trouvée(s) pour \"{query}\"" + (f" (domaine: {domain})" if domain else "") + "\n"]
         for e in matched:
             eid = e.get("entity_id", "?")
@@ -82,7 +86,7 @@ async def search_ha_entities(
             unit = e.get("attributes", {}).get("unit_of_measurement", "")
             unit_str = f" {unit}" if unit else ""
             lines.append(f"  - `{eid}` → **{name}** = `{state}{unit_str}`")
-        
+
         return "\n".join(lines)
     except Exception as e:
         return f"❌ Erreur recherche HA : {e}"
@@ -127,12 +131,12 @@ async def validate_config_format(file_path: str) -> str:
     # Vérifier que le chemin réel commence bien par workspace_root
     if not (resolved_path == workspace_root or resolved_path.startswith(workspace_root + os.sep)):
         return "❌ Erreur de sécurité : Accès refusé (Path Traversal détecté)."
-        
+
     try:
         import asyncio
         # Exécuter la validation dans un thread séparé si elle contient des appels bloquants
         result = await asyncio.to_thread(linter.validate_file, resolved_path)
-        
+
         if result["valid"]:
             return f"✅ CONFIGURATION VALIDE : {result['message']} (type: {result['type']})"
         else:
@@ -167,8 +171,9 @@ async def execute_ha_action(
         service_data: JSON string des données du service (optionnel). Défaut: "{}".
     """
     import asyncio
-    import requests
     import json as _json
+
+    import requests
 
     ha_url = os.environ.get("HA_URL", os.environ.get("HASS_URL", "http://${HA_HOST:-192.168.1.x}:8123"))
     ha_token = os.environ.get("HA_TOKEN", os.environ.get("HASS_TOKEN", ""))
@@ -187,7 +192,9 @@ async def execute_ha_action(
     # [P0-1.6] Valider les identifiants avant de les injecter dans l'URL de l'API HA
     # (anti-traversée de chemin / injection de segments via entrée LLM non maîtrisée).
     from core.validation import (
-        is_valid_ha_entity_id, is_valid_ha_domain, is_valid_ha_service_name,
+        is_valid_ha_domain,
+        is_valid_ha_entity_id,
+        is_valid_ha_service_name,
         validate_service_data,
     )
     if not is_valid_ha_entity_id(entity_id):
@@ -216,9 +223,12 @@ async def execute_ha_action(
     endpoint = f"{ha_url}/api/services/{domain}/{svc_name}"
 
     try:
+        # [P0-1.5] passer par la session TLS centralisée, sinon HA en HTTPS échoue.
+        from core.ha_tls import ha_requests_session
+
         # [T121] requests est synchrone → to_thread pour ne pas geler l'event loop.
         resp = await asyncio.to_thread(
-            requests.post,
+            ha_requests_session().post,
             endpoint,
             headers={
                 "Authorization": f"Bearer {ha_token}",

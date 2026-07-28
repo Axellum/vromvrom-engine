@@ -268,7 +268,7 @@ Requête → Router → Planner (DAG) → Executor/Antigravity/HA Agent → Revi
 
 # Configuration CORS pilotée par l'environnement.
 # MOTEUR_CORS_ORIGINS : liste d'origines séparées par des virgules
-#   (ex. "http://192.168.1.x:8000,http://localhost:8000").
+#   (ex. "http://${ENGINE_HOST:-192.168.1.x}:8000,http://localhost:8000").
 # Sécurité : la combinaison allow_origins=["*"] + allow_credentials=True est
 # invalide/dangereuse (CSRF cross-origin authentifié). Si aucune origine n'est
 # définie, on retombe sur "*" SANS credentials.
@@ -424,6 +424,17 @@ app.include_router(chat_messages_router, dependencies=_AUTH_DEP)
 from api.routes.observability import router as observability_router
 
 app.include_router(observability_router, dependencies=_AUTH_DEP)
+
+# [VOCAL] Observation du pipeline vocal — stats, conversations, jobs, config.
+# Complète /api/vocal/audit et /api/vocal/abort, définies dans api/routes/agents.py.
+from api.routes.vocal import router as vocal_router
+
+app.include_router(vocal_router, dependencies=_AUTH_DEP)
+
+# [INSTALLATION] Diagnostic effectif de l'installation (clés, bases, providers, HA).
+from api.routes.setup import router as setup_router
+
+app.include_router(setup_router, dependencies=_AUTH_DEP)
 
 
 
@@ -1000,31 +1011,49 @@ app.add_middleware(NoCacheStaticMiddleware)
 
 @app.get("/version", tags=["Configuration"])
 async def get_version():
-    """Retourne la version du moteur, le hash git et la date de build."""
+    """Retourne la version du moteur, le hash git et la date de build.
+
+    Priorité du stamp : `.deploy_meta.json` (écrit par overlay Deck) puis `git`.
+    Évite le faux hash d'un `.git` parasite / snapshot obsolète sur le Deck.
+    """
+    import json as _json
     import sys as _sys
 
     from core import __version__
     git_hash = "unknown"
     build_date = "unknown"
+    _root = os.path.dirname(os.path.abspath(__file__))
+    _meta_path = os.path.join(_root, ".deploy_meta.json")
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "rev-parse", "--short", "HEAD",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-        )
-        out, _ = await proc.communicate()
-        if proc.returncode == 0:
-            git_hash = out.decode().strip()
-        proc2 = await asyncio.create_subprocess_exec(
-            "git", "show", "-s", "--format=%cI", "HEAD",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-        )
-        out2, _ = await proc2.communicate()
-        if proc2.returncode == 0:
-            build_date = out2.decode().strip()
+        if os.path.isfile(_meta_path):
+            with open(_meta_path, encoding="utf-8") as _fh:
+                _meta = _json.load(_fh)
+            git_hash = str(_meta.get("git_hash") or git_hash)
+            build_date = str(_meta.get("build_date") or build_date)
     except Exception:
         pass
+    if git_hash == "unknown" or build_date == "unknown":
+        try:
+            if git_hash == "unknown":
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "rev-parse", "--short", "HEAD",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    cwd=_root,
+                )
+                out, _ = await proc.communicate()
+                if proc.returncode == 0:
+                    git_hash = out.decode().strip()
+            if build_date == "unknown":
+                proc2 = await asyncio.create_subprocess_exec(
+                    "git", "show", "-s", "--format=%cI", "HEAD",
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                    cwd=_root,
+                )
+                out2, _ = await proc2.communicate()
+                if proc2.returncode == 0:
+                    build_date = out2.decode().strip()
+        except Exception:
+            pass
     return {
         "version": __version__,
         "git_hash": git_hash,

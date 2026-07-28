@@ -108,12 +108,12 @@ class LLMGateway:
                 "Ajoutez COHERE_API_KEY=... dans moteur_agents/.env"
             )
 
-        cerebras_key = os.environ.get("CEREBRAS_API_KEY")
-        if not cerebras_key:
+        cerebras_free_key = os.environ.get("CEREBRAS_API_KEY")
+        cerebras_paid_key = os.environ.get("CEREBRAS_PAYANT_API_KEY")
+        if not cerebras_free_key and not cerebras_paid_key:
             logger.info(
-                "[LLMGateway] CEREBRAS_API_KEY absente du .env — "
-                "les providers Cerebras seront désactivés. "
-                "Ajoutez CEREBRAS_API_KEY=... dans moteur_agents/.env"
+                "[LLMGateway] CEREBRAS_API_KEY / CEREBRAS_PAYANT_API_KEY absente du .env — "
+                "les providers Cerebras seront désactivés."
             )
 
         openrouter_key = os.environ.get("OPENROUTER_API_KEY")
@@ -164,6 +164,19 @@ class LLMGateway:
                 "Ajoutez ZHIPU_API_KEY=... dans moteur_agents/.env"
             )
 
+        # Coding Plan Alibaba (Lite/Pro) — clé sk-sp-* uniquement.
+        # Alias BAILIAN_CODING_PLAN_API_KEY accepté (outils Qwen Code / OpenClaw).
+        dashscope_key = (
+            os.environ.get("DASHSCOPE_API_KEY")
+            or os.environ.get("BAILIAN_CODING_PLAN_API_KEY")
+        )
+        if not dashscope_key:
+            logger.info(
+                "[LLMGateway] DASHSCOPE_API_KEY absente du .env — "
+                "le Coding Plan Alibaba (DashScope) sera désactivé. "
+                "Ajoutez DASHSCOPE_API_KEY=sk-sp-... dans moteur_agents/.env"
+            )
+
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         if not anthropic_key:
             logger.info(
@@ -182,9 +195,19 @@ class LLMGateway:
         def _make_compat(provider_id: str, model: str, api_key: str, timeout: tuple = None) -> OpenAICompatibleProvider:
             """Crée un provider OpenAI-compatible à partir du registre centralisé."""
             config = OPENAI_COMPAT_PROVIDERS.get(provider_id, {})
+            base_url = config.get("base_url", "")
+            # Surcharge d'endpoint Coding Plan (CN vs Intl) via env.
+            if provider_id == "dashscope":
+                override = os.environ.get("DASHSCOPE_BASE_URL", "").rstrip("/")
+                if override:
+                    base_url = (
+                        override
+                        if override.endswith("/chat/completions")
+                        else f"{override}/chat/completions"
+                    )
             return OpenAICompatibleProvider(
                 provider_name=provider_id.capitalize(),
-                base_url=config.get("base_url", ""),
+                base_url=base_url,
                 api_key=api_key,
                 model=model,
                 extra_headers=config.get("extra_headers"),
@@ -225,13 +248,23 @@ class LLMGateway:
             }
 
         # --- Cerebras ---
+        # BudgetGuard « cerebras-free » → gpt-oss-120b : DOIT consommer la clé free
+        # (sinon la rotation gratuite facture la clé payante). Les modèles « paid »
+        # (gemma / zai) préfèrent CEREBRAS_PAYANT_API_KEY, free en secours.
         _cerebras = {}
-        if cerebras_key:
-            _cerebras = {
-                "cerebras": _make_compat("cerebras", "gpt-oss-120b", cerebras_key),
-                "gpt-oss-120b": _make_compat("cerebras", "gpt-oss-120b", cerebras_key),
-                "zai-glm-4.7": _make_compat("cerebras", "zai-glm-4.7", cerebras_key),
-            }
+        key_free_path = cerebras_free_key or cerebras_paid_key
+        key_paid_path = cerebras_paid_key or cerebras_free_key
+        if key_free_path:
+            _cerebras.update({
+                "cerebras": _make_compat("cerebras", "gpt-oss-120b", key_free_path),
+                "gpt-oss-120b": _make_compat("cerebras", "gpt-oss-120b", key_free_path),
+            })
+        if key_paid_path:
+            _cerebras.update({
+                "gemma-4-31b-cerebras": _make_compat("cerebras", "gemma-4-31b", key_paid_path),
+                "gemma-4-31b": _make_compat("cerebras", "gemma-4-31b", key_paid_path),
+                "zai-glm-4.7": _make_compat("cerebras", "zai-glm-4.7", key_paid_path),
+            })
 
         # --- OpenRouter ---
         _openrouter = {}
@@ -337,6 +370,39 @@ class LLMGateway:
                 "glm-4.5-air": _make_compat("zhipu", "glm-4.5-air", zhipu_key),
             }
 
+        # --- Alibaba DashScope Coding Plan (Lite) ---
+        # Allowlist exacte renvoyée par GET /v1/models (2026-07-26).
+        # IDs préfixés `dashscope/...` pour éviter les collisions avec local/zhipu/minimax
+        # (qwen3-coder-next, glm-5, glm-4.7, MiniMax-M2.5).
+        # ⚠️ CGU Alibaba : forfait prévu pour outils de coding interactifs ; usage
+        # backend/API automatisé hors périmètre officiel (risque de révocation).
+        _dashscope = {}
+        if dashscope_key:
+            _ds_models = [
+                "qwen3.7-plus",
+                "qwen3.6-plus",
+                "qwen3.5-plus",
+                "qwen3-max-2026-01-23",
+                "qwen3-coder-next",
+                "qwen3-coder-plus",
+                "kimi-k2.5",
+                "glm-5",
+                "glm-4.7",
+                "MiniMax-M2.5",
+            ]
+            _dashscope = {
+                f"dashscope/{mid}": _make_compat("dashscope", mid, dashscope_key)
+                for mid in _ds_models
+            }
+            # Alias principal + raccourcis uniques (pas de collision catalogue)
+            _dashscope["dashscope"] = _make_compat("dashscope", "qwen3-coder-next", dashscope_key)
+            _dashscope["qwen3.7-plus"] = _dashscope["dashscope/qwen3.7-plus"]
+            _dashscope["qwen3.6-plus"] = _dashscope["dashscope/qwen3.6-plus"]
+            _dashscope["qwen3.5-plus"] = _dashscope["dashscope/qwen3.5-plus"]
+            _dashscope["qwen3-max-2026-01-23"] = _dashscope["dashscope/qwen3-max-2026-01-23"]
+            _dashscope["qwen3-coder-plus"] = _dashscope["dashscope/qwen3-coder-plus"]
+            _dashscope["kimi-k2.5"] = _dashscope["dashscope/kimi-k2.5"]
+
         # --- Anthropic API directe (ANTHROPIC_API_KEY, indépendant du CLI Claude Pro) ---
         _anthropic_native = {}
         if anthropic_key:
@@ -367,7 +433,7 @@ class LLMGateway:
             "domotique-qwen7b:q4": _make_compat("ollama_local", "domotique-qwen7b:q4", "ollama"),
             "qwen2.5-coder:7b": _make_compat("ollama_local", "qwen2.5-coder:7b", "ollama"),
             "deepseek-r1:8b": _make_compat("ollama_local", "deepseek-r1:8b", "ollama"),
-            # Variante joignable en LAN (192.168.1.x) depuis le Deck — cf. commentaire
+            # Variante joignable en LAN (${OLLAMA_HOST:-192.168.1.x}) depuis le Deck — cf. commentaire
             # dans OPENAI_COMPAT_PROVIDERS["ollama_pc"]. Utilisée par le fast path vocal
             # (FAST_PATH_PROVIDERS) pour du local-first même quand le moteur tourne sur le Deck.
             # Timeout dédié (connect 2s, read 15s) — PAS la famille "lmstudio" (120s de read) :
@@ -390,12 +456,13 @@ class LLMGateway:
             **_deepinfra,
             **_github,
             **_zhipu,
+            **_dashscope,
             **_anthropic_native,
             **_ollama_local,
 
             "local": LMStudioProvider(),
             # === STEAM DECK EDGE AI (Ollama RDNA2) ===
-            # Endpoint réseau local : http://192.168.1.x:11434
+            # Endpoint réseau local : http://${ENGINE_HOST:-192.168.1.x}:11434
             # Disponibilité vérifiée dynamiquement via ping_available()
             # Tiers recommandés : parsing_logs, yaml_format, resume_court
             "deck_ollama":       OllamaDeckProvider(),                              # phi3:mini par défaut
@@ -555,6 +622,11 @@ class LLMGateway:
                 provider_type = "cohere"
             elif "cerebras" in name or "gpt-oss" in name:
                 provider_type = "cerebras"
+            elif "dashscope" in name or name in (
+                "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus",
+                "qwen3-max-2026-01-23", "qwen3-coder-plus", "kimi-k2.5",
+            ):
+                provider_type = "dashscope"
             elif "openrouter" in name:
                 provider_type = "openrouter"
             elif "minimax" in name:

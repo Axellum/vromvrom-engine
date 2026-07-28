@@ -515,21 +515,32 @@ OPENAI_COMPAT_PROVIDERS = {
         "default_model": "glm-5-turbo",
         "description": "Zhipu AI (Z.ai) — Modèles GLM-5, excellent en code et FR",
     },
+    "dashscope": {
+        # Coding Plan Alibaba (clé sk-sp-*, endpoint dédié — PAS le pay-as-you-go).
+        # Intl par défaut ; surcharge possible via DASHSCOPE_BASE_URL.
+        "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1/chat/completions",
+        "env_key": "DASHSCOPE_API_KEY",
+        "default_model": "qwen3-coder-next",
+        "description": (
+            "Alibaba DashScope Coding Plan Lite — forfait requêtes "
+            "(Qwen/GLM/Kimi/MiniMax). Endpoint coding-intl, clé sk-sp-."
+        ),
+    },
     "ollama_local": {
         "base_url": "http://127.0.0.1:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "qwen2.5-coder:7b",
-        "description": "Ollama Local PC — Inférence locale ultra-rapide sur GPU NVIDIA local",
+        "description": "Ollama Local PC — Inférence locale ultra-rapide sur RTX 5070 Ti",
     },
     "ollama_pc": {
-        # Même IP LAN que LMStudioProvider (192.168.1.x, carte Ethernet LAN) — contrairement
+        # Même IP LAN que LMStudioProvider (192.168.0.84, carte "Ethernet 4") — contrairement
         # à ollama_local (127.0.0.1), joignable depuis le Deck en prod. Prérequis côté PC :
-        # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (écoute LAN) + pare-feu Windows ouvert
+        # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (ou au moins .84) + pare-feu Windows ouvert
         # sur 11434 pour le LAN, sinon connect timeout (repli cloud silencieux, pas d'erreur bruyante).
-        "base_url": "http://192.168.1.x:11434/v1/chat/completions",
+        "base_url": "http://192.168.0.84:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "domotique-qwen7b:q4",
-        "description": "Ollama PC via LAN — joignable depuis le Deck (GPU NVIDIA local, fine-tune domotique)",
+        "description": "Ollama PC via LAN — joignable depuis le Deck (RTX 5070 Ti, fine-tune domotique)",
     },
 }
 

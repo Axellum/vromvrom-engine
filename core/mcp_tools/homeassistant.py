@@ -38,7 +38,9 @@ async def search_ha_entities(
         import requests
 
         # Récupérer les entités HA via l'API
-        ha_url = os.environ.get("HA_URL", "http://${HA_HOST:-192.168.1.x}:8123")
+        ha_url = os.environ.get(
+            "HA_URL", f"http://{os.environ.get('HA_HOST', '192.168.1.x')}:8123"
+        )
         ha_token = os.environ.get("HA_TOKEN", "")
 
         if not ha_token:
@@ -175,7 +177,12 @@ async def execute_ha_action(
 
     import requests
 
-    ha_url = os.environ.get("HA_URL", os.environ.get("HASS_URL", "http://${HA_HOST:-192.168.1.x}:8123"))
+    ha_url = os.environ.get(
+        "HA_URL",
+        os.environ.get(
+            "HASS_URL", f"http://{os.environ.get('HA_HOST', '192.168.1.x')}:8123"
+        ),
+    )
     ha_token = os.environ.get("HA_TOKEN", os.environ.get("HASS_TOKEN", ""))
 
     if not ha_token:

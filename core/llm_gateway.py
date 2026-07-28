@@ -196,6 +196,13 @@ class LLMGateway:
             """Crée un provider OpenAI-compatible à partir du registre centralisé."""
             config = OPENAI_COMPAT_PROVIDERS.get(provider_id, {})
             base_url = config.get("base_url", "")
+            # Résoudre OLLAMA_HOST à l'instanciation (évite un hostname littéral
+            # `${OLLAMA_HOST:-…}` si le registre a été importé avant dotenv).
+            if provider_id == "ollama_pc":
+                base_url = (
+                    f"http://{os.environ.get('OLLAMA_HOST', '192.168.1.x')}"
+                    ":11434/v1/chat/completions"
+                )
             # Surcharge d'endpoint Coding Plan (CN vs Intl) via env.
             if provider_id == "dashscope":
                 override = os.environ.get("DASHSCOPE_BASE_URL", "").rstrip("/")

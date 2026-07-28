@@ -53,7 +53,11 @@ def _get_ha_credentials():
     le `.env` définit historiquement les deux.
     """
     ha_token = os.environ.get("HASS_TOKEN") or os.environ.get("HA_TOKEN")
-    ha_url = os.environ.get("HASS_URL") or os.environ.get("HA_URL") or "http://${HA_HOST:-192.168.1.x}:8123"
+    ha_url = (
+        os.environ.get("HASS_URL")
+        or os.environ.get("HA_URL")
+        or f"http://{os.environ.get('HA_HOST', '192.168.1.x')}:8123"
+    )
     if not ha_token:
         raise HTTPException(status_code=500, detail="HASS_TOKEN non configuré dans l'environnement.")
     return ha_url, ha_token
@@ -75,7 +79,11 @@ async def ha_health():
     import time
 
     ha_token = os.environ.get("HASS_TOKEN") or os.environ.get("HA_TOKEN")
-    ha_url = os.environ.get("HASS_URL") or os.environ.get("HA_URL") or "http://${HA_HOST:-192.168.1.x}:8123"
+    ha_url = (
+        os.environ.get("HASS_URL")
+        or os.environ.get("HA_URL")
+        or f"http://{os.environ.get('HA_HOST', '192.168.1.x')}:8123"
+    )
     verify_tls = os.environ.get("HA_VERIFY_TLS", "true").lower() not in ("false", "0", "no")
 
     result: dict[str, Any] = {

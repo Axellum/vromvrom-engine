@@ -105,7 +105,11 @@ VOCAL_TOOLS_OPENAI: list[dict[str, Any]] = [
 
 
 def _ha_credentials() -> tuple[str, str]:
-    ha_url = os.environ.get("HA_URL") or os.environ.get("HASS_URL") or "http://${HA_HOST:-192.168.1.x}:8123"
+    ha_url = (
+        os.environ.get("HA_URL")
+        or os.environ.get("HASS_URL")
+        or f"http://{os.environ.get('HA_HOST', '192.168.1.x')}:8123"
+    )
     ha_token = os.environ.get("HA_TOKEN") or os.environ.get("HASS_TOKEN") or ""
     return ha_url.rstrip("/"), ha_token
 

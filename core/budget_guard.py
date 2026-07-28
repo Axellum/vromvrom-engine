@@ -424,6 +424,33 @@ class BudgetGuard:
 
             return await asyncio.to_thread(query_scoped_spend)
 
+    async def get_total_spend_usd(self, since_seconds: float) -> float:
+        """
+        Coût cumulé (USD) toutes sources confondues sur une fenêtre glissante —
+        même métrique que le plafond combiné (total_daily_budget_usd) de
+        get_available_provider.
+        """
+        if not self._initialized:
+            await self.initialize()
+
+        cutoff = time.time() - since_seconds
+
+        async with db_read_lock_context():
+            def query_total_spend() -> float:
+                conn = sqlite3.connect(self.db_path)
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT COALESCE(SUM(cost_usd), 0.0)
+                        FROM billing_history
+                        WHERE timestamp > ?
+                    """, (cutoff,))
+                    return float(cursor.fetchone()[0])
+                finally:
+                    conn.close()
+
+            return await asyncio.to_thread(query_total_spend)
+
     async def get_quota_summary(self) -> dict[str, Any]:
         """
         Retourne un état complet de l'utilisation des quotas et budgets pour l'IHM de supervision.

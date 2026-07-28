@@ -31,7 +31,7 @@ from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──
-DEFAULT_HA_URL = "http://${HA_HOST:-192.168.1.x}:8123"
+DEFAULT_HA_URL = f"http://{os.environ.get('HA_HOST', '192.168.1.x')}:8123"
 DEFAULT_TIMEOUT = 3  # secondes
 
 # ── Entités HA cibles ──
@@ -56,7 +56,7 @@ class Tab5Pusher:
     ):
         """
         Args:
-            ha_url:   URL HA (défaut : http://${HA_HOST:-192.168.1.x}:8123)
+            ha_url:   URL HA (défaut : HA_URL ou http://$HA_HOST:8123)
             ha_token: Token Bearer HA (défaut : env HA_TOKEN)
         """
         self.ha_url   = ha_url   or os.environ.get("HA_URL", DEFAULT_HA_URL)

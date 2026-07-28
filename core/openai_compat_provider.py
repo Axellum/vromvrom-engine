@@ -23,6 +23,7 @@ Créé le : 2026-06-04 (Audit V9 P0.1)
 import asyncio
 import json
 import logging
+import os
 import threading
 from typing import Any
 
@@ -533,11 +534,14 @@ OPENAI_COMPAT_PROVIDERS = {
         "description": "Ollama Local PC — Inférence locale ultra-rapide sur RTX 5070 Ti",
     },
     "ollama_pc": {
-        # Même IP LAN que LMStudioProvider (${OLLAMA_HOST:-192.168.1.x}, carte "Ethernet 4") — contrairement
+        # Même IP LAN que LMStudioProvider (OLLAMA_HOST, carte "Ethernet 4") — contrairement
         # à ollama_local (127.0.0.1), joignable depuis le Deck en prod. Prérequis côté PC :
         # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (ou au moins .84) + pare-feu Windows ouvert
         # sur 11434 pour le LAN, sinon connect timeout (repli cloud silencieux, pas d'erreur bruyante).
-        "base_url": "http://${OLLAMA_HOST:-192.168.1.x}:11434/v1/chat/completions",
+        "base_url": (
+            f"http://{os.environ.get('OLLAMA_HOST', '192.168.1.x')}"
+            ":11434/v1/chat/completions"
+        ),
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "domotique-qwen7b:q4",
         "description": "Ollama PC via LAN — joignable depuis le Deck (RTX 5070 Ti, fine-tune domotique)",
@@ -573,10 +577,17 @@ def create_provider(
     config = OPENAI_COMPAT_PROVIDERS[provider_id]
     resolved_key = api_key or os.environ.get(config["env_key"], "")
     resolved_model = model or config["default_model"]
+    # Résoudre OLLAMA_HOST à l'instanciation (pas seulement à l'import du module).
+    base_url = config["base_url"]
+    if provider_id == "ollama_pc":
+        base_url = (
+            f"http://{os.environ.get('OLLAMA_HOST', '192.168.1.x')}"
+            ":11434/v1/chat/completions"
+        )
 
     return OpenAICompatibleProvider(
         provider_name=provider_id.capitalize(),
-        base_url=config["base_url"],
+        base_url=base_url,
         api_key=resolved_key,
         model=resolved_model,
         extra_headers=config.get("extra_headers"),

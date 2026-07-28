@@ -549,14 +549,16 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
     executor_model = executor_model_map.get(provider, "deepseek-chat")
     temp_config["executor_model"] = executor_model
 
-    dreamcoder_spent_today = await bg.get_scoped_spend_usd("dreamcoder", 86400.0)
     total_cap = bg.config.get("total_daily_budget_usd", 1.0)
-    governor_within_budget = dreamcoder_spent_today < total_cap
+    # Plafond COMBINÉ (toutes sources) — même métrique que BudgetGuard.get_available_provider,
+    # pas seulement les dépenses sync_source='dreamcoder'.
+    total_spent_today = await bg.get_total_spend_usd(86400.0)
+    governor_within_budget = total_spent_today < total_cap
 
     if not governor_within_budget:
         logger.warning(
             f"[DREAMER] [DreamCoder] Plafond quotidien combiné atteint "
-            f"(${dreamcoder_spent_today:.4f}/{total_cap} USD) — gouverneur dégradé "
+            f"(${total_spent_today:.4f}/{total_cap} USD) — gouverneur dégradé "
             f"sur le modèle de l'exécuteur ('{executor_model}') pour cette tâche."
         )
         governor_model = executor_model
@@ -623,6 +625,10 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
 
     session_id = f"task_{task_id}"
 
+    # True tant que l'échec peut être imputé au provider d'exécution (pipeline/LLM).
+    # Passé à False dès que le pipeline a réussi : les erreurs git/IO post-pipeline
+    # ne doivent PAS déclencher un cooldown provider de 30 min.
+    provider_execution_failed = True
     try:
         logger.info("[DREAMER] [DreamCoder] Démarrage du pipeline de tâche...")
         pipeline_result = await asyncio.wait_for(
@@ -670,6 +676,7 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
         result["cost_usd"] = cost
 
         if pipeline_result.get("status") == "completed" or pipeline_result.get("status") == "success":
+            provider_execution_failed = False
             logger.info("[DREAMER] [DreamCoder] Tâche réussie. Enregistrement du commit...")
             await asyncio.to_thread(_run_git, ["add", "-A"], repo_root)
             commit_msg = await asyncio.to_thread(git_generate_semantic_commit_msg, repo_root, session_id)
@@ -716,8 +723,10 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
         # Cooldown du provider d'exécution (voir core/budget_guard.py::mark_provider_failed) —
         # évite qu'un provider cassé (ex: CLI Gemini/Claude non trustée) soit
         # re-sélectionné sur la tâche suivante du même cycle de drainage.
-        from core.budget_guard import mark_provider_failed
-        mark_provider_failed(provider)
+        # Uniquement si l'échec vient du pipeline/LLM, pas d'un commit/diff git post-succès.
+        if provider_execution_failed:
+            from core.budget_guard import mark_provider_failed
+            mark_provider_failed(provider)
 
         # Rollback git
         await asyncio.to_thread(git_rollback_checkpoint, repo_root)

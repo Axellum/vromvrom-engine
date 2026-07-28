@@ -51,7 +51,7 @@ def test_pinning_substitue_le_nom_verifie(monkeypatch):
     ctx = ha_ssl_context()
 
     with patch.object(ssl.SSLContext, "wrap_bio") as parent:
-        ctx.wrap_bio(MagicMock(), MagicMock(), server_hostname="192.168.0.16")
+        ctx.wrap_bio(MagicMock(), MagicMock(), server_hostname="${HA_HOST:-192.168.1.x}")
 
     assert parent.call_args.kwargs["server_hostname"] == "cert.example.fr"
 
@@ -62,9 +62,9 @@ def test_sans_pinning_le_nom_demande_est_respecte(monkeypatch):
     assert type(ctx) is ssl.SSLContext
 
     with patch.object(ssl.SSLContext, "wrap_bio") as parent:
-        ctx.wrap_bio(MagicMock(), MagicMock(), server_hostname="192.168.0.16")
+        ctx.wrap_bio(MagicMock(), MagicMock(), server_hostname="${HA_HOST:-192.168.1.x}")
 
-    assert parent.call_args.kwargs["server_hostname"] == "192.168.0.16"
+    assert parent.call_args.kwargs["server_hostname"] == "${HA_HOST:-192.168.1.x}"
 
 
 def test_requests_verify_suit_la_politique(monkeypatch):

@@ -533,11 +533,11 @@ OPENAI_COMPAT_PROVIDERS = {
         "description": "Ollama Local PC — Inférence locale ultra-rapide sur RTX 5070 Ti",
     },
     "ollama_pc": {
-        # Même IP LAN que LMStudioProvider (192.168.0.84, carte "Ethernet 4") — contrairement
+        # Même IP LAN que LMStudioProvider (${OLLAMA_HOST:-192.168.1.x}, carte "Ethernet 4") — contrairement
         # à ollama_local (127.0.0.1), joignable depuis le Deck en prod. Prérequis côté PC :
         # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (ou au moins .84) + pare-feu Windows ouvert
         # sur 11434 pour le LAN, sinon connect timeout (repli cloud silencieux, pas d'erreur bruyante).
-        "base_url": "http://192.168.0.84:11434/v1/chat/completions",
+        "base_url": "http://${OLLAMA_HOST:-192.168.1.x}:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "domotique-qwen7b:q4",
         "description": "Ollama PC via LAN — joignable depuis le Deck (RTX 5070 Ti, fine-tune domotique)",

@@ -109,7 +109,7 @@ async def lifespan(app: FastAPI):
     # ── Initialisation du HAFuzzyMatcher (matching entités HA sans LLM) ──
     try:
         from core.ha_fuzzy_matcher import init_fuzzy_matcher
-        _ha_url = os.environ.get("HASS_URL", "https://192.168.0.16:8123")
+        _ha_url = os.environ.get("HASS_URL", "https://${HA_HOST:-192.168.1.x}:8123")
         _ha_token = os.environ.get("HASS_TOKEN", "")
         if not _ha_token:
             _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -194,7 +194,7 @@ async def lifespan(app: FastAPI):
         try:
             from core.watchdog import create_watchdog_daemon
             _watchdog = create_watchdog_daemon({
-                "mqtt_host": os.getenv("MQTT_HOST", "192.168.0.16"),
+                "mqtt_host": os.getenv("MQTT_HOST", "${HA_HOST:-192.168.1.x}"),
                 "mqtt_port": int(os.getenv("MQTT_PORT", "1883")),
                 "mqtt_username": os.getenv("MQTT_USERNAME"),
                 "mqtt_password": os.getenv("MQTT_PASSWORD"),
@@ -268,7 +268,7 @@ Requête → Router → Planner (DAG) → Executor/Antigravity/HA Agent → Revi
 
 # Configuration CORS pilotée par l'environnement.
 # MOTEUR_CORS_ORIGINS : liste d'origines séparées par des virgules
-#   (ex. "http://192.168.0.43:8000,http://localhost:8000").
+#   (ex. "http://${ENGINE_HOST:-192.168.1.x}:8000,http://localhost:8000").
 # Sécurité : la combinaison allow_origins=["*"] + allow_credentials=True est
 # invalide/dangereuse (CSRF cross-origin authentifié). Si aucune origine n'est
 # définie, on retombe sur "*" SANS credentials.

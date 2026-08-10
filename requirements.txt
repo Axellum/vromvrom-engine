@@ -21,7 +21,7 @@ aiohttp>=3.14.1
 aiosqlite>=0.22.1          # accès SQLite async (DAG runner)
 
 # ── MCP (serveurs Tab5-Engine, Workspace) ──
-mcp>=1.27.0
+mcp>=1.27.0,<2.0.0          # borne haute : mcp 2.x a retiré mcp.server.fastmcp
 
 # ── Mémoire vectorielle / RAG ──
 chromadb>=1.5.0

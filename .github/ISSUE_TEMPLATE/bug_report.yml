@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a bug to help us improve vromvrom-engine
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report! Please check that the issue is not already reported before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Which version or commit are you running? (e.g. `git describe --tags`, or the commit hash from `git log -1`)
+      placeholder: "e.g. v0.4.2 / 1a2b3c4"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Where are you running the engine?
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Docker
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, step-by-step instructions to trigger the bug.
+      placeholder: |
+        1. Start the engine with '...'
+        2. Send the request '...'
+        3. Observe the error
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: Paste the relevant log extract (redact any API keys, tokens and passwords).
+      placeholder: "Full error traceback, including the exception message."
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Relevant part of `config.json` / `.env` — **without any API keys or tokens** (see CONTRIBUTING.md).
+      render: shell
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Anything else that might help — screenshots, related issues, hardware details...

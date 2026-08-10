@@ -9,8 +9,11 @@
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.136%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License](https://img.shields.io/github/license/Axellum/vromvrom-engine)](LICENSE)
 [![Tests](https://img.shields.io/badge/Tests-60%20pytest%20files-brightgreen)](tests/)
+[![CI](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml)
+[![Python CI & Security](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml)
+[![ToolMaker Validate](https://github.com/Axellum/vromvrom-engine/actions/workflows/toolmaker_validate.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/toolmaker_validate.yml)
 
 *Built for Home Assistant · Works with any project*
 

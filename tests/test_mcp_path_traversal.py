@@ -9,10 +9,10 @@ corrige ça en résolvant la cible réelle avant la comparaison.
 NB : shim `tools` identique aux autres tests mcp_server (cf. test_delegate_to_gateway.py)
 pour forcer le package local face au paquet site-packages homonyme sous Windows.
 """
+import asyncio
 import os
 import sys
 import types
-import asyncio
 
 import pytest
 

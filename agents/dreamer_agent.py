@@ -616,7 +616,9 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
     )
 
     router = _get_app_state().get_shared_router()
-    initial_payload, starting_agent = await router.analyze_request(task["description"])
+    initial_payload, starting_agent = await router.analyze_request(
+        task["description"], session_id=str(task_id)
+    )
 
     async def sse_callback(event_type, data, engine_inst):
         pass
@@ -974,9 +976,14 @@ async def run_dreamer_cycle(pa_config: dict) -> dict[str, Any]:
                 f"{ep_res.get('migrated', 0)} épisodes + "
                 f"{fact_res.get('migrated', 0)} faits migrés"
             )
+        except ImportError:
+            logger.info("[DREAMER] [Etape 2.8] chromadb non installé — migration ignorée (non bloquant)")
+            report["actions"]["chroma_migration"] = {"skipped": True, "reason": "chromadb_absent"}
         except Exception as _che:
-            logger.info(f"[DREAMER] [Etape 2.8] ChromaDB non disponible (non bloquant) : {_che}")
-            report["actions"]["chroma_migration"] = {"skipped": True}
+            # #T252 : ne plus masquer une vraie erreur de migration sous un faux
+            # « ChromaDB non disponible » — on nomme la cause réelle.
+            logger.warning(f"[DREAMER] [Etape 2.8] Erreur de migration ChromaDB (non bloquant) : {_che}")
+            report["actions"]["chroma_migration"] = {"skipped": True, "error": str(_che)}
 
         # 2.9. Push du rapport d'anomalies vers le Tab5 M5Stack
         logger.info("[DREAMER] [Etape 2.9] Push du rapport d'anomalies vers le Tab5 M5Stack...")

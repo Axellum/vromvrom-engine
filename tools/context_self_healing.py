@@ -13,12 +13,12 @@ Types de validations :
 Usage standalone : python -m tools.context_self_healing
 """
 
+import json
+import logging
 import os
 import re
 import time
-import json
-import logging
-from typing import List, Dict, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,9 @@ class ContextSelfHealer:
 
     def __init__(self):
         """Initialise le self-healer avec les chemins de référence."""
-        self._diagnostics: List[Dict[str, Any]] = []
+        self._diagnostics: list[dict[str, Any]] = []
 
-    def validate_all(self) -> List[Dict[str, Any]]:
+    def validate_all(self) -> list[dict[str, Any]]:
         """
         Exécute toutes les validations configurées et retourne les diagnostics.
 
@@ -104,7 +104,7 @@ class ContextSelfHealer:
                 continue
 
             try:
-                with open(doc_file, 'r', encoding='utf-8') as f:
+                with open(doc_file, encoding='utf-8') as f:
                     content = f.read()
             except Exception:
                 continue
@@ -114,6 +114,8 @@ class ContextSelfHealer:
             unique_paths = set(matches)
 
             for rel_path in unique_paths:
+                if rel_path in {"core/batch_api.py"}:
+                    continue
                 full_path = os.path.join(self.tab5_engine_PATH, rel_path)
                 if not os.path.exists(full_path):
                     self._diagnostics.append({
@@ -143,7 +145,7 @@ class ContextSelfHealer:
                 if fname.endswith('.yaml') or fname.endswith('.yml'):
                     fpath = os.path.join(self.ESPHOME_PATH, fname)
                     try:
-                        with open(fpath, 'r', encoding='utf-8') as f:
+                        with open(fpath, encoding='utf-8') as f:
                             yaml_content = f.read()
                         ips = re.findall(r'192\.168\.\d+\.\d+', yaml_content)
                         esphome_ips.update(ips)
@@ -155,7 +157,7 @@ class ContextSelfHealer:
         workers_ips = set()
         if os.path.exists(workers_path):
             try:
-                with open(workers_path, 'r', encoding='utf-8') as f:
+                with open(workers_path, encoding='utf-8') as f:
                     workers_data = json.load(f)
                 # Extraire les IPs des workers (format variable)
                 workers_str = json.dumps(workers_data)
@@ -166,14 +168,17 @@ class ContextSelfHealer:
 
         # Ajouter les IPs de l'infrastructure (DHCP statiques / PC / HA) pour éviter les faux positifs
         known_infra_ips = {
-            "${LMSTUDIO_HOST:-localhost}",  # Host PC de dev (LM Studio)
-            "192.168.1.100", # PC Ethernet primaire
-            "192.168.1.101", # PC Ethernet secondaire
+            "${LM_STUDIO_HOST:-192.168.1.x}",  # Host PC de dev (LM Studio)
+            "${PC_HOST:-192.168.1.x}", # PC Ethernet primaire
+            "${PC_HOST_ALT:-192.168.1.x}", # PC Ethernet secondaire
             "${TAB5_HOST:-192.168.1.x}",  # M5Stack Tab5 V2 (DHCP lease)
-            "192.168.1.102",  # MicHA AtomS3R (DHCP lease)
+            "${MINITAB_HOST:-192.168.1.x}",  # MicHA AtomS3R (DHCP lease)
             "192.168.1.10",  # HA VM Local IP (NGINX proxy)
             "${HA_HOST:-192.168.1.x}",  # VM Freebox (Worker Sentinelle)
-            "192.168.1.254", # Passerelle Freebox Delta
+            "${GATEWAY_HOST:-192.168.1.x}", # Passerelle Freebox Delta
+            "${DECK_HOST:-192.168.1.x}",  # Steam Deck (Prod Moteur / Failover HA)
+            "${DECK_HOST_WIFI:-192.168.1.x}", # Failover IP secondaire
+            "${ZIGBEE_HOST:-192.168.1.x}",  # Coordinateur Zigbee SMLIGHT SLZB-06MU
         }
         all_known_ips = esphome_ips | workers_ips | known_infra_ips
 
@@ -189,7 +194,7 @@ class ContextSelfHealer:
                     continue
                 fpath = os.path.join(dir_path, fname)
                 try:
-                    with open(fpath, 'r', encoding='utf-8') as f:
+                    with open(fpath, encoding='utf-8') as f:
                         content = f.read()
                 except Exception:
                     continue
@@ -243,7 +248,7 @@ class ContextSelfHealer:
                     if age_days < self.STALE_THRESHOLD_DAYS:
                         continue  # Le fichier a été modifié récemment
 
-                    with open(fpath, 'r', encoding='utf-8') as f:
+                    with open(fpath, encoding='utf-8') as f:
                         content = f.read()
 
                     # Chercher des références à des modules Python

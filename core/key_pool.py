@@ -18,10 +18,9 @@ Quotas Free Tier par clé (mai 2026) :
   - gemini-3.1-flash-lite : 30 RPM, 1M TPM, 1500 RPD
 """
 
+import logging
 import os
 import time
-import logging
-from typing import Optional, List, Dict
 from threading import RLock
 
 logger = logging.getLogger("core.key_pool")
@@ -37,24 +36,24 @@ class GeminiKeyPool:
         key = pool.get_free_key()          # Retourne la suivante automatiquement
         paid = pool.get_paid_key()         # Clé payante (jamais en rotation)
     """
-    
+
     # Durée de cooldown après un 429 (secondes)
     COOLDOWN_SECONDS = 65  # 65s > 60s (fenêtre RPM)
-    
+
     def __init__(self):
         self._lock = RLock()
-        
+
         # Clés Free Tier (rotation round-robin)
-        self._free_keys: List[Dict] = []
+        self._free_keys: list[dict] = []
         self._current_index = 0
-        
+
         # Clé payante (pas de rotation)
-        self._paid_key: Optional[str] = None
-        self._paid_project: Optional[str] = None
-        
+        self._paid_key: str | None = None
+        self._paid_project: str | None = None
+
         # Charger les clés depuis les variables d'environnement
         self._load_keys()
-    
+
     def _load_keys(self):
         """Charge toutes les clés API depuis les variables d'environnement."""
         # Clés Free Tier (rotation round-robin)
@@ -67,7 +66,7 @@ class GeminiKeyPool:
             ("GEMINI_API_KEY_5", "ha-delta"),
             ("GEMINI_API_KEY_6", "Gemini Project 6"),
         ]
-        
+
         for env_var, project_name in free_key_configs:
             key = os.environ.get(env_var, "").strip()
             if key:
@@ -79,14 +78,14 @@ class GeminiKeyPool:
                     "rate_limited_until": 0.0,  # timestamp de fin de cooldown
                     "total_429s": 0,
                 })
-        
+
         # Clé payante (unique, pas de rotation)
         self._paid_key = os.environ.get("GEMINI_PAYANT_API_KEY", "").strip() or None
         self._paid_project = "gen-lang-client-0619520185"
-        
+
         self._paid_backup_key = None  # Plus de backup payant (converti en Free Tier)
         self._paid_backup_project = None
-        
+
         paid_count = sum(1 for k in [self._paid_key, self._paid_backup_key] if k)
         logger.info(
             f"[KeyPool] Initialisé : {len(self._free_keys)} clés Free Tier"
@@ -94,18 +93,18 @@ class GeminiKeyPool:
         )
         for i, kd in enumerate(self._free_keys):
             logger.info(f"  [{i}] {kd['env_var']} → {kd['project']}")
-    
+
     @property
     def free_key_count(self) -> int:
         """Nombre total de clés Free Tier configurées."""
         return len(self._free_keys)
-    
+
     @property
     def has_paid_key(self) -> bool:
         """Indique si une clé payante est disponible."""
         return self._paid_key is not None
-    
-    def get_free_key(self, allow_cooldown: bool = True) -> Optional[str]:
+
+    def get_free_key(self, allow_cooldown: bool = True) -> str | None:
         """Retourne la prochaine clé Free Tier disponible (pas en cooldown).
 
         Algorithme :
@@ -173,15 +172,15 @@ class GeminiKeyPool:
             now = time.time()
             soonest_until = min(k["rate_limited_until"] for k in self._free_keys)
             return max(0.0, soonest_until - now)
-    
-    def get_paid_key(self) -> Optional[str]:
+
+    def get_paid_key(self) -> str | None:
         """Retourne la clé payante principale (pas de rotation)."""
         return self._paid_key
-    
-    def get_paid_backup_key(self) -> Optional[str]:
+
+    def get_paid_backup_key(self) -> str | None:
         """Retourne la clé payante de backup (si la principale est en erreur)."""
         return self._paid_backup_key
-    
+
     def report_rate_limit(self, key: str):
         """Signale un rate-limit (429) sur une clé → cooldown automatique.
         
@@ -198,7 +197,7 @@ class GeminiKeyPool:
                         f"({self.COOLDOWN_SECONDS}s). Total 429s: {kd['total_429s']}"
                     )
                     return
-    
+
     def report_success(self, key: str):
         """Signale un succès sur une clé (réinitialise le cooldown si nécessaire)."""
         with self._lock:
@@ -208,7 +207,7 @@ class GeminiKeyPool:
                     if kd["rate_limited_until"] > 0:
                         kd["rate_limited_until"] = 0.0
                     return
-    
+
     def get_stats(self) -> dict:
         """Retourne les statistiques du pool de clés."""
         now = time.time()
@@ -224,7 +223,7 @@ class GeminiKeyPool:
                     "cooldown_remaining_s": round(cooldown_remaining, 0),
                     "available": cooldown_remaining == 0,
                 })
-            
+
             return {
                 "free_keys": free_stats,
                 "free_key_count": len(self._free_keys),
@@ -238,7 +237,7 @@ class GeminiKeyPool:
 
 # ── Singleton global ──────────────────────────────────────────
 
-_pool: Optional[GeminiKeyPool] = None
+_pool: GeminiKeyPool | None = None
 
 def get_key_pool() -> GeminiKeyPool:
     """Retourne le singleton du pool de clés."""

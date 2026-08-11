@@ -10,11 +10,11 @@ avant de tenter un déploiement ou une compilation. Il supporte :
 Auteur : Antigravity IDE
 """
 
+import logging
 import os
 import re
 import subprocess
-import logging
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Any
 
 logger = logging.getLogger("tools.linter")
 
@@ -34,7 +34,7 @@ class ConfigurationLinter:
     """Classe utilitaire pour linter les fichiers YAML, Jinja2 et ESPHome."""
 
     @staticmethod
-    def lint_yaml(content: str) -> Tuple[bool, Optional[str], Optional[Dict[str, Any]]]:
+    def lint_yaml(content: str) -> tuple[bool, str | None, dict[str, Any] | None]:
         """Valide la syntaxe YAML d'un contenu.
         
         Returns:
@@ -56,7 +56,7 @@ class ConfigurationLinter:
             return False, error_msg, None
 
     @staticmethod
-    def lint_jinja2_templates(content: str) -> Tuple[bool, List[str]]:
+    def lint_jinja2_templates(content: str) -> tuple[bool, list[str]]:
         """Extrait et compile les expressions Jinja2 présentes dans le contenu.
         
         Détecte les accolades et expressions {{ ... }} et {% ... %}.
@@ -72,14 +72,14 @@ class ConfigurationLinter:
         # Mode DOTALL pour capturer les templates sur plusieurs lignes
         pattern = re.compile(r"(\{\{.*?\}\}|\{%.*?%\})", re.DOTALL)
         matches = pattern.finditer(content)
-        
+
         env = jinja2.Environment()
-        
+
         for match in matches:
             block = match.group(1)
             # Récupérer le numéro de ligne approximatif du bloc
             line_num = content[:match.start()].count('\n') + 1
-            
+
             try:
                 # Tenter de compiler le bloc Jinja2 à froid
                 env.parse(block)
@@ -91,11 +91,11 @@ class ConfigurationLinter:
                 errors.append(
                     f"Ligne {line_num} : Erreur de validation de template '{block.strip()}' -> {e}"
                 )
-                
+
         return len(errors) == 0, errors
 
     @staticmethod
-    def lint_esphome_cli(file_path: str) -> Tuple[bool, Optional[str]]:
+    def lint_esphome_cli(file_path: str) -> tuple[bool, str | None]:
         """Exécute la commande `esphome config` pour valider une config ESPHome.
         
         Returns:
@@ -110,7 +110,7 @@ class ConfigurationLinter:
             # On exécute avec PAGER=cat pour éviter les blocages.
             env = os.environ.copy()
             env["PAGER"] = "cat"
-            
+
             result = subprocess.run(
                 ["esphome", "config", file_path],
                 capture_output=True,
@@ -118,14 +118,14 @@ class ConfigurationLinter:
                 env=env,
                 timeout=30.0
             )
-            
+
             if result.returncode == 0:
                 return True, "La configuration ESPHome est valide."
             else:
                 # Récupérer stderr et stdout pour donner un maximum de contexte sur l'erreur
                 output = f"Code retour: {result.returncode}\n\nSTDOUT:\n{result.stdout}\n\nSTDERR:\n{result.stderr}"
                 return False, output
-                
+
         except FileNotFoundError:
             logger.warning("[LINTER] La commande CLI 'esphome' n'est pas installée sur cette machine. Validation ESPHome sautée.")
             return True, "Validation ESPHome sautée (commande CLI absente sur cette machine)."
@@ -134,7 +134,7 @@ class ConfigurationLinter:
         except Exception as e:
             return False, f"Erreur lors de l'exécution de la validation ESPHome : {e}"
 
-    def validate_file(self, file_path: str) -> Dict[str, Any]:
+    def validate_file(self, file_path: str) -> dict[str, Any]:
         """Méthode principale pour valider un fichier de configuration.
         
         Détermine dynamiquement le type de validation à appliquer.
@@ -143,12 +143,12 @@ class ConfigurationLinter:
             return {
                 "valid": False,
                 "file": file_path,
-                "error": f"Fichier introuvable.",
+                "error": "Fichier introuvable.",
                 "type": "unknown"
             }
 
         try:
-            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(file_path, encoding="utf-8", errors="ignore") as f:
                 content = f.read()
         except Exception as e:
             return {

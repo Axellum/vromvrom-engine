@@ -12,7 +12,11 @@ Usage :
   python tools/verify_facts_freshness.py
 """
 from __future__ import annotations
-import asyncio, os, re, sqlite3, sys
+
+import asyncio
+import os
+import sqlite3
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))          # moteur_agents/
 WS = os.path.dirname(ROOT)                                                   # workspace racine

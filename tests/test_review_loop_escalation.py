@@ -8,16 +8,17 @@ Vérifie :
 - _apply_corrections force le model_tier des tâches correctives quand force_tier est fourni.
 """
 
-import sys
-import os
 import asyncio
-import pytest
+import os
+import sys
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.state import TaskPayload, StateUpdate, GlobalState
 from core.review_loop import ReviewLoop
+from core.state import GlobalState, StateUpdate, TaskPayload
 
 
 class _StubEngine:

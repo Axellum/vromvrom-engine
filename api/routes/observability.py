@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 api/routes/observability.py — Observabilité du moteur (Phase 2, item 14).
 

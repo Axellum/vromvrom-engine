@@ -16,15 +16,23 @@ Créé dans le cadre de l'audit V5.5 (Axe HL1 — score HITL 55% → cible 85%).
 """
 
 import asyncio
-import time
 import logging
-from typing import Optional, Dict, Any
+import time
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # Timeout par défaut avant auto-approbation (5 minutes)
 DEFAULT_APPROVAL_TIMEOUT = 300
+
+# [#T267] Issues possibles du point d'approbation avant DAG. Le troisième état
+# (« en attente ») est celui qui manquait : sans lui, le moteur n'avait que
+# « approuvé » et « rejeté », et devait donc BLOQUER pour trancher — d'où la
+# course perdue contre le timeout de session.
+DECISION_APPROUVE = "approved"
+DECISION_REJETE = "rejected"
+DECISION_EN_ATTENTE = "pending"
 
 
 @dataclass
@@ -32,15 +40,15 @@ class ApprovalRequest:
     """Représente une demande d'approbation humaine en attente."""
     request_id: str
     description: str
-    plan_summary: Optional[str] = None
+    plan_summary: str | None = None
     risk_level: str = "medium"  # "low", "medium", "high", "critical"
     created_at: float = field(default_factory=time.time)
     timeout: float = DEFAULT_APPROVAL_TIMEOUT
     # Résultat (rempli par approve/reject)
-    approved: Optional[bool] = None
-    feedback: Optional[str] = None
+    approved: bool | None = None
+    feedback: str | None = None
     # Données modifiables par l'humain avant approbation
-    modified_data: Optional[Dict[str, Any]] = None
+    modified_data: dict[str, Any] | None = None
 
 
 class HITLManager:
@@ -62,9 +70,9 @@ class HITLManager:
 
     def __init__(self):
         # Événements en attente : request_id -> asyncio.Event
-        self._pending_events: Dict[str, asyncio.Event] = {}
+        self._pending_events: dict[str, asyncio.Event] = {}
         # Requêtes en attente : request_id -> ApprovalRequest
-        self._pending_requests: Dict[str, ApprovalRequest] = {}
+        self._pending_requests: dict[str, ApprovalRequest] = {}
         # Callback SSE pour notifier l'IHM
         self._on_event = None
 
@@ -76,7 +84,7 @@ class HITLManager:
         self,
         request_id: str,
         description: str,
-        plan_summary: Optional[str] = None,
+        plan_summary: str | None = None,
         risk_level: str = "medium",
         timeout: float = DEFAULT_APPROVAL_TIMEOUT,
         on_event=None,
@@ -136,7 +144,7 @@ class HITLManager:
                 f"[HITL] ✅ Réponse reçue pour {request_id} : "
                 f"{'approuvé' if request.approved else 'rejeté'}"
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Politique fail-safe : pour les plans à risque élevé/critique, le
             # timeout REJETTE par défaut (ne jamais exécuter une action sensible
             # sans validation explicite). Pour low/medium, auto-approbation.
@@ -168,11 +176,74 @@ class HITLManager:
 
         return request
 
+    async def demander_sans_bloquer(
+        self,
+        request_id: str,
+        session_id: str,
+        dag_tasks: list[dict],
+        description: str,
+        objective: str = "",
+        plan_summary: str | None = None,
+        risk_level: str = "medium",
+        git_branch: str | None = None,
+        criteres: list | None = None,
+        on_event=None,
+    ) -> None:
+        """
+        [#T267] Demande une approbation SANS bloquer le flux d'exécution.
+
+        Différence essentielle avec `request_approval()` : on ne pose aucun
+        `asyncio.Event.wait()`. La demande et le DAG à rejouer sont PERSISTÉS,
+        l'IHM est notifiée, et l'appelant rend la main immédiatement — la session
+        peut se terminer proprement au lieu d'être tuée par le `wait_for` de 120 s
+        pendant que le HITL attendait jusqu'à 300 s.
+
+        La reprise se fait plus tard, depuis `POST /api/approval/approve`, en
+        rejouant le DAG stocké **à l'identique**.
+
+        Args:
+            dag_tasks: le DAG approuvé, déjà sérialisé en dicts JSON-safe.
+            git_branch: branche éphémère de la session, laissée en place jusqu'à
+                la décision (ne pas la fusionner ni l'annuler entre-temps).
+        """
+        from core import hitl_store
+
+        # Persistance AVANT notification : si l'IHM reçoit l'événement, la demande
+        # est déjà rejouable. L'inverse laisserait une demande visible mais perdue.
+        hitl_store.enregistrer_demande(
+            request_id=request_id,
+            session_id=session_id,
+            dag_tasks=dag_tasks,
+            objective=objective,
+            description=description,
+            plan_summary=plan_summary or "",
+            risk_level=risk_level,
+            git_branch=git_branch,
+            criteres=criteres,
+        )
+
+        logger.info(
+            f"[HITL] ⏸️  Approbation demandée SANS BLOCAGE : {request_id} "
+            f"(risque: {risk_level}, {len(dag_tasks)} tâche(s)). "
+            f"La session se termine ; l'exécution reprendra à l'approbation."
+        )
+
+        event_callback = on_event or self._on_event
+        if event_callback:
+            await event_callback("approval_required", {
+                "request_id": request_id,
+                "description": description,
+                "plan_summary": plan_summary,
+                "risk_level": risk_level,
+                "non_bloquant": True,
+                "created_at": time.time(),
+            })
+
     def approve(
         self,
         request_id: str,
-        feedback: Optional[str] = None,
-        modified_data: Optional[Dict[str, Any]] = None,
+        feedback: str | None = None,
+        modified_data: dict[str, Any] | None = None,
     ) -> bool:
         """
         Approuve une demande en attente (appelé par l'API REST).
@@ -203,7 +274,7 @@ class HITLManager:
     def reject(
         self,
         request_id: str,
-        feedback: Optional[str] = None,
+        feedback: str | None = None,
     ) -> bool:
         """
         Rejette une demande en attente (appelé par l'API REST).

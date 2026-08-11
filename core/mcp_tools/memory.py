@@ -37,25 +37,25 @@ async def get_models_catalog(
         from core.models_db import get_all_models
 
         models = get_all_models()
-        
+
         if not models:
             return "❌ Aucun modèle trouvé dans models_registry.db. Exécutez seed_models_db.py."
-        
+
         # Filtrage
         if filter_provider:
             models = [m for m in models if filter_provider.lower() in (m.get("provider_id", "") or "").lower()]
         if filter_capability:
             models = [m for m in models if filter_capability.lower() in (m.get("capabilities", "") or "").lower()]
-        
+
         # Formatage
         lines = [f"📚 **{len(models)} modèle(s)** dans le catalogue\n"]
-        
+
         # Grouper par provider
         by_provider = {}
         for m in models:
             pid = m.get("provider_id", "inconnu")
             by_provider.setdefault(pid, []).append(m)
-        
+
         for provider, provider_models in by_provider.items():
             lines.append(f"\n### {provider} ({len(provider_models)} modèles)")
             for m in provider_models:
@@ -64,11 +64,11 @@ async def get_models_catalog(
                 status = "✅" if m.get("status") == "active" else "❌"
                 ctx = m.get("context_window", 0) or 0
                 ctx_str = f"{ctx:,}" if ctx else "?"
-                
+
                 cost_str = f"${cost_in:.2f}/${cost_out:.2f}" if (cost_in + cost_out) > 0 else "GRATUIT"
-                
+
                 lines.append(f"  {status} **{m.get('model_id', '?')}** | Ctx: {ctx_str} | Coût: {cost_str} | {m.get('specialty', '')}")
-        
+
         return "\n".join(lines)
     except ImportError:
         return "❌ Module core/models_db.py non trouvé. Le catalogue SQLite n'est pas encore initialisé."
@@ -114,14 +114,14 @@ async def rag_search(
             return "❌ Requête vide."
 
         backend = os.environ.get("RAG_BACKEND", "LOCAL").upper()
-        
+
         if backend == "VERTEX":
             # [T92] Adapter GCP Vertex AI (Réversibilité)
             project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
             data_store = os.environ.get("VERTEX_DATA_STORE_ID", "")
             if not project_id or not data_store:
                 return "⚠️ RAG Vertex non configuré (manque GOOGLE_CLOUD_PROJECT ou VERTEX_DATA_STORE_ID). Repassez RAG_BACKEND=LOCAL."
-            
+
             try:
                 from google.cloud import discoveryengine
                 client = discoveryengine.SearchServiceClient()
@@ -177,7 +177,7 @@ async def rag_search(
             lines.append(f"  {content}\n")
 
         return "\n".join(lines)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return "❌ Timeout (15s) lors de la recherche RAG — le service (ChromaDB/Vertex) ne répond pas."
     except Exception as e:
         return f"❌ Erreur recherche RAG : {e}"
@@ -201,6 +201,7 @@ async def query_token_usage(
         group_by: Regroupement (défaut: "model"). Options: "model", "channel", "session".
     """
     import asyncio
+
     from core.runtime_db import get_connection
 
     # Colonne de regroupement (liste blanche → pas d'injection possible).
@@ -345,7 +346,7 @@ async def list_available_models(
     if show_status:
         lines.append("\n> 🟢 Circuit fermé (disponible) | 🔴 Circuit ouvert (temporairement indisponible)")
 
-    lines.append(f"\n💡 **Conseil** : Utilise `query_llm_direct(prompt, model='deepseek-chat')` pour un appel direct.")
+    lines.append("\n💡 **Conseil** : Utilise `query_llm_direct(prompt, model='deepseek-chat')` pour un appel direct.")
 
     return "\n".join(lines)
 # ═══════════════════════════════════════════════════════
@@ -383,6 +384,7 @@ async def query_runtime(
         query_runtime("SELECT model_name, domain, elo_score FROM model_elo_scores ORDER BY elo_score DESC", 20)
     """
     import asyncio
+
     from core.runtime_db import get_connection, get_db_path
 
     limit = max(1, min(int(limit or 100), 1000))

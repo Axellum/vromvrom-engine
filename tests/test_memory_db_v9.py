@@ -11,8 +11,10 @@ Usage :
     python -X utf8 -m pytest tests/test_memory_db_v9.py -v
 """
 
+import logging
 import os
 import sys
+
 import pytest
 
 # Ajouter le dossier racine du moteur au PATH
@@ -76,7 +78,7 @@ class TestMemoryDBV9:
             commit_hash="a1b2c3d4",
             severity="major"
         )
-        
+
         # Vérifier directement dans la table virtuelle
         conn = temp_memory_db._get_conn()
         try:
@@ -125,7 +127,7 @@ class TestMemoryDBV9:
 
         # 2. Créer une entité dans le graphe
         temp_memory_db.upsert_graph_entity(
-            name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
+            name="switch.example_wake_word",
             entity_type="HA_Entity",
             observations=["Vrai commutateur du wake word Tab5 V2"]
         )
@@ -133,13 +135,13 @@ class TestMemoryDBV9:
         # 3. Créer la liaison
         ok = temp_memory_db.link_fact_to_entity(
             fact_id=fact_id,
-            entity_name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+            entity_name="switch.example_wake_word"
         )
         assert ok is True
 
         # 4. Rechercher les faits connectés à l'entité
         facts = temp_memory_db.get_connected_facts_for_entity(
-            entity_name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+            entity_name="switch.example_wake_word"
         )
         assert len(facts) == 1
         assert facts[0]["id"] == fact_id
@@ -148,7 +150,7 @@ class TestMemoryDBV9:
         # 5. Rechercher les entités connectées au fait
         entities = temp_memory_db.get_connected_entities_for_fact(fact_id=fact_id)
         assert len(entities) == 1
-        assert entities[0]["name"] == "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+        assert entities[0]["name"] == "switch.example_wake_word"
 
     @pytest.mark.asyncio
     async def test_async_graph_rag_linkage(self, temp_memory_db):
@@ -182,6 +184,119 @@ class TestMemoryDBV9:
         assert len(facts) == 1
         assert facts[0]["id"] == fact_id
         assert facts[0]["title"] == "Audio DAC ES8388 Async"
+
+
+class TestSearchFactsFrancais:
+    """[#T283] La recherche FTS5 ne casse plus sur les questions en français."""
+
+    def test_question_francaise_exacte_rend_le_fait(self, temp_memory_db):
+        """Test central : la question exacte du ticket rend au moins un fait (0 avant)."""
+        temp_memory_db.upsert_fact(
+            category="ecosysteme",
+            title="Statut de l'ecosysteme domotique",
+            content="L'ecosysteme domotique est operationnel : 12 entites actives, MQTT connecte.",
+            tags="domotique,statut,mqtt",
+        )
+        temp_memory_db.upsert_fact(
+            category="autre",
+            title="Fact non pertinent",
+            content="Recette du pain perdu avec de la cannelle.",
+            tags="cuisine",
+        )
+        results = temp_memory_db.search_facts("Quel est le statut de l'ecosysteme domotique ?")
+        assert len(results) >= 1
+        assert results[0]["title"] == "Statut de l'ecosysteme domotique"
+
+    def test_question_avec_chemin_de_fichier(self, temp_memory_db):
+        """Une question contenant un chemin de fichier ne lève plus d'erreur FTS5."""
+        temp_memory_db.upsert_fact(
+            category="architecture",
+            title="Resilience du LLM gateway",
+            content="La resilience est geree dans core/llm_gateway.py via un retry avec backoff.",
+            tags="resilience,llm_gateway",
+        )
+        results = temp_memory_db.search_facts(
+            "Comment est geree la resilience dans core/llm_gateway.py ?"
+        )
+        assert len(results) >= 1
+        assert results[0]["title"] == "Resilience du LLM gateway"
+
+    def test_accents_et_majuscules(self, temp_memory_db):
+        """Le tokenizer unicode61 de la base normalise casse et diacritiques."""
+        temp_memory_db.upsert_fact(
+            category="architecture",
+            title="Résilience du gateway",
+            content="Le mécanisme de résilience est documenté.",
+            tags="resilience",
+        )
+        # Requête sans accent : matche le fait accentué (remove_diacritics=1 par défaut)
+        assert len(temp_memory_db.search_facts("resilience")) == 1
+        # Requête accentuée avec majuscule : même token normalisé côté requête
+        assert len(temp_memory_db.search_facts("Résilience")) == 1
+
+    def test_requete_vide_ou_stopwords_seuls(self, temp_memory_db):
+        """Requête vide ou composée uniquement de stopwords : liste vide, sans exception."""
+        temp_memory_db.upsert_fact(
+            category="c", title="Un fait quelconque", content="contenu", tags="t"
+        )
+        assert temp_memory_db.search_facts("") == []
+        assert temp_memory_db.search_facts("   ") == []
+        assert temp_memory_db.search_facts("quel est le de la ?") == []
+        assert temp_memory_db.search_facts_weighted("et ou mais dont") == []
+
+    def test_non_regression_mot_unique(self, temp_memory_db):
+        """Un seul mot simple rend le même résultat qu'avant le fix."""
+        temp_memory_db.upsert_fact(
+            category="esphome",
+            title="Deadlock SQLite WAL",
+            content="Utiliser RLock au lieu de Lock simple pour éviter les réentrances.",
+            tags="asyncio,concurrency",
+        )
+        results = temp_memory_db.search_facts("Deadlock")
+        assert len(results) == 1
+        assert results[0]["title"] == "Deadlock SQLite WAL"
+
+    def test_search_facts_weighted_question_francaise(self, temp_memory_db):
+        """search_facts_weighted rend aussi des faits pour une question française."""
+        temp_memory_db.upsert_fact(
+            category="ecosysteme",
+            title="Statut de l'ecosysteme domotique",
+            content="L'ecosysteme domotique est operationnel.",
+            tags="domotique,statut",
+        )
+        results = temp_memory_db.search_facts_weighted(
+            "Quel est le statut de l'ecosysteme domotique ?"
+        )
+        assert len(results) >= 1
+        assert results[0]["title"] == "Statut de l'ecosysteme domotique"
+
+    def test_repli_like_sans_fts5_journalise_un_warning(self, temp_memory_db, caplog):
+        """Sans table FTS5, le repli LIKE rend des faits et journalise la requête fautive."""
+        temp_memory_db.upsert_fact(
+            category="ecosysteme",
+            title="Statut de l'ecosysteme domotique",
+            content="L'ecosysteme domotique est operationnel.",
+            tags="domotique,statut",
+        )
+        # Simule une base sans FTS5 (table virtuelle absente) sur la base temporaire
+        conn = temp_memory_db._get_conn()
+        try:
+            conn.execute("DROP TABLE fts_facts")
+            conn.commit()
+        finally:
+            conn.close()
+        with caplog.at_level(logging.WARNING, logger="memory.facts"):
+            results = temp_memory_db.search_facts(
+                "Quel est le statut de l'ecosysteme domotique ?"
+            )
+            # Cascade visible : weighted -> search_facts -> LIKE
+            results_w = temp_memory_db.search_facts_weighted(
+                "Quel est le statut de l'ecosysteme domotique ?"
+            )
+        assert len(results) >= 1
+        assert len(results_w) >= 1
+        assert any("falling back to LIKE" in r.getMessage() for r in caplog.records)
+        assert any("falling back to search_facts" in r.getMessage() for r in caplog.records)
 
 
 class TestGraphGCOrdering:

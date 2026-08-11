@@ -36,7 +36,7 @@ def test_save_without_key_writes_plaintext(tmp_path):
 
     token_crypto.save_token_json(path, data)
 
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         on_disk = json.load(f)
     assert on_disk == data
 

@@ -7,10 +7,10 @@ Endpoints :
   GET  /api/chat/sessions                             — liste les sessions récentes
   DELETE /api/chat/sessions/{chat_session_id}         — supprime une session
 """
-import time
 import json
 import sqlite3
-from typing import List, Optional
+import time
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -22,8 +22,8 @@ router = APIRouter(prefix="/api/chat", tags=["Chat"])
 class ChatMessageIn(BaseModel):
     role: str           # 'user' | 'assistant'
     content: str
-    agents_used: Optional[List[str]] = None
-    created_at: Optional[float] = None
+    agents_used: list[str] | None = None
+    created_at: float | None = None
 
 
 class ChatMessageOut(BaseModel):
@@ -31,25 +31,25 @@ class ChatMessageOut(BaseModel):
     chat_session_id: str
     role: str
     content: str
-    agents_used: Optional[List[str]]
+    agents_used: list[str] | None
     created_at: float
 
 
 class SaveMessagesRequest(BaseModel):
-    messages: List[ChatMessageIn]
-    title: Optional[str] = None   # titre de la session (premier message tronqué)
+    messages: list[ChatMessageIn]
+    title: str | None = None   # titre de la session (premier message tronqué)
 
 
 class ChatSessionOut(BaseModel):
     chat_session_id: str
-    title: Optional[str]
+    title: str | None
     created_at: float
     updated_at: float
     message_count: int
 
 
 def _upsert_session(conn: sqlite3.Connection, chat_session_id: str,
-                    title: Optional[str], message_count: int) -> None:
+                    title: str | None, message_count: int) -> None:
     now = time.time()
     # fetchone() peut être un tuple ou sqlite3.Row selon le contexte appelant
     existing = conn.execute(
@@ -105,7 +105,7 @@ async def save_messages(chat_session_id: str, body: SaveMessagesRequest):
     return {"saved": len(body.messages), "chat_session_id": chat_session_id}
 
 
-@router.get("/sessions/{chat_session_id}/messages", response_model=List[ChatMessageOut])
+@router.get("/sessions/{chat_session_id}/messages", response_model=list[ChatMessageOut])
 async def get_messages(chat_session_id: str, limit: int = 200):
     """Récupère les messages d'une session chat (ordre chronologique)."""
     conn = get_connection()
@@ -133,7 +133,7 @@ async def get_messages(chat_session_id: str, limit: int = 200):
     return result
 
 
-@router.get("/sessions", response_model=List[ChatSessionOut])
+@router.get("/sessions", response_model=list[ChatSessionOut])
 async def list_sessions(limit: int = 50):
     """Liste les sessions chat récentes."""
     conn = get_connection()

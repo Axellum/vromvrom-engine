@@ -9,10 +9,10 @@ Valide les 4 axes d'amélioration inspirés de Jonas Roman (IA en Prod) :
 """
 
 import os
-import sys
-import unittest
-import tempfile
 import shutil
+import sys
+import tempfile
+import unittest
 
 # Ajouter le dossier parent au path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,16 +23,18 @@ class TestRAGCategoryFiltering(unittest.TestCase):
 
     def test_rag_query_signature_accepts_categories(self):
         """Vérifie que query() accepte le paramètre allowed_categories."""
-        from memory.rag import RAGEngine
         import inspect
+
+        from memory.rag import RAGEngine
         sig = inspect.signature(RAGEngine.query)
         self.assertIn("allowed_categories", sig.parameters,
                        "Le paramètre 'allowed_categories' manque dans query()")
-    
+
     def test_rag_query_default_none(self):
         """Vérifie que allowed_categories a une valeur par défaut None."""
-        from memory.rag import RAGEngine
         import inspect
+
+        from memory.rag import RAGEngine
         sig = inspect.signature(RAGEngine.query)
         param = sig.parameters["allowed_categories"]
         self.assertIsNone(param.default,
@@ -56,7 +58,7 @@ class TestRAGCategoryFiltering(unittest.TestCase):
         rag._memory_db = None  # Attribut requis pour le fallback vectoriel
         rag._embed_fn = None   # Attribut requis pour le fallback vectoriel
         rag.max_cache_size = 100  # Taille max du cache LRU
-        
+
         # Appel sans filtre — doit retourner quelque chose (pas d'erreur)
         result = rag.query("test", top_n=2, allowed_categories=None)
         # Le résultat peut être vide ou non selon les scores, mais pas d'exception
@@ -70,35 +72,35 @@ class TestChunkingContextual(unittest.TestCase):
         """Vérifie que _chunk_markdown() ajoute le préfixe contextuel."""
         from memory.embeddings import EmbeddingStore
         store = EmbeddingStore.__new__(EmbeddingStore)
-        
+
         content = "# Mon Titre\n\nCeci est un contenu de test suffisamment long pour passer le seuil de 20 caractères et être retenu comme chunk valide."
         filepath = os.path.join("e:", "AuxFilsDesIdees", "contexte_ia", "02_Hardware", "rules_esphome.md")
-        
+
         sections = store._chunk_markdown(content, filepath)
-        
+
         # Vérifier qu'au moins une section existe
         self.assertTrue(len(sections) > 0, "Aucune section extraite du Markdown")
-        
+
         # Vérifier le préfixe contextuel
         for sec in sections:
             self.assertIn("[Source:", sec["content"],
                           f"Le préfixe [Source:] est absent du chunk : {sec['content'][:100]}")
             self.assertIn("[Section:", sec["content"],
-                          f"Le préfixe [Section:] est absent du chunk")
+                          "Le préfixe [Section:] est absent du chunk")
             self.assertIn("---", sec["content"],
                           "Le séparateur --- est absent du chunk")
-    
+
     def test_chunk_respects_size_limit(self):
         """Vérifie que le contenu enrichi ne dépasse pas ~2000 caractères."""
         from memory.embeddings import EmbeddingStore
         store = EmbeddingStore.__new__(EmbeddingStore)
-        
+
         # Créer un contenu très long
         long_content = "# Titre Long\n\n" + "A" * 5000
         filepath = os.path.join("e:", "contexte_ia", "01_Core", "test.md")
-        
+
         sections = store._chunk_markdown(long_content, filepath)
-        
+
         for sec in sections:
             # Le préfixe (~80 chars) + 1900 chars de contenu ≈ 2000
             self.assertLess(len(sec["content"]), 2100,
@@ -113,7 +115,7 @@ class TestQualityScoring(unittest.TestCase):
         from memory.memory_db import MemoryDB
         self.test_dir = tempfile.mkdtemp()
         self.test_db_path = os.path.join(self.test_dir, "test_memory.db")
-        
+
         # Créer une instance indépendante (contourner le singleton)
         self.db = MemoryDB.__new__(MemoryDB)
         self.db._db_path = self.test_db_path
@@ -200,16 +202,16 @@ class TestSyncFilterQuality(unittest.TestCase):
             {"title": "Fait de basse qualité", "content": "Typo CSS", "quality_score": 0.2},
             {"title": "Fait ancien sans score", "content": "Ancien", "quality_score": None},
         ]
-        
+
         # Filtrer comme le fait sync_db_to_markdown
         filtered = [
             f for f in mock_facts
             if f.get("quality_score") is None or f.get("quality_score", 0.0) >= 0.5
         ]
-        
+
         self.assertEqual(len(filtered), 2,
                          "Le filtrage doit garder 2 faits : qualité >= 0.5 et None")
-        
+
         titles = [f["title"] for f in filtered]
         self.assertIn("Fait de qualité", titles)
         self.assertIn("Fait ancien sans score", titles)
@@ -247,29 +249,29 @@ class TestContextSelfHealer(unittest.TestCase):
     def test_context_self_healer_detects_missing_file(self):
         """Vérifie que le self-healer détecte un fichier Python manquant référencé dans un doc."""
         from tools.context_self_healing import ContextSelfHealer
-        
+
         healer = ContextSelfHealer()
-        
+
         # Créer un faux fichier Markdown temporaire avec une référence à un fichier inexistant
         test_dir = tempfile.mkdtemp()
         try:
             fake_doc = os.path.join(test_dir, "test_doc.md")
             with open(fake_doc, 'w', encoding='utf-8') as f:
                 f.write("Voir le fichier `core/inexistant_module.py` pour plus de détails.\n")
-            
+
             # Injecter le chemin temporaire dans le healer
             original_path = healer.CONTEXTE_IA_PATH
             healer.CONTEXTE_IA_PATH = test_dir
-            
+
             # Créer le sous-dossier attendu
             os.makedirs(os.path.join(test_dir, "03_Software"), exist_ok=True)
             shutil.copy(fake_doc, os.path.join(test_dir, "03_Software", "05_MOTEUR_AGENTS_PYTHON.md"))
-            
+
             diagnostics = healer.validate_all()
-            
+
             # Restaurer
             healer.CONTEXTE_IA_PATH = original_path
-            
+
             # Chercher un diagnostic de type missing_python_file
             missing_diags = [d for d in diagnostics if d["type"] == "missing_python_file"]
             self.assertTrue(
@@ -289,6 +291,7 @@ def test_bm25_optimise_equivaut_au_calcul_naif():
     """[P2-3.5] Le BM25 optimisé (DF/avg_dl/TF pré-calculés) donne EXACTEMENT le
     même score que le calcul naïf O(N²) d'origine."""
     import math
+
     from memory.rag import RAGEngine
 
     rag = RAGEngine.__new__(RAGEngine)

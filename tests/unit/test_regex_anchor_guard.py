@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""
 Garde-fou de convention : les regex de validation de sécurité doivent ancrer la
 fin de chaîne avec `\Z`, pas avec `$`.

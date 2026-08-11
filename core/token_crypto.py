@@ -9,9 +9,9 @@ Rétro-compatible : si `MCP_TOKEN_KEY` est absente ou si le fichier est encore
 en clair (JSON), la lecture retombe sur le JSON brut — pas de casse en prod
 tant que la migration (`tools/encrypt_google_token.py`) n'a pas tourné.
 """
-import os
 import json
 import logging
+import os
 
 logger = logging.getLogger("core.token_crypto")
 

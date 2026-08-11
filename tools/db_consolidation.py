@@ -23,7 +23,6 @@ import json
 import os
 import sqlite3
 from collections import defaultdict
-from typing import Dict, List
 
 # Propriétaire canonique RECOMMANDÉ par table dupliquée (d'après l'audit).
 # "decision" => nécessite un arbitrage humain (volumétries très différentes).
@@ -41,9 +40,9 @@ _IGNORE_DIRS = {"node_modules", ".git", ".chrome_scraper_profile", ".chrome_debu
                 "__pycache__", "backups_prod", ".venv", "venv"}
 
 
-def discover_dbs(db_dir: str, max_depth: int = 2) -> List[str]:
+def discover_dbs(db_dir: str, max_depth: int = 2) -> list[str]:
     """Découvre les fichiers *.db sous db_dir (profondeur limitée), hors dossiers ignorés."""
-    found: List[str] = []
+    found: list[str] = []
     base_depth = db_dir.rstrip(os.sep).count(os.sep)
     for root, dirs, files in os.walk(db_dir):
         dirs[:] = [d for d in dirs if d not in _IGNORE_DIRS]
@@ -55,9 +54,9 @@ def discover_dbs(db_dir: str, max_depth: int = 2) -> List[str]:
     return sorted(found)
 
 
-def inspect_db(path: str) -> Dict[str, dict]:
+def inspect_db(path: str) -> dict[str, dict]:
     """Retourne {table: {count, columns, schema_sql}} pour une base (lecture seule)."""
-    tables: Dict[str, dict] = {}
+    tables: dict[str, dict] = {}
     uri = f"file:{os.path.abspath(path)}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     try:
@@ -85,7 +84,7 @@ def inspect_db(path: str) -> Dict[str, dict]:
 def analyze(db_dir: str) -> dict:
     """Construit le rapport d'analyse complet (sans aucune écriture)."""
     db_paths = discover_dbs(db_dir)
-    per_db: Dict[str, Dict[str, dict]] = {}
+    per_db: dict[str, dict[str, dict]] = {}
     for p in db_paths:
         try:
             per_db[p] = inspect_db(p)
@@ -93,7 +92,7 @@ def analyze(db_dir: str) -> dict:
             per_db[p] = {"__error__": str(e)}
 
     # Index inverse : table -> [bases qui la contiennent]
-    table_locations: Dict[str, List[str]] = defaultdict(list)
+    table_locations: dict[str, list[str]] = defaultdict(list)
     for p, tables in per_db.items():
         for t in tables:
             if t != "__error__":
@@ -130,7 +129,7 @@ def print_report(report: dict) -> None:
         return
 
     print(f"\n## ⚠️  Tables dupliquées détectées : {len(collisions)}\n")
-    plan: List[str] = []
+    plan: list[str] = []
     for table, locs in sorted(collisions.items()):
         print(f"  ── {table} ──")
         # Comparaison de schéma (colonnes) entre copies.

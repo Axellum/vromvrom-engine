@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core/semantic_cache.py — Cache sémantique de réponses LLM (Phase 3, item 17).
 
@@ -18,7 +17,7 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +44,7 @@ class SemanticCache:
 
     def __init__(
         self,
-        persist_dir: Optional[str] = None,
+        persist_dir: str | None = None,
         collection_name: str = "llm_semantic_cache",
         similarity_threshold: float = _DEFAULT_THRESHOLD,
         client: Any = None,
@@ -90,7 +89,7 @@ class SemanticCache:
     def enabled(self) -> bool:
         return self.collection is not None
 
-    def get(self, prompt: str) -> Optional[str]:
+    def get(self, prompt: str) -> str | None:
         """Retourne une réponse mise en cache si un prompt assez proche existe, sinon None."""
         if not self.enabled or not prompt:
             return None
@@ -115,7 +114,7 @@ class SemanticCache:
             logger.warning(f"[SEM-CACHE] get() échec : {e}")
             return None
 
-    def put(self, prompt: str, response: str, model: Optional[str] = None) -> None:
+    def put(self, prompt: str, response: str, model: str | None = None) -> None:
         """Mémorise (prompt -> response). Upsert idempotent par hash de prompt."""
         if not self.enabled or not prompt or response is None:
             return
@@ -132,7 +131,7 @@ class SemanticCache:
         except Exception as e:
             logger.warning(f"[SEM-CACHE] put() échec : {e}")
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Statistiques d'utilisation du cache."""
         total = self._hits + self._misses
         return {
@@ -164,7 +163,7 @@ _SINGLETON_LOCK = threading.Lock()
 def _read_config_flags() -> tuple[bool, float]:
     """Lit (enabled, threshold) depuis config.json. Défaut : désactivé."""
     try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
             sc = (json.load(f).get("semantic_cache") or {})
         return bool(sc.get("enabled", False)), float(
             sc.get("similarity_threshold", _DEFAULT_THRESHOLD)

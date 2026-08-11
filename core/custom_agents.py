@@ -28,6 +28,25 @@ def load_custom_agent_entries(config: dict, only_enabled: bool = False) -> list[
     return entries
 
 
+def build_custom_agent_prompt(name: str, label: str | None = None, allowed_tools: list[str] | None = None) -> str:
+    """
+    Prompt système partagé des agents custom (config.json ET workflow, cf. #T213).
+
+    [#T233] Le libellé d'accès reflète la restriction réelle : annoncer
+    « accès à tous les outils » à un agent restreint l'inciterait à contourner
+    le refus (cf. #T275) au lieu de travailler dans son périmètre autorisé.
+    """
+    if allowed_tools:
+        acces = f"accès restreint aux outils suivants : {', '.join(allowed_tools)}."
+    else:
+        acces = "accès à tous les outils."
+    return (
+        f"Tu es l'agent custom '{name}' ({label or name}).\n"
+        f"Tu hérites de la boucle ReAct d'ExecutorAgent avec {acces}\n"
+        "Exécute la tâche qui t'est assignée de manière rigoureuse et pédagogue."
+    )
+
+
 def register_config_custom_agents(engine, gateway, tool_registry, config) -> int:
     """
     Instancie et enregistre dans l'Engine les agents custom activés de config.json.
@@ -47,12 +66,12 @@ def register_config_custom_agents(engine, gateway, tool_registry, config) -> int
                 llm_gateway=gateway,
                 tool_registry=tool_registry,
                 provider_name=entry.get("tier", "automatique"),
+                # [#T233] Restrictions d'outils (absent/None = tous, [] = aucun)
+                allowed_tools=entry.get("allowed_tools"),
             )
             agent.name = name
-            agent.system_prompt = entry.get("system_prompt") or (
-                f"Tu es l'agent custom '{name}' ({entry.get('label', name)}).\n"
-                f"Tu hérites de la boucle ReAct d'ExecutorAgent avec accès à tous les outils.\n"
-                f"Exécute la tâche qui t'est assignée de manière rigoureuse et pédagogue."
+            agent.system_prompt = entry.get("system_prompt") or build_custom_agent_prompt(
+                name, entry.get("label"), entry.get("allowed_tools")
             )
             engine.register_agent(agent)
             added += 1

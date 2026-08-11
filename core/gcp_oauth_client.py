@@ -8,12 +8,14 @@ SANS intervention utilisateur.
 Routes intégrées dans gui_server.py via get_gcp_billing_info().
 """
 
-import os
-import json
-import time
 import logging
+import os
+import time
+from datetime import UTC
+from typing import Any
+
 import requests
-from typing import Optional, Dict, Any
+
 from core.validation import is_valid_gsheet_id  # [P0-1.6] validation spreadsheet_id
 
 logger = logging.getLogger("core.gcp_oauth")
@@ -28,24 +30,24 @@ class GCPOAuthClient:
     Gère automatiquement le renouvellement de l'access_token via le
     refresh_token permanent. Aucune interaction utilisateur nécessaire.
     """
-    
+
     def __init__(self, token_file: str = TOKEN_FILE):
         self._token_file = token_file
-        self._access_token: Optional[str] = None
+        self._access_token: str | None = None
         self._token_expiry: float = 0  # timestamp d'expiration
-        self._client_id: Optional[str] = None
-        self._client_secret: Optional[str] = None
-        self._refresh_token: Optional[str] = None
+        self._client_id: str | None = None
+        self._client_secret: str | None = None
+        self._refresh_token: str | None = None
         self._available = False
-        
+
         self._load_credentials()
-    
+
     def _load_credentials(self):
         """Charge les credentials depuis google_token.json."""
         if not os.path.exists(self._token_file):
             logger.warning(f"[GCP OAuth] Fichier token introuvable : {self._token_file}")
             return
-        
+
         try:
             from core.token_crypto import load_token_json
             data = load_token_json(self._token_file)
@@ -54,7 +56,7 @@ class GCPOAuthClient:
             self._client_id = data.get("client_id")
             self._client_secret = data.get("client_secret")
             self._access_token = data.get("token")
-            
+
             # Estimer l'expiration (les access tokens durent ~1h)
             expiry = data.get("expiry")
             if expiry:
@@ -64,7 +66,7 @@ class GCPOAuthClient:
                     self._token_expiry = dt.timestamp()
                 except Exception:
                     self._token_expiry = 0
-            
+
             if self._refresh_token and self._client_id:
                 self._available = True
                 logger.info("[GCP OAuth] ✅ Credentials chargées avec succès")
@@ -72,17 +74,17 @@ class GCPOAuthClient:
                 logger.warning("[GCP OAuth] âŒ Credentials incomplètes (refresh_token ou client_id manquant)")
         except Exception as e:
             logger.error(f"[GCP OAuth] Erreur de chargement : {e}")
-    
+
     @property
     def available(self) -> bool:
         """Indique si le client OAuth est configuré et prêt."""
         return self._available
-    
+
     def _refresh_access_token(self) -> bool:
         """Renouvelle l'access_token via le refresh_token (appel Google)."""
         if not self._refresh_token:
             return False
-        
+
         try:
             resp = requests.post(
                 "https://oauth2.googleapis.com/token",
@@ -94,7 +96,7 @@ class GCPOAuthClient:
                 },
                 timeout=10,
             )
-            
+
             if resp.status_code == 200:
                 data = resp.json()
                 self._access_token = data["access_token"]
@@ -108,16 +110,16 @@ class GCPOAuthClient:
         except Exception as e:
             logger.error(f"[GCP OAuth] Erreur réseau lors du refresh : {e}")
             return False
-    
-    def _get_headers(self) -> Dict[str, str]:
+
+    def _get_headers(self) -> dict[str, str]:
         """Retourne les headers HTTP avec un access_token valide."""
         # Renouveler si expiré ou proche de l'expiration
         if time.time() >= self._token_expiry:
             self._refresh_access_token()
-        
+
         return {"Authorization": f"Bearer {self._access_token}"}
-    
-    def _get(self, url: str) -> Optional[Dict]:
+
+    def _get(self, url: str) -> dict | None:
         """Requête GET authentifiée vers une API GCP."""
         try:
             resp = requests.get(url, headers=self._get_headers(), timeout=15)
@@ -129,19 +131,149 @@ class GCPOAuthClient:
         except Exception as e:
             logger.error(f"[GCP OAuth] Erreur GET {url} : {e}")
             return None
-    
+
     # ─── APIs de haut niveau ────────────────────────────────────
-    
+
     def get_billing_accounts(self) -> list:
         """Récupère la liste des comptes de facturation accessibles."""
         data = self._get("https://cloudbilling.googleapis.com/v1/billingAccounts")
         return data.get("billingAccounts", []) if data else []
-    
+
     def get_billing_projects(self, billing_account_name: str) -> list:
         """Récupère les projets liés à un compte de facturation."""
         data = self._get(f"https://cloudbilling.googleapis.com/v1/{billing_account_name}/projects")
         return data.get("projectBillingInfo", []) if data else []
-    
+
+    def _find_billing_export_table(self, project_id: str) -> tuple[str, str] | None:
+        """Découvre le dataset/table d'export de facturation BigQuery (format FOCUS)
+        sur `project_id` par préfixe de nom (dérivé du billing account ID, donc
+        unique par compte) — pas de nom codé en dur. None si l'export n'existe pas
+        sur ce projet (pas tous les projets liés à un compte l'ont)."""
+        datasets = self._get(f"https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/datasets")
+        if not datasets:
+            return None
+        export_dataset = next(
+            (ds["datasetReference"]["datasetId"] for ds in datasets.get("datasets", [])
+             if ds["datasetReference"]["datasetId"].startswith("gcp_billing")),
+            None,
+        )
+        if not export_dataset:
+            return None
+
+        tables = self._get(
+            f"https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/datasets/{export_dataset}/tables"
+        )
+        if not tables:
+            return None
+        export_table = next(
+            (t["tableReference"]["tableId"] for t in tables.get("tables", [])
+             if "billing_export" in t["tableReference"]["tableId"]),
+            None,
+        )
+        return (export_dataset, export_table) if export_table else None
+
+    def _query_bigquery(self, project_id: str, sql: str) -> list | None:
+        """Exécute une requête BigQuery et renvoie les lignes brutes (format `rows` de l'API), ou None si échec."""
+        try:
+            resp = requests.post(
+                f"https://bigquery.googleapis.com/bigquery/v2/projects/{project_id}/queries",
+                headers=self._get_headers(), json={"query": sql, "useLegacySql": False}, timeout=30,
+            )
+            if resp.status_code != 200:
+                logger.warning(f"[GCP OAuth] Requête BigQuery échouée : {resp.status_code} {resp.text[:200]}")
+                return None
+            return resp.json().get("rows", [])
+        except Exception as e:
+            logger.error(f"[GCP OAuth] Erreur requête BigQuery : {e}")
+            return None
+
+    def get_bigquery_month_cost_eur(self, project_id: str = "ha-delta") -> float | None:
+        """
+        Coût GCP réel du mois calendaire courant, via l'export de facturation
+        BigQuery (format FOCUS) déjà configuré sur `project_id` (vérifié le
+        07/07/2026). Devise vérifiée = EUR (`BillingCurrency` du compte),
+        PAS USD — ne pas convertir sans taux de change explicite. None si
+        l'export n'est pas configuré sur ce projet.
+        """
+        found = self._find_billing_export_table(project_id)
+        if not found:
+            return None
+        export_dataset, export_table = found
+
+        rows = self._query_bigquery(
+            project_id,
+            f"SELECT SUM(BilledCost) as total_cost "
+            f"FROM `{project_id}.{export_dataset}.{export_table}` "
+            f"WHERE DATE(ChargePeriodStart) >= DATE_TRUNC(CURRENT_DATE(), MONTH)",
+        )
+        if rows is None:
+            return None
+        return float(rows[0]["f"][0]["v"]) if rows and rows[0]["f"][0]["v"] is not None else 0.0
+
+    # Crédits promotionnels GCP relevés manuellement dans la console (Facturation >
+    # Coupons, le 07/07/2026 — Google n'expose PAS cette vue via API, seulement les
+    # lignes de consommation par crédit dans l'export BigQuery). "remaining" est
+    # recalculé en direct (original - consommé), sauf si expiré (remaining = 0).
+    # À remettre à jour manuellement si de nouveaux crédits sont accordés.
+    _GCP_CREDIT_GRANTS = [
+        {
+            "name": "Trial credit for GenAI App Builder",
+            "id": "3811c3b7864be189b32bf332781ec3917b0b2d1160ddbdfb24304e09bbfb00e0",
+            "original_eur": 859.06, "end_date": "2027-06-18",
+        },
+        {
+            "name": "Dialogflow CX Trial",
+            "id": "dialogflow_cx_credit_v2-01E3A1-4582CE-89B787",
+            "original_eur": 515.44, "end_date": "2027-06-21",
+        },
+        {
+            "name": "Google Developer Program premium benefit",
+            "id": "c3e8f64e-848e-4a5d-b86d-75ac42c493aa-CREDIT_TYPE_MONTHLY-324bc8cd-9e31-498b-820f-b74103f3e538",
+            "original_eur": 34.37, "end_date": "2027-06-17",
+        },
+        {
+            "name": "GCP Free Credit",
+            "id": "Starter:Credit-01E3A1-4582CE-89B787",
+            "original_eur": 260.15, "end_date": "2026-07-05",
+        },
+    ]
+
+    def get_credit_grants_status(self, project_id: str = "ha-delta") -> list[dict] | None:
+        """Solde restant par crédit promotionnel GCP (cf. _GCP_CREDIT_GRANTS),
+        recalculé en direct depuis la conso réelle dans l'export BigQuery.
+        None si l'export n'est pas configuré sur ce projet."""
+        from datetime import date
+
+        found = self._find_billing_export_table(project_id)
+        if not found:
+            return None
+        export_dataset, export_table = found
+
+        ids_sql = ", ".join(f"'{g['id']}'" for g in self._GCP_CREDIT_GRANTS)
+        rows = self._query_bigquery(
+            project_id,
+            f"SELECT c.Id, SUM(c.Amount) as consumed "
+            f"FROM `{project_id}.{export_dataset}.{export_table}`, UNNEST(x_Credits) as c "
+            f"WHERE c.Id IN ({ids_sql}) GROUP BY c.Id",
+        )
+        consumed_by_id = {r["f"][0]["v"]: abs(float(r["f"][1]["v"])) for r in (rows or [])}
+
+        today = date.today()
+        results = []
+        for g in self._GCP_CREDIT_GRANTS:
+            consumed = consumed_by_id.get(g["id"], 0.0)
+            expired = today > date.fromisoformat(g["end_date"])
+            remaining = 0.0 if expired else max(0.0, g["original_eur"] - consumed)
+            results.append({
+                "name": g["name"],
+                "original_eur": g["original_eur"],
+                "consumed_eur": round(consumed, 2),
+                "remaining_eur": round(remaining, 2),
+                "expired": expired,
+                "end_date": g["end_date"],
+            })
+        return results
+
     def get_enabled_services(self, project_id: str) -> list:
         """Liste les APIs activées sur un projet GCP."""
         data = self._get(
@@ -150,14 +282,14 @@ class GCPOAuthClient:
         if data:
             return [s["config"]["name"] for s in data.get("services", [])]
         return []
-    
+
     def get_projects(self) -> list:
         """Liste tous les projets GCP accessibles."""
         data = self._get("https://cloudresourcemanager.googleapis.com/v1/projects")
         return data.get("projects", []) if data else []
-    
+
     # ─── APIs Workspace ───────────────────────────────────────â”€â”€
-    
+
     def get_calendars(self) -> list:
         """Liste les calendriers Google accessibles."""
         data = self._get("https://www.googleapis.com/calendar/v3/users/me/calendarList")
@@ -173,7 +305,7 @@ class GCPOAuthClient:
             }
             for c in data.get("items", [])
         ]
-    
+
     def get_calendar_events(self, calendar_id: str = "primary", max_results: int = 10) -> list:
         """Récupère les prochains événements d'un calendrier.
         
@@ -181,9 +313,9 @@ class GCPOAuthClient:
             calendar_id: ID du calendrier (défaut: "primary" = calendrier principal)
             max_results: Nombre max d'événements à retourner
         """
-        from datetime import datetime, timezone
+        from datetime import datetime
         # L'API Calendar v3 attend le format RFC 3339 avec 'Z' (pas '+00:00')
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         # URL-encode l'URL pour éviter les problèmes avec les caractères spéciaux
         from urllib.parse import quote
         url = (
@@ -203,7 +335,7 @@ class GCPOAuthClient:
             }
             for e in data.get("items", [])
         ]
-    
+
     def get_drive_files(self, max_results: int = 20) -> list:
         """Liste les fichiers Google Drive récents."""
         data = self._get(
@@ -223,9 +355,9 @@ class GCPOAuthClient:
             }
             for f in data.get("files", [])
         ]
-    
+
     # ─── APIs Gmail ──────────────────────────────────────────────────
-    
+
     def get_gmail_messages(self, max_results: int = 10, label: str = "INBOX") -> list:
         """Récupère les derniers emails (sujet, expéditeur, date).
         
@@ -237,7 +369,7 @@ class GCPOAuthClient:
         )
         if not data:
             return []
-        
+
         messages = []
         for msg_ref in data.get("messages", [])[:max_results]:
             msg_data = self._get(
@@ -254,7 +386,7 @@ class GCPOAuthClient:
                     "snippet": msg_data.get("snippet", ""),
                 })
         return messages
-    
+
     def search_gmail(self, query: str, max_results: int = 10) -> list:
         """Recherche dans Gmail (même syntaxe que la barre de recherche Gmail).
         
@@ -270,7 +402,7 @@ class GCPOAuthClient:
         )
         if not data:
             return []
-        
+
         messages = []
         for msg_ref in data.get("messages", [])[:max_results]:
             msg_data = self._get(
@@ -287,9 +419,9 @@ class GCPOAuthClient:
                     "snippet": msg_data.get("snippet", ""),
                 })
         return messages
-    
+
     # ─── APIs Google Sheets ──────────────────────────────────────────
-    
+
     def get_sheets_data(self, spreadsheet_id: str, range_notation: str = "Sheet1") -> dict:
         """Lit les données d'un Google Spreadsheet.
         
@@ -311,7 +443,7 @@ class GCPOAuthClient:
             "values": data.get("values", []),
             "rows": len(data.get("values", [])),
         }
-    
+
     def write_sheets_data(self, spreadsheet_id: str, range_notation: str,
                           values: list) -> dict:
         """Écrit des données dans un Google Spreadsheet.
@@ -347,9 +479,9 @@ class GCPOAuthClient:
                 return {"error": f"HTTP {resp.status_code}"}
         except Exception as e:
             return {"error": str(e)}
-    
+
     # ─── APIs Google Tasks ───────────────────────────────────────────
-    
+
     def get_task_lists(self) -> list:
         """Liste les listes de tâches Google Tasks."""
         data = self._get("https://tasks.googleapis.com/tasks/v1/users/@me/lists")
@@ -359,7 +491,7 @@ class GCPOAuthClient:
             {"id": tl.get("id", ""), "title": tl.get("title", ""), "updated": tl.get("updated", "")}
             for tl in data.get("items", [])
         ]
-    
+
     def get_tasks(self, task_list_id: str = "@default", max_results: int = 20) -> list:
         """Récupère les tâches d'une liste."""
         data = self._get(
@@ -379,9 +511,9 @@ class GCPOAuthClient:
             }
             for t in data.get("items", [])
         ]
-    
+
     # ─── APIs YouTube ────────────────────────────────────────────────
-    
+
     def search_youtube(self, query: str, max_results: int = 5) -> list:
         """Recherche des vidéos YouTube."""
         from urllib.parse import quote
@@ -402,9 +534,9 @@ class GCPOAuthClient:
             }
             for item in data.get("items", [])
         ]
-    
+
     # ─── APIs Contacts ───────────────────────────────────────────────
-    
+
     def get_contacts(self, max_results: int = 20) -> list:
         """Liste les contacts Google (People API)."""
         data = self._get(
@@ -424,10 +556,10 @@ class GCPOAuthClient:
                 "phone": phones[0].get("value", "") if phones else "",
             })
         return contacts
-    
+
     # ─── Agrégation ──────────────────────────────────────────────────
-    
-    def get_full_billing_info(self) -> Dict[str, Any]:
+
+    def get_full_billing_info(self) -> dict[str, Any]:
         """Récupère un résumé complet de l'état GCP + Workspace.
         
         Retourne un dict prêt pour l'API /api/gcp-billing avec :
@@ -446,11 +578,11 @@ class GCPOAuthClient:
             "drive": {"files": []},
             "timestamp": time.time(),
         }
-        
+
         if not self._available:
             result["error"] = "OAuth2 non configuré. Exécutez setup_google_oauth.py"
             return result
-        
+
         # 1. Comptes de facturation
         accounts = self.get_billing_accounts()
         for acc in accounts:
@@ -468,7 +600,7 @@ class GCPOAuthClient:
                     "billing_enabled": p.get("billingEnabled", False),
                 })
             result["billing_accounts"].append(account_info)
-        
+
         # 2. Projets accessibles
         for p in self.get_projects():
             result["projects"].append({
@@ -477,7 +609,7 @@ class GCPOAuthClient:
                 "number": p.get("projectNumber", ""),
                 "state": p.get("lifecycleState", ""),
             })
-        
+
         # 3. APIs IA sur les projets principaux
         keywords_ia = ["ai", "generat", "vertex", "language", "vision", "speech"]
         for proj in result["projects"]:
@@ -489,25 +621,25 @@ class GCPOAuthClient:
                     "total": len(all_services),
                     "ia_services": ia_services,
                 }
-        
+
         # 4. Calendriers et événements (scope calendar.readonly)
         try:
             result["calendar"]["calendars"] = self.get_calendars()
             result["calendar"]["upcoming_events"] = self.get_calendar_events("primary", 5)
         except Exception as e:
             logger.warning(f"[GCP OAuth] Calendar non accessible : {e}")
-        
+
         # 5. Fichiers Drive récents (scope drive.readonly)
         try:
             result["drive"]["files"] = self.get_drive_files(10)
         except Exception as e:
             logger.warning(f"[GCP OAuth] Drive non accessible : {e}")
-        
+
         return result
 
 
 # Singleton global — instancié au premier import
-_client: Optional[GCPOAuthClient] = None
+_client: GCPOAuthClient | None = None
 
 def get_gcp_client() -> GCPOAuthClient:
     """Retourne le singleton du client GCP OAuth2."""

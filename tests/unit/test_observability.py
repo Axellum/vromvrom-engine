@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Tests du module d'observabilité (santé circuit breakers + Prometheus)."""
 
 from fastapi import FastAPI

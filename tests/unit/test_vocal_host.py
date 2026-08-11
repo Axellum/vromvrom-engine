@@ -20,6 +20,12 @@ def test_classify_web_meteo():
     assert score > 0
 
 
+def test_classify_web_dernier_modele():
+    intent, score = classify_vocal_intent("Quel est le dernier modèle sorti de Gemini ?")
+    assert intent == VocalIntent.WEB
+    assert score > 0
+
+
 def test_classify_calendar():
     intent, _ = classify_vocal_intent("Qu'est-ce que j'ai au calendrier demain matin ?")
     assert intent == VocalIntent.CALENDAR

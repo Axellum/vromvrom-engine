@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tests/test_safe_io.py — Écritures JSON atomiques + verrou (P1-2.3).
 
@@ -10,16 +9,16 @@ Vérifie :
   reste un JSON valide, jamais tronqué.
 """
 
-import os
-import sys
-import json
 import glob
-import threading
+import json
+import os
 import subprocess
+import sys
+import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.safe_io import safe_json_write, file_lock
+from core.safe_io import file_lock, safe_json_write
 
 
 def test_write_then_read_roundtrip(tmp_path):
@@ -47,7 +46,11 @@ def test_atomic_replace_keeps_valid_json_on_concurrent_threads(tmp_path):
     def _worker(n):
         try:
             for _ in range(20):
-                safe_json_write(p, {"writer": n, "payload": list(range(50))})
+                # Timeout large : sous charge CI, 50 writers × FileLock 10 s
+                # timeoutaient en Timeout flaky sans remettre en cause l'atomicité.
+                safe_json_write(
+                    p, {"writer": n, "payload": list(range(50))}, timeout=60,
+                )
         except Exception as e:  # pragma: no cover
             errors.append(e)
 

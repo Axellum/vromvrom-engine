@@ -2,9 +2,6 @@
 import os
 
 import pytest
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from core.llm_gateway import LLMGateway
 from core.models_db import get_model, get_provider, get_subscriptions
@@ -67,8 +64,18 @@ def test_dashscope_gateway_binds_key(monkeypatch):
     assert "coding" in coder.base_url
 
 
+@pytest.mark.live
 def test_dashscope_live_generation():
-    """Inférence live — skip si clé absente ou rejetée (401)."""
+    """Inférence live — skip si clé absente ou rejetée (401).
+
+    Marqué `live` : exclu de la suite par défaut, relançable avec `python -m pytest -m live`.
+    Le .env n'est chargé qu'ICI (jamais au niveau module) : un load_dotenv() au
+    collect injecterait les secrets du .env dans le process de TOUTE la suite
+    unitaire (ex: clés LANGFUSE → client réseau réel → garde-fou réseau).
+    """
+    from dotenv import load_dotenv
+
+    load_dotenv()
     key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("BAILIAN_CODING_PLAN_API_KEY")
     if not key:
         pytest.skip("Aucune clé DashScope configurée")

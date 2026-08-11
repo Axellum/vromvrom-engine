@@ -14,10 +14,10 @@ Architecture :
 Créé dans le cadre de l'audit V5.5 (Axe M1 — score Mémoire 72% → cible 88%).
 """
 
-import os
 import hashlib
 import logging
-from typing import List, Dict, Any
+import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ class EmbeddingStore:
 
                     filepath = os.path.join(root, fname)
                     try:
-                        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                        with open(filepath, encoding="utf-8", errors="ignore") as f:
                             content = f.read()
 
                         # Chunking par sections Markdown
@@ -191,7 +191,7 @@ class EmbeddingStore:
                                     "content_hash": content_hash,
                                     "category": os.path.basename(os.path.dirname(filepath)),
                             }
-                            
+
                             # Indexer dans la collection Gemini (espace unique)
                             self._collection.upsert(
                                 ids=[doc_id],
@@ -210,7 +210,7 @@ class EmbeddingStore:
 
     def query_similar(
         self, query: str, top_n: int = 5
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Recherche les documents les plus similaires à la requête par embeddings.
 
@@ -266,7 +266,7 @@ class EmbeddingStore:
             )
         return output
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Retourne les statistiques de la collection ChromaDB (espace Gemini)."""
         if not self._available:
             return {"available": False}
@@ -284,7 +284,7 @@ class EmbeddingStore:
     # Méthodes privées
     # ─────────────────────────────────────────────────────────
 
-    def _chunk_markdown(self, content: str, filepath: str) -> List[Dict[str, str]]:
+    def _chunk_markdown(self, content: str, filepath: str) -> list[dict[str, str]]:
         """
         Découpe un document Markdown en sections par headers.
         

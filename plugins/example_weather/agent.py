@@ -6,7 +6,7 @@ Hérite de BaseAgent et implémente invoke() pour récupérer la météo.
 """
 
 from agents.base_agent import BaseAgent
-from core.state import TaskPayload, StateUpdate
+from core.state import StateUpdate, TaskPayload
 
 
 class WeatherAgent(BaseAgent):

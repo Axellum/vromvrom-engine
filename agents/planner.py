@@ -1,10 +1,20 @@
-import logging
-import json
+"""
+agents/planner.py — Agent "Cerveau" : décompose une requête en DAG JSON.
+
+Génère un plan d'action structuré en stages parallélisables (`stage_id`),
+consommé ensuite par `core/dag_runner.py`. Tier fort par défaut
+(deepseek-reasoner), timeout 90s. Enrichi dynamiquement via WorkflowBridge
+(liste des agents disponibles, y compris les agents custom).
+"""
 import asyncio
+import json
+import logging
 import time
-from core.state import TaskPayload, StateUpdate
+
 from agents.base_agent import BaseAgent
+from core.fenetres_execution import duree_planner_s
 from core.llm_gateway import LLMGateway
+from core.state import StateUpdate, TaskPayload
 from core.workflow_bridge import WorkflowBridge
 
 logger = logging.getLogger(__name__)
@@ -30,14 +40,14 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
         )
         self.gateway = llm_gateway
         self.provider_name = provider_name
-        
+
     async def invoke(self, payload: TaskPayload) -> StateUpdate:
         # Importation dynamique de la configuration LLM
         from core.llm_gateway import load_config
         config = load_config()
         session_id = payload.metadata.get("session_id")
         is_healing = payload.metadata.get("is_healing", False)
-        
+
         # Détermination du fournisseur de modèle approprié
         if self.provider_name in ["leger", "moyen", "fort", "automatique"]:
             _, provider = self.gateway.get_provider_for_tier(self.provider_name, config)
@@ -46,9 +56,9 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                 provider = self.gateway.get_provider(self.provider_name)
             except ValueError:
                 _, provider = self.gateway.get_provider_for_tier("fort", config)
-        
-        import sys
+
         import os
+        import sys
         is_windows = (sys.platform == 'win32' or os.name == 'nt')
         if is_windows:
             sec_rule = "- Interdiction absolue de modifier des fichiers en dehors du workspace (comme C:\\Windows ou C:\\Windows\\System32)."
@@ -74,7 +84,11 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                 f"{cmd_rule_healing}"
             )
         else:
-            system_prompt = (
+            # [#T188] Prompt standard externalisé en Markdown (planner.md) : le
+            # placeholder {{CMD_RULE}} y est remplacé par la règle plateforme
+            # (Windows/Linux). La chaîne ci-dessous reste le repli si absent.
+            from core.prompt_loader import load_agent_prompt
+            default_standard_prompt = (
                 "Tu es le PlannerAgent, l'architecte du tab5-engine.\n"
                 "Ton rôle est de décomposer la demande de l'utilisateur en un plan d'action structuré en lots (stages) "
                 "pouvant s'exécuter en parallèle ou séquentiellement.\n"
@@ -96,15 +110,36 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                 "Pour chaque tâche, tu définis un 'stage_id' (entier commençant à 1).\n"
                 "Les tâches ayant le même 'stage_id' s'exécutent EN PARALLÈLE et ne doivent pas dépendre les unes des autres.\n"
                 "Les tâches dépendantes doivent être planifiées dans des stages successifs (ex: Stage 1 pour lire, Stage 2 pour analyser/modifier, Stage 3 pour tester).\n"
+                "DIRECTIVE DE PARALLÉLISATION (#T245) — PENSE EN ÉVENTAIL :\n"
+                "Dès que le travail est divisible (plusieurs fichiers à lire ou modifier, plusieurs entités à interroger, "
+                "plusieurs pistes à explorer), tu DOIS émettre ces sous-tâches indépendantes dans un MÊME stage plutôt "
+                "qu'une seule grosse tâche séquentielle : jusqu'à 8 s'exécutent réellement en parallèle.\n"
+                "Ces sous-tâches parallèles sont du travail large et jetable : donne-leur 'model_tier': 'leger'.\n"
+                "Fais-les converger vers UNE tâche finale d'agrégation, seule dans son stage, qui dépend de toutes "
+                "(c'est elle qui synthétise, arbitre et vérifie) : donne-lui 'model_tier': 'fort'.\n"
+                "N'invente pas de parallélisme artificiel — si la demande est réellement séquentielle, un plan linéaire reste correct.\n"
+                "CONTRAT D'ACCEPTATION (#T253) — DIS COMMENT ON SAURA QUE C'EST FINI :\n"
+                "En plus du plan, renseigne 'criteres_acceptation' : la liste des vérifications MÉCANIQUES qui prouveront "
+                "que l'objectif est atteint. Elles seront exécutées telles quelles, sans qu'aucun modèle ne juge.\n"
+                "Trois types : 'commande' (la commande sort en code 0 — uniquement des commandes de VÉRIFICATION : "
+                "pytest, python -m py_compile, ruff check, esphome config, npm run, tsc, node --check), "
+                "'fichier_contient' ('valeur' = chemin, 'attendu' = texte ou expression régulière qui doit s'y trouver), "
+                "'fichier_existe' ('valeur' = chemin).\n"
+                "Sois concret et minimal : 2 à 4 critères qui échouent AVANT le travail et réussissent APRÈS. "
+                "Un critère toujours vrai ne sert à rien. Si l'objectif n'est pas vérifiable mécaniquement "
+                "(question, analyse, discussion), renvoie une liste vide plutôt que d'inventer.\n"
                 "Tous les codes créés ou modifiés par les agents exécutants devront être commentés en français (règle utilisateur).\n\n"
                 "DIRECTIVES SUR LES OUTILS ET AGENTS :\n"
                 "- Pour toute tâche liée à Home Assistant (état d'un équipement, appel de service, etc.) ou à sa base de données Recorder SQLite, cible obligatoirement 'ha_agent'.\n"
                 "- Privilégie l'utilisation des outils spécifiques (comme 'read_file', 'write_file' ou les outils MCP 'mcp_...') plutôt que d'exécuter des commandes système via le terminal.\n"
-                f"{cmd_rule_std}"
+                "{{CMD_RULE}}"
             )
-            
+            system_prompt = load_agent_prompt("planner", default_standard_prompt).replace(
+                "{{CMD_RULE}}", cmd_rule_std
+            )
+
         user_prompt = f"Objectif : {payload.task_objective}\nContexte : {payload.relevant_context}"
-        
+
         # Schéma JSON strict attendu pour le plan avec DAG orienté
         schema = {
             "type": "object",
@@ -137,36 +172,82 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                         },
                         "required": ["task_id", "objective", "target_agent", "model_tier", "depends_on"]
                     }
+                },
+                # [#T253] Contrat d'acceptation. **Obligatoire au schéma** depuis la
+                # mesure du 10/08 : facultatif, il n'a JAMAIS été produit — 7 plans en
+                # prod, 0 critère. Un modèle ne renseigne de façon fiable que ce que
+                # `required` impose. La liste VIDE reste la réponse correcte pour un
+                # objectif non vérifiable mécaniquement : c'est la clé qui devient
+                # obligatoire, pas le fait d'inventer des critères.
+                "criteres_acceptation": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": ["commande", "fichier_contient", "fichier_existe"],
+                                "description": "Nature de la vérification mécanique."
+                            },
+                            "valeur": {
+                                "type": "string",
+                                "description": "La commande à exécuter, ou le chemin du fichier concerné."
+                            },
+                            "attendu": {
+                                "type": "string",
+                                "description": "Pour 'fichier_contient' : le texte ou motif qui doit s'y trouver."
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Ce que ce critère prouve, en une phrase."
+                            }
+                        },
+                        "required": ["type", "valeur"]
+                    },
+                    "description": "OBLIGATOIRE. Vérifications mécaniques prouvant que l'objectif est atteint. Liste vide [] si l'objectif n'est pas vérifiable mécaniquement (question, analyse, discussion) — mais la clé doit toujours être présente."
                 }
             },
-            "required": ["plan"]
+            "required": ["plan", "criteres_acceptation"]
         }
-        
+
         logger.info("[PLANNER] Réflexion sur le plan d'action (V5 DAG)...")
-        
+
         try:
             # Enrichir le prompt du Planner avec la liste dynamique des agents du workflow
             enriched_prompt = _workflow_bridge.inject_into_planner_prompt(system_prompt)
-            
-            # Timeout 90s sur le Planner pour éviter le blocage CLI infini.
-            # Si le provider (ex: Claude CLI subprocess) dépasse 90s sans réponse,
-            # on lève asyncio.TimeoutError → capturé par le except ci-dessous → StateUpdate error.
-            response_json = await asyncio.wait_for(
-                provider.generate_structured_async(
-                    system_prompt=enriched_prompt + "\nFormat de sortie OBLIGATORY (JSON): " + json.dumps(schema),
-                    user_prompt=user_prompt,
-                    schema=schema,
-                    session_id=session_id,
-                ),
-                timeout=90.0  # 90s max — deepseek-reasoner répond en ~30s
-            )
-            
+
+            # [#T277] Fenêtre du Planner, calculée pour que la cascade puisse
+            # réellement BASCULER. Elle valait 90 s en dur, alors qu'UNE tentative
+            # provider dure jusqu'à 120 s : le premier modèle lent consommait
+            # toute la fenêtre et les suivants n'étaient jamais essayés. Mesuré
+            # deux fois en prod le 11/08 — une seule tentative, plan vide, et un
+            # message d'erreur vide puisque `asyncio.TimeoutError` n'en porte pas.
+            fenetre_planner = duree_planner_s()
+            try:
+                response_json = await asyncio.wait_for(
+                    provider.generate_structured_async(
+                        system_prompt=enriched_prompt + "\nFormat de sortie OBLIGATORY (JSON): " + json.dumps(schema),
+                        user_prompt=user_prompt,
+                        schema=schema,
+                        session_id=session_id,
+                    ),
+                    timeout=fenetre_planner,
+                )
+            except TimeoutError as expiration:
+                # Sans ce ré-emballage, le journal affiche « Échec de la génération
+                # du plan : » suivi de RIEN, et la cause doit être devinée dans une
+                # autre ligne, 30 s plus loin.
+                raise TimeoutError(
+                    f"Aucun modèle n'a répondu dans la fenêtre du Planner "
+                    f"({fenetre_planner:.0f}s, cascade comprise)."
+                ) from expiration
+
             plan = response_json.get("plan", [])
             if not plan:
                 raise ValueError("Le Planner a généré un DAG vide (plan: []).")
-                
+
             new_tasks = []
-            
+
             # Calcul dynamique des stage_id pour la rétrocompatibilité (Dashboard V4)
             task_by_id = {step["task_id"]: step for step in plan}
             memo_stages = {}
@@ -193,7 +274,7 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
             # Injection du stage_id calculé pour chaque tâche
             for step in plan:
                 step["stage_id"] = get_stage_id(step["task_id"], set())
-            
+
             # Transformation du JSON en liste de TaskPayload
             for step in plan:
                 new_tasks.append(
@@ -212,7 +293,7 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                         }
                     )
                 )
-                
+
             # [SDD V5.2] Garde-fou : injection automatique d'une tâche verify_* si absente
             has_verify = any(t.task_id and t.task_id.startswith("verify_") for t in new_tasks)
             if not has_verify and len(new_tasks) > 1:
@@ -244,17 +325,55 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                 )
                 new_tasks.append(verify_task)
                 logger.info(f"[PLANNER] [SDD] Tâche de vérification auto-injectée : verify_sdd (stage {max_stage + 1})")
-            
+
+            # [#T245] Le prompt demande un plan en éventail ; la normalisation le
+            # garantit : maps parallèles sur le tier léger, nœud d'agrégation sur
+            # le tier fort. Déterministe, donc vérifiable — un prompt, non.
+            from core.dag.node_tier_policy import normaliser_tiers_du_plan
+            rapport_tiers = normaliser_tiers_du_plan(new_tasks, config)
+            if rapport_tiers["maps"] or rapport_tiers["reduce"]:
+                logger.info(
+                    f"[PLANNER] [T245] Tiers normalisés : {len(rapport_tiers['maps'])} map(s) en tier léger, "
+                    f"reduce = {rapport_tiers['reduce']}, {rapport_tiers['inchangees']} tâche(s) inchangée(s)."
+                )
+
+            # [#T253] Contrat d'acceptation transporté dans les metadata du
+            # StateUpdate : la boucle de revue le retrouvera dans l'historique.
+            from core.acceptance_contract import CLE_CONTRAT, normaliser_criteres
+            criteres = normaliser_criteres(response_json.get("criteres_acceptation"))
+            if criteres:
+                logger.info(
+                    f"[PLANNER] [T253] Contrat d'acceptation : {len(criteres)} critère(s) — "
+                    + " | ".join(c.libelle() for c in criteres[:4])
+                )
+            else:
+                # Journalisé explicitement : sans cette ligne, « 0 contrat évalué »
+                # ne permet pas de distinguer « le Planner n'en produit pas » de
+                # « la revue n'a pas tourné ». Les deux se sont produits le 10/08.
+                logger.warning(
+                    "[PLANNER] [T253] Aucun critère d'acceptation produit pour ce plan "
+                    "— la revue retombera sur l'avis du Reviewer."
+                )
+
             return StateUpdate(
                 agent_name=self.name,
                 status="success",
                 result_data=f"Plan DAG généré avec {len(new_tasks)} étapes réparties sur {max((step.get('stage_id', 1) for step in plan), default=1)} niveaux logiques.",
                 next_agent="END",
-                new_tasks=new_tasks
+                new_tasks=new_tasks,
+                metadata={
+                    CLE_CONTRAT: [
+                        {"type": c.type, "valeur": c.valeur, "attendu": c.attendu, "description": c.description}
+                        for c in criteres
+                    ]
+                } if criteres else {},
             )
-            
+
         except Exception as e:
-            logger.error(f"[PLANNER] Échec de la génération du plan : {e}")
+            # [#T277] `type(e).__name__` : une exception sans message (asyncio
+            # TimeoutError, CancelledError) produisait une ligne de journal qui
+            # se terminait par « : » et ne disait rien de la cause.
+            logger.error(f"[PLANNER] Échec de la génération du plan : {type(e).__name__}: {e}")
             return StateUpdate(
                 agent_name=self.name,
                 status="error",

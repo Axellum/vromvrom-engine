@@ -36,7 +36,7 @@ services:
       - NEXTAUTH_SECRET=langfuse-nextauth-encryption-key-secret-2026
       
       # URL publique ou locale d'accès (à adapter avec l'IP de la VM Freebox)
-      - NEXTAUTH_URL=http://${LMSTUDIO_HOST:-localhost}:3000
+      - NEXTAUTH_URL=http://${LM_STUDIO_HOST:-192.168.1.x}:3000
       
       # Désactiver la télémétrie externe si souhaité
       - TELEMETRY_ENABLED=false

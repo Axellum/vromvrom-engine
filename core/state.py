@@ -9,9 +9,10 @@ Migration depuis dataclasses  vers Pydantic BaseModel  :
 - Task Ledger enrichi (TaskStatus) pour le suivi individuel des sous-tâches
 """
 
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Any, Dict, List, Optional
 from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExecutionPhase(str, Enum):
@@ -45,14 +46,14 @@ class TaskPayload(BaseModel):
 
     task_objective: str
     relevant_context: str = ""
-    available_tools: List[str] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    task_id: Optional[str] = None
-    depends_on: List[str] = Field(default_factory=list)
+    available_tools: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    task_id: str | None = None
+    depends_on: list[str] = Field(default_factory=list)
     # Task Ledger enrichi — suivi individuel pour l'IHM
     status: TaskStatus = TaskStatus.PENDING
-    assigned_agent: Optional[str] = None
-    result_summary: Optional[str] = None
+    assigned_agent: str | None = None
+    result_summary: str | None = None
 
 
 class StateUpdate(BaseModel):
@@ -65,10 +66,10 @@ class StateUpdate(BaseModel):
     agent_name: str
     status: str
     result_data: Any = None
-    next_agent: Optional[str] = None
-    error_message: Optional[str] = None
-    new_tasks: List[TaskPayload] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    next_agent: str | None = None
+    error_message: str | None = None
+    new_tasks: list[TaskPayload] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowMetadata(BaseModel):
@@ -76,8 +77,8 @@ class WorkflowMetadata(BaseModel):
     trace_id: str = ""
     total_tokens: int = 0
     total_cost_usd: float = 0.0
-    start_time: Optional[str] = None
-    timeout_deadline: Optional[str] = None
+    start_time: str | None = None
+    timeout_deadline: str | None = None
 
 
 class GlobalState(BaseModel):
@@ -94,14 +95,14 @@ class GlobalState(BaseModel):
 
     session_id: str
     current_phase: ExecutionPhase = ExecutionPhase.INIT
-    history: List[StateUpdate] = Field(default_factory=list)
-    current_payload: Optional[TaskPayload] = None
-    shared_memory: Dict[str, Any] = Field(default_factory=dict)
-    task_queue: List[TaskPayload] = Field(default_factory=list)
+    history: list[StateUpdate] = Field(default_factory=list)
+    current_payload: TaskPayload | None = None
+    shared_memory: dict[str, Any] = Field(default_factory=dict)
+    task_queue: list[TaskPayload] = Field(default_factory=list)
     # Métadonnées système et mémoire d'entités
     workflow_metadata: WorkflowMetadata = Field(default_factory=WorkflowMetadata)
-    entity_memory: Dict[str, Any] = Field(default_factory=dict)
+    entity_memory: dict[str, Any] = Field(default_factory=dict)
     # Mémoire de travail partagée entre agents pendant le DAG.
     # Accessible en lecture/écriture par tous les agents via state.working_memory.
     # Protégée par _history_lock dans Engine pour la thread-safety.
-    working_memory: Dict[str, Any] = Field(default_factory=dict)
+    working_memory: dict[str, Any] = Field(default_factory=dict)

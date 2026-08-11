@@ -8,11 +8,11 @@
 
 .EXAMPLE
     .\deploy_worker.ps1
-    .\deploy_worker.ps1 -FreeboxIP "192.168.1.x" -SSHPort 22222
+    .\deploy_worker.ps1 -FreeboxIP "${HA_HOST:-192.168.1.x}" -SSHPort 22222
 #>
 
 param(
-    [string]$FreeboxIP = "192.168.1.x",
+    [string]$FreeboxIP = "${HA_HOST:-192.168.1.x}",
     [int]$SSHPort = 22,
     [string]$SSHUser = "axel",
     [string]$RemoteDir = "/config/moteur-worker",

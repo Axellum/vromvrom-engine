@@ -8,13 +8,13 @@ toutes les méthodes sont des no-op silencieux (mode dégradé).
 Variables d'environnement requises (optionnelles) :
     LANGFUSE_PUBLIC_KEY — Clé publique du projet Langfuse
     LANGFUSE_SECRET_KEY — Clé secrète du projet Langfuse
-    LANGFUSE_HOST       — URL du serveur Langfuse (ex: http://${LMSTUDIO_HOST:-localhost}:3000)
+    LANGFUSE_HOST       — URL du serveur Langfuse (ex: http://${LM_STUDIO_HOST:-192.168.1.x}:3000)
 """
 
-import os
 import logging
+import os
 import time
-from typing import Optional, Dict, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -36,35 +36,35 @@ class LangfuseBridge:
         bridge.end_span(span, "success")
         bridge.end_trace(trace)
     """
-    
+
     _instance = None
-    
+
     @classmethod
     def get_instance(cls) -> 'LangfuseBridge':
         """Retourne l'instance singleton du bridge."""
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
     def __init__(self):
         """Initialise le client Langfuse si les clés sont disponibles."""
         self._client = None
         self._enabled = False
-        self._active_traces: Dict[str, Any] = {}   # session_id → trace
-        self._active_spans: Dict[str, Any] = {}     # agent_name → span
-        
+        self._active_traces: dict[str, Any] = {}   # session_id → trace
+        self._active_spans: dict[str, Any] = {}     # agent_name → span
+
         # Tentative d'initialisation
         public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
         secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-        host = os.environ.get("LANGFUSE_HOST", "http://${LMSTUDIO_HOST:-localhost}:3000")
-        
+        host = os.environ.get("LANGFUSE_HOST", "http://${LM_STUDIO_HOST:-192.168.1.x}:3000")
+
         if not public_key or not secret_key:
             logger.info(
                 "[LANGFUSE] Variables LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY non définies. "
                 "Bridge désactivé (mode no-op). Pour activer, ajoutez les clés dans .env"
             )
             return
-        
+
         try:
             from langfuse import Langfuse
             self._client = Langfuse(
@@ -81,15 +81,15 @@ class LangfuseBridge:
             )
         except Exception as e:
             logger.error(f"[LANGFUSE] Erreur lors de l'initialisation : {e}")
-    
+
     @property
     def enabled(self) -> bool:
         """True si le bridge est actif et connecté à Langfuse."""
         return self._enabled
-    
+
     # ─── Traces (= sessions d'exécution) ───
-    
-    def start_trace(self, session_id: str, objective: str, user_id: str = "moteur-ia") -> Optional[Any]:
+
+    def start_trace(self, session_id: str, objective: str, user_id: str = "moteur-ia") -> Any | None:
         """
         Démarre une trace Langfuse pour une session d'exécution.
         
@@ -103,7 +103,7 @@ class LangfuseBridge:
         """
         if not self._enabled:
             return None
-        
+
         try:
             trace = self._client.trace(
                 name=f"session-{session_id[:8]}",
@@ -118,7 +118,7 @@ class LangfuseBridge:
         except Exception as e:
             logger.warning(f"[LANGFUSE] Erreur start_trace : {e}")
             return None
-    
+
     def end_trace(self, session_id: str, status: str = "success", output: str = None):
         """
         Termine une trace Langfuse.
@@ -130,7 +130,7 @@ class LangfuseBridge:
         """
         if not self._enabled:
             return
-        
+
         trace = self._active_traces.pop(session_id, None)
         if trace:
             try:
@@ -141,10 +141,10 @@ class LangfuseBridge:
                 logger.debug(f"[LANGFUSE] Trace terminée pour session {session_id[:8]} ({status})")
             except Exception as e:
                 logger.warning(f"[LANGFUSE] Erreur end_trace : {e}")
-    
+
     # ─── Spans (= agents) ───
-    
-    def start_span(self, session_id: str, agent_name: str) -> Optional[Any]:
+
+    def start_span(self, session_id: str, agent_name: str) -> Any | None:
         """
         Démarre un span Langfuse pour un agent au sein d'une trace.
         
@@ -157,12 +157,12 @@ class LangfuseBridge:
         """
         if not self._enabled:
             return None
-        
+
         trace = self._active_traces.get(session_id)
         if not trace:
             logger.debug(f"[LANGFUSE] Pas de trace active pour session {session_id[:8]} — span ignoré")
             return None
-        
+
         try:
             span = trace.span(
                 name=agent_name,
@@ -180,7 +180,7 @@ class LangfuseBridge:
         except Exception as e:
             logger.warning(f"[LANGFUSE] Erreur start_span : {e}")
             return None
-    
+
     def end_span(self, session_id: str, agent_name: str, status: str = "success", output: str = None):
         """
         Termine un span Langfuse pour un agent.
@@ -193,7 +193,7 @@ class LangfuseBridge:
         """
         if not self._enabled:
             return
-        
+
         span_key = f"{session_id}:{agent_name}"
         span_data = self._active_spans.pop(span_key, None)
         if span_data:
@@ -210,9 +210,9 @@ class LangfuseBridge:
                 logger.debug(f"[LANGFUSE] Span terminé : {agent_name} ({status}, {duration:.2f}s)")
             except Exception as e:
                 logger.warning(f"[LANGFUSE] Erreur end_span : {e}")
-    
+
     # ─── Generations (= appels LLM) ───
-    
+
     def log_generation(
         self,
         session_id: str,
@@ -241,22 +241,22 @@ class LangfuseBridge:
         """
         if not self._enabled:
             return
-        
+
         # Chercher le span parent de cet agent
         span_key = f"{session_id}:{agent_name}"
         span_data = self._active_spans.get(span_key)
-        
+
         # Si pas de span, chercher la trace directement
         parent = None
         if span_data:
             parent = span_data["span"]
         else:
             parent = self._active_traces.get(session_id)
-        
+
         if not parent:
             # Pas de contexte Langfuse actif — enregistrement ignoré silencieusement
             return
-        
+
         try:
             parent.generation(
                 name=f"llm-{model}",
@@ -279,24 +279,95 @@ class LangfuseBridge:
             )
         except Exception as e:
             logger.warning(f"[LANGFUSE] Erreur log_generation : {e}")
-    
+
     # ─── Flush (envoi des données en attente) ───
-    
+
     def flush(self):
-        """Force l'envoi des données en attente vers Langfuse."""
-        if self._enabled and self._client:
-            try:
-                self._client.flush()
-                logger.debug("[LANGFUSE] Flush effectué.")
-            except Exception as e:
-                logger.warning(f"[LANGFUSE] Erreur flush : {e}")
-    
+        """
+        Force l'envoi des données en attente vers Langfuse, SANS jamais bloquer.
+
+        [#T272] Le client Langfuse est synchrone et son `flush()` n'a pas de
+        borne de temps : quand le réseau ne répond pas, l'appel attend — et toute
+        la fin de session avec lui, puisque `Engine._finalize_session()` appelle
+        `end_trace()` puis `flush()` à CHAQUE session.
+
+        Mesuré le 11/08 par capture de pile `faulthandler` : la suite de tests
+        est passée de 16 secondes à plus de 10 MINUTES sur un seul test, bloquée
+        exactement ici. En test c'était un garde-fou réseau ; en production ce
+        sera une coupure Internet ou une panne du service. Le `try/except` ne
+        protégeait de rien — une ATTENTE n'est pas une exception.
+        """
+        self._appel_borne(lambda: self._client.flush(), "flush")
+
     def shutdown(self):
-        """Ferme proprement le client Langfuse."""
-        if self._enabled and self._client:
+        """Ferme proprement le client Langfuse (borné, cf. `flush`)."""
+        if not (self._enabled and self._client):
+            return
+
+        def _fermeture():
+            self._client.flush()
+            self._client.shutdown()
+
+        if self._appel_borne(_fermeture, "shutdown"):
+            logger.info("[LANGFUSE] Client arrêté proprement.")
+
+    def _appel_borne(self, action, nom: str) -> bool:
+        """
+        [#T272] Exécute `action` dans un thread et n'attend que `_timeout_flush()`.
+
+        Au-delà, on journalise et on rend la main : le thread est `daemon`, il ne
+        retiendra pas le processus. **De la télémétrie perdue ne vaut pas une
+        session bloquée** — c'est tout l'arbitrage, et c'est pourquoi le délai
+        par défaut est court.
+
+        Returns:
+            True si l'action s'est terminée dans les temps, False sinon.
+        """
+        import threading
+
+        if not (self._enabled and self._client):
+            return False
+
+        erreur: list[Exception] = []
+
+        def _executer():
             try:
-                self._client.flush()
-                self._client.shutdown()
-                logger.info("[LANGFUSE] Client arrêté proprement.")
-            except Exception as e:
-                logger.warning(f"[LANGFUSE] Erreur shutdown : {e}")
+                action()
+            except Exception as e:  # noqa: BLE001 — remontée au thread appelant
+                erreur.append(e)
+
+        thread = threading.Thread(target=_executer, name=f"langfuse-{nom}", daemon=True)
+        thread.start()
+        thread.join(timeout=self._timeout_flush())
+
+        if thread.is_alive():
+            logger.warning(
+                f"[LANGFUSE] {nom} abandonné après {self._timeout_flush()}s "
+                f"(serveur injoignable ?) — la session continue sans attendre."
+            )
+            return False
+        if erreur:
+            logger.warning(f"[LANGFUSE] Erreur {nom} : {erreur[0]}")
+            return False
+        logger.debug(f"[LANGFUSE] {nom} effectué.")
+        return True
+
+    @staticmethod
+    def _timeout_flush() -> float:
+        """
+        [#T272] Délai maximal accordé à un envoi Langfuse.
+
+        Court par défaut (5 s) et c'est délibéré : ce sont des traces
+        d'observabilité, pas de la donnée métier. Les perdre est un désagrément ;
+        retarder la fin de chaque session est un défaut de production.
+        Surchargeable par `MOTEUR_LANGFUSE_FLUSH_TIMEOUT_S`.
+        """
+        brut = os.environ.get("MOTEUR_LANGFUSE_FLUSH_TIMEOUT_S")
+        if brut:
+            try:
+                return max(0.1, float(brut))
+            except ValueError:
+                logger.warning(
+                    f"[LANGFUSE] MOTEUR_LANGFUSE_FLUSH_TIMEOUT_S illisible ({brut!r}) — défaut retenu."
+                )
+        return 5.0

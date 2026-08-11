@@ -382,7 +382,9 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
     try:
         with VocalAuditTimer() as timer:
             router_instance = state.get_shared_router()
-            initial_payload, starting_agent = await router_instance.analyze_request(body.user_prompt)
+            initial_payload, starting_agent = await router_instance.analyze_request(
+                body.user_prompt, session_id=session_id
+            )
             routing_type = initial_payload.metadata.get("routing_type", "default")
 
             initial_payload.metadata["request_source"] = {

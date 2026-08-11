@@ -22,7 +22,7 @@ import pickle
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Optional, Tuple, Dict, List, Any
+from typing import Any, Optional
 
 import aiohttp
 import numpy as np
@@ -48,10 +48,10 @@ def _prompt_hash(prompt: str) -> str:
 
 
 def build_training_pairs(
-    sessions: List[Dict[str, Any]],
-    hash_to_category: Dict[str, str],
+    sessions: list[dict[str, Any]],
+    hash_to_category: dict[str, str],
     min_per_class: int = 2,
-) -> Tuple[List[str], List[str]]:
+) -> tuple[list[str], list[str]]:
     """
     Construit le jeu (textes, labels) pour l'entraînement du ML Router.
 
@@ -65,7 +65,7 @@ def build_training_pairs(
     - Retire les classes ayant < `min_per_class` échantillons (sinon le split
       stratifié et l'apprentissage LogisticRegression échouent).
     """
-    pairs: List[Tuple[str, str]] = []
+    pairs: list[tuple[str, str]] = []
     for s in sessions:
         if s.get("status") != "success":
             continue
@@ -255,8 +255,8 @@ class MLRouter:
         try:
             from sklearn.feature_extraction.text import TfidfVectorizer
             from sklearn.linear_model import LogisticRegression
-            from sklearn.model_selection import train_test_split
             from sklearn.metrics import accuracy_score
+            from sklearn.model_selection import train_test_split
         except ImportError:
             logger.error("[ML ROUTER] scikit-learn non disponible")
             return {"error": "scikit-learn non installé (pip install scikit-learn)"}
@@ -265,14 +265,14 @@ class MLRouter:
         # Texte = sessions.objective ; label = routing_decisions.dominant_category ;
         # reliés par le hash du prompt (voir build_training_pairs).
         try:
-            from core.session_history import get_sessions
             from core.runtime_db import get_connection
+            from core.session_history import get_sessions
             sessions = await asyncio.to_thread(get_sessions, limit=2000)
         except ImportError:
             logger.error("[ML ROUTER] module session_history introuvable")
             return {"error": "session_history manquant"}
 
-        def _load_hash_to_category() -> Dict[str, str]:
+        def _load_hash_to_category() -> dict[str, str]:
             conn = get_connection()
             rows = conn.execute(
                 "SELECT user_prompt_hash, dominant_category FROM routing_decisions "
@@ -367,19 +367,19 @@ class MLRouter:
         local_targets = [
             {
                 "type": "ollama",
-                "url": "http://${OLLAMA_HOST:-localhost}:11434/api/embeddings",
+                "url": "http://${DECK_HOST:-192.168.1.x}:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "ollama",
-                "url": "http://${OLLAMA_HOST:-localhost}:11434/api/embeddings",
+                "url": "http://${DECK_HOST_WIFI:-192.168.1.x}:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "lmstudio",
-                "url": "http://${LMSTUDIO_HOST:-localhost}:1234/v1/embeddings",
+                "url": "http://${LM_STUDIO_HOST:-192.168.1.x}:1234/v1/embeddings",
                 "payload": {"model": "nomic-embed-text", "input": ["ping"]},
                 "model": "nomic-embed-text"
             }
@@ -410,7 +410,7 @@ class MLRouter:
                     gemini_key = pool.get_free_key()
             except Exception:
                 pass
-        
+
         if gemini_key:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={gemini_key}"
             payload = {
@@ -444,19 +444,19 @@ class MLRouter:
         local_targets = [
             {
                 "type": "ollama",
-                "url": "http://${OLLAMA_HOST:-localhost}:11434/api/embeddings",
+                "url": "http://${DECK_HOST:-192.168.1.x}:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "ollama",
-                "url": "http://${OLLAMA_HOST:-localhost}:11434/api/embeddings",
+                "url": "http://${DECK_HOST_WIFI:-192.168.1.x}:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "lmstudio",
-                "url": "http://${LMSTUDIO_HOST:-localhost}:1234/v1/embeddings",
+                "url": "http://${LM_STUDIO_HOST:-192.168.1.x}:1234/v1/embeddings",
                 "payload": {"model": "nomic-embed-text", "input": ["ping"]},
                 "model": "nomic-embed-text"
             }
@@ -485,7 +485,7 @@ class MLRouter:
                     gemini_key = pool.get_free_key()
             except Exception:
                 pass
-        
+
         if gemini_key:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={gemini_key}"
             payload = {
@@ -507,7 +507,7 @@ class MLRouter:
         self._detected_provider = "tfidf"
         logger.info("[ML ROUTER] Aucun service d'embedding actif trouvé (sync). Fallback vers TF-IDF local.")
 
-    async def _batch_embed(self, texts: List[str]) -> Optional[List[List[float]]]:
+    async def _batch_embed(self, texts: list[str]) -> list[list[float]] | None:
         """Récupère les embeddings en batch depuis le fournisseur actif."""
         if not texts:
             return None
@@ -587,7 +587,7 @@ class MLRouter:
     # Prédiction
     # ──────────────────────────────────────────────────────────────────
 
-    def predict(self, user_prompt: str) -> Tuple[Optional[str], float]:
+    def predict(self, user_prompt: str) -> tuple[str | None, float]:
         """
         Prédit le routing_type pour un prompt.
 
@@ -656,7 +656,7 @@ class MLRouter:
             return False
         return True
 
-    def _embed_sync(self, text: str) -> Optional[np.ndarray]:
+    def _embed_sync(self, text: str) -> np.ndarray | None:
         """Embedding synchrone (requests) pour predict() appelé en contexte sync."""
         if self._detected_provider is None:
             self._detect_provider_sync()

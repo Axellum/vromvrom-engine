@@ -13,9 +13,11 @@ Historique :
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING
 
-from core.state import TaskPayload, ExecutionPhase
+from core.acceptance_contract import verifier_contrat
+from core.state import ExecutionPhase, StateUpdate, TaskPayload
 
 if TYPE_CHECKING:
     from core.engine import Engine
@@ -76,15 +78,47 @@ class ReviewLoop:
 
         # Court-circuit : si aucun fichier de code ou de configuration n'a été modifié, pas besoin de revue
         if not self._has_modified_files():
-            logger.info("[REVIEW] Aucun fichier de code ou de configuration n'a été créé ou modifié dans le workspace. Revue de code sautée avec succès.")
+            # [#T253] …sauf si un contrat d'acceptation existe. Ce court-circuit
+            # a été écrit pour la revue de CODE : sans fichier modifié, il n'y a
+            # rien à relire. Mais un contrat, lui, vérifie l'OBJECTIF — qui peut
+            # parfaitement être atteint sans toucher un fichier (lire, calculer,
+            # répondre, interroger Home Assistant). Mesuré en prod le 10/08 :
+            # ce raccourci auto-approuvait le plan et le contrat n'était jamais
+            # évalué — c'était le dernier des trois verrous de #T253.
+            criteres = self._criteres_du_plan()
+            verdict = None
+            if criteres:
+                rapport = await asyncio.to_thread(verifier_contrat, criteres)
+                if rapport.determinable:
+                    verdict = rapport.satisfait
+                    logger.info(
+                        f"[REVIEW] [T253] Aucun fichier modifié, mais contrat évaluable : "
+                        f"{'✅ satisfait' if verdict else '❌ en échec'} "
+                        f"({len(rapport.verifiables)} critère(s) vérifiés)."
+                    )
+                    if on_event:
+                        await on_event("contract_checked", {
+                            "round": 0,
+                            "satisfied": verdict,
+                            "failures": len(rapport.echecs),
+                            "summary": rapport.resume(),
+                            "contexte": "sans_modification_de_fichier",
+                        })
+
+            if verdict is None:
+                logger.info("[REVIEW] Aucun fichier de code ou de configuration n'a été créé ou modifié dans le workspace. Revue de code sautée avec succès.")
             if on_event:
                 await on_event("review_completed", {
                     "session_id": self._engine.state.session_id,
-                    "approved": True,
+                    "approved": True if verdict is None else verdict,
                     "visual_qa": None,
-                    "verdict": "Auto-approuvé : Aucune modification de fichier détectée."
+                    "verdict": (
+                        "Auto-approuvé : Aucune modification de fichier détectée."
+                        if verdict is None else
+                        f"Contrat d'acceptation {'satisfait' if verdict else 'NON satisfait'} (aucun fichier modifié)."
+                    ),
                 })
-            return True
+            return True if verdict is None else verdict
 
         logger.info("[REVIEW] Démarrage de la revue automatique post-DAG...")
         if on_event:
@@ -95,6 +129,50 @@ class ReviewLoop:
         approved = False
 
         for review_round in range(1, max_rounds + 1):
+            # [#T253] Porte déterministe AVANT l'avis du Reviewer : quand le
+            # Planner a posé un contrat vérifiable, ce sont les critères qui
+            # tranchent, pas un score de complaisance. Contrat satisfait →
+            # validation sans appel LLM ; contrat en échec → correction directe,
+            # l'avis d'un modèle ne peut pas contredire un test qui échoue.
+            # Rechargé à chaque round : un plan correctif peut avoir reposé
+            # un contrat plus récent dans l'historique.
+            criteres_contrat = self._criteres_du_plan()
+            if criteres_contrat:
+                verdict_contrat = await asyncio.to_thread(verifier_contrat, criteres_contrat)
+                if verdict_contrat.determinable:
+                    if on_event:
+                        await on_event("contract_checked", {
+                            "round": review_round,
+                            "satisfied": verdict_contrat.satisfait,
+                            "failures": len(verdict_contrat.echecs),
+                            "summary": verdict_contrat.resume(),
+                        })
+                    if verdict_contrat.satisfait:
+                        logger.info(
+                            f"[REVIEW] [T253] ✅ Contrat d'acceptation satisfait au round {review_round} "
+                            f"({len(verdict_contrat.verifiables)} critère(s)) — revue LLM inutile."
+                        )
+                        approved = True
+                        break
+
+                    logger.warning(
+                        f"[REVIEW] [T253] ❌ Contrat d'acceptation en échec au round {review_round} : "
+                        f"{len(verdict_contrat.echecs)} critère(s) non satisfait(s)."
+                    )
+                    if review_round >= max_rounds:
+                        logger.error("[REVIEW] [T253] Limite de rounds atteinte, contrat toujours en échec.")
+                        break
+                    if not await self._apply_corrections(
+                        self._update_depuis_contrat(verdict_contrat),
+                        initial_objective, review_round, on_event,
+                    ):
+                        break
+                    continue
+                logger.info(
+                    "[REVIEW] [T253] Contrat non déterminable (aucun critère vérifiable) — "
+                    "repli sur la revue LLM."
+                )
+
             # 1. Agrégation du contexte des résultats du DAG
             review_context = await self._build_review_context()
 
@@ -171,7 +249,7 @@ class ReviewLoop:
                 )
                 if not correction_ok:
                     break
-                
+
                 logger.info(
                     f"[REVIEW] Corrections round {review_round} appliquées. "
                     f"Re-soumission au Reviewer..."
@@ -187,6 +265,94 @@ class ReviewLoop:
             })
 
         return approved
+
+    async def contrat_seul(self, on_event=None) -> bool | None:
+        """
+        [#T253] Évalue le contrat d'acceptation SANS revue LLM.
+
+        Sert le cas que la boucle normale ne couvrait pas : le DAG s'est terminé
+        en erreur. `core/engine.py` sautait alors toute vérification — or c'est
+        exactement la situation où une preuve mécanique vaut mieux qu'un avis :
+        une branche peut échouer alors que l'objectif est atteint par une autre,
+        et seul le contrat peut trancher. Inversement, un contrat en échec
+        confirme l'erreur au lieu de la deviner.
+
+        Ne demande RIEN au LLM : après un DAG en échec, payer une revue de
+        complaisance n'a pas de sens.
+
+        Retourne `True` (objectif prouvé atteint), `False` (contrat en échec) ou
+        `None` quand il n'y a rien de vérifiable — dans ce dernier cas l'appelant
+        garde son comportement d'avant.
+        """
+        if os.getenv("MOTEUR_CONTRAT_SUR_ECHEC", "1").strip().lower() in ("0", "false", "off", "no"):
+            return None
+
+        criteres = self._criteres_du_plan()
+        if not criteres:
+            return None
+
+        verdict = await asyncio.to_thread(verifier_contrat, criteres)
+        if not verdict.determinable:
+            logger.info(
+                "[REVIEW] [T253] DAG en échec et contrat non déterminable "
+                f"({len(verdict.non_verifiables)} critère(s) non vérifiable(s)) — verdict inchangé."
+            )
+            return None
+
+        if on_event:
+            await on_event("contract_checked", {
+                "round": 0,
+                "satisfied": verdict.satisfait,
+                "failures": len(verdict.echecs),
+                "summary": verdict.resume(),
+                "contexte": "dag_en_echec",
+            })
+
+        if verdict.satisfait:
+            logger.warning(
+                "[REVIEW] [T253] ✅ Le DAG a signalé une erreur, mais le contrat d'acceptation "
+                f"est SATISFAIT ({len(verdict.verifiables)} critère(s) vérifiés) : l'objectif est "
+                "prouvé atteint malgré l'échec d'une tâche."
+            )
+            return True
+
+        logger.error(
+            "[REVIEW] [T253] ❌ DAG en échec ET contrat non satisfait : "
+            f"{len(verdict.echecs)} critère(s) en échec.\n{verdict.resume()}"
+        )
+        return False
+
+    def _criteres_du_plan(self) -> list:
+        """
+        [#T253] Récupère le contrat d'acceptation posé par le Planner.
+
+        Il voyage dans les metadata de son StateUpdate ; on prend le plus récent,
+        car un plan correctif peut en avoir reposé un.
+        """
+        from core.acceptance_contract import CLE_CONTRAT
+        for update in reversed(self._engine.state.history):
+            criteres = (update.metadata or {}).get(CLE_CONTRAT)
+            if criteres:
+                return criteres
+        return []
+
+    @staticmethod
+    def _update_depuis_contrat(verdict) -> StateUpdate:
+        """
+        [#T253] Traduit un échec de contrat en rejet, dans la forme que
+        `_apply_corrections` sait déjà consommer (`error_message` + `corrections`).
+        """
+        return StateUpdate(
+            agent_name="contrat_acceptation",
+            status="error",
+            result_data=verdict.resume(),
+            error_message=verdict.resume(),
+            metadata={
+                "corrections": [r.critere.libelle() for r in verdict.echecs],
+                "severity": "bloquant",
+                "source": "contrat_acceptation",
+            },
+        )
 
     def _escalation_tier(self, quality_score) -> str | None:
         """
@@ -245,7 +411,7 @@ class ReviewLoop:
                 if u.status == "success" and u.metadata.get("task_id"):
                     snippet = str(u.result_data)[:500] if u.result_data else ""
                     parts.append(f"[{u.metadata.get('task_id', '?')}] {snippet}")
-                    
+
                     # Détection des tâches produisant une UI
                     if u.metadata.get("produces_ui"):
                         has_ui_tasks = True
@@ -266,7 +432,7 @@ class ReviewLoop:
             try:
                 from core.visual_qa import VisualQAService
                 visual_qa = VisualQAService()
-                
+
                 visual_result = await visual_qa.capture_and_analyze(
                     question=(
                         "Analyse cette capture d'écran de l'interface. "
@@ -275,7 +441,7 @@ class ReviewLoop:
                     ),
                     session_id=self._engine.state.session_id,
                 )
-                
+
                 if visual_result.get("success"):
                     self._last_visual_result = visual_result
                     visual_context = (
@@ -288,7 +454,7 @@ class ReviewLoop:
                         visual_context += "Problèmes détectés :\n"
                         for issue in issues:
                             visual_context += f"  - {issue}\n"
-                    
+
                     review_text += visual_context
                     logger.info(
                         f"[REVIEW] [VISUAL-QA] Contexte visuel injecté — "
@@ -297,7 +463,7 @@ class ReviewLoop:
                 else:
                     self._last_visual_result = None
                     logger.info("[REVIEW] [VISUAL-QA] Capture échouée, review textuelle seule")
-                    
+
             except Exception as vqa_err:
                 logger.warning(
                     f"[REVIEW] [VISUAL-QA] Erreur (non bloquant) : {vqa_err}"
@@ -403,8 +569,8 @@ class ReviewLoop:
 
     def _has_modified_files(self) -> bool:
         """Détecte s'il y a des fichiers de code ou config modifiés dans les workspaces Git."""
-        import subprocess
         import os
+        import subprocess
         try:
             # Recherche des dépôts Git dans le workspace
             project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -419,7 +585,7 @@ class ReviewLoop:
                             git_dirs.append(item_path)
                 except Exception:
                     pass
-            
+
             moteur_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if moteur_dir not in git_dirs and os.path.exists(os.path.join(moteur_dir, ".git")):
                 git_dirs.append(moteur_dir)

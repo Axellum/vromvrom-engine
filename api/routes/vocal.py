@@ -40,6 +40,22 @@ def _rows(query: str, params: tuple = ()) -> list[dict]:
         return []
 
 
+def _arrondi(valeur: float | None) -> float | None:
+    return round(valeur, 1) if valeur is not None else None
+
+
+def _percentile(valeurs_triees: list[float], p: int) -> float | None:
+    """Percentile par rang le plus proche, sur une liste DÉJÀ triée.
+
+    [#T270] Pas d'interpolation : sur des échantillons de quelques dizaines de
+    points, elle inventerait une précision que la donnée n'a pas.
+    """
+    if not valeurs_triees:
+        return None
+    rang = min(len(valeurs_triees) - 1, int(len(valeurs_triees) * p / 100))
+    return round(valeurs_triees[rang], 1)
+
+
 @router.get("/stats")
 async def vocal_stats(period: str = Query("7d", description="1h, 24h, 7d, 30d")):
     """
@@ -61,14 +77,25 @@ async def vocal_stats(period: str = Query("7d", description="1h, 24h, 7d, 30d"))
         (since_iso,),
     )
 
-    latency = _rows(
-        "SELECT AVG(latency_ms) AS avg_ms, MIN(latency_ms) AS min_ms, MAX(latency_ms) AS max_ms "
-        "FROM vocal_audit_log WHERE created_at > ? AND phase = 'response' AND latency_ms IS NOT NULL",
-        (since_iso,),
-    )
+    # [#T270] `latency_ms > 0` et NON `IS NOT NULL` : une latence à 0 signifie
+    # « jamais mesurée », pas « instantanée ». Le filtre précédent laissait passer
+    # 394 zéros sur 420 réponses en prod et annonçait 123 ms de moyenne là où la
+    # vraie valeur est 1991 ms — un facteur 16, dans le sens flatteur. Un chiffre
+    # faux qui rassure est pire que pas de chiffre du tout.
+    mesures = [
+        r["latency_ms"]
+        for r in _rows(
+            "SELECT latency_ms FROM vocal_audit_log "
+            "WHERE created_at > ? AND phase = 'response' AND latency_ms > 0 "
+            "ORDER BY latency_ms",
+            (since_iso,),
+        )
+    ]
 
     by_mode = _rows(
-        "SELECT source_mode, COUNT(*) AS n, AVG(latency_ms) AS avg_ms "
+        "SELECT source_mode, COUNT(*) AS n, "
+        "SUM(CASE WHEN latency_ms > 0 THEN 1 ELSE 0 END) AS n_mesurees, "
+        "AVG(CASE WHEN latency_ms > 0 THEN latency_ms END) AS avg_ms "
         "FROM vocal_audit_log WHERE created_at > ? AND phase = 'response' "
         "GROUP BY source_mode ORDER BY n DESC",
         (since_iso,),
@@ -88,17 +115,25 @@ async def vocal_stats(period: str = Query("7d", description="1h, 24h, 7d, 30d"))
     )
 
     t = totals[0] if totals else {}
-    lat = latency[0] if latency else {}
+    reponses = t.get("responses") or 0
 
     return {
         "period": period,
         "total_events": t.get("n") or 0,
-        "total_exchanges": t.get("responses") or 0,
+        "total_exchanges": reponses,
         "tts_enabled_events": t.get("tts_on") or 0,
+        # [#T270] `echantillon` / `non_mesurees` rendent la couverture visible :
+        # une moyenne calculée sur 26 échanges de 420 ne veut pas dire la même
+        # chose qu'une moyenne calculée sur 420. Sans ce dénominateur, l'IHM
+        # affichait un chiffre sans moyen de savoir ce qu'il valait.
         "latency_ms": {
-            "avg": round(lat["avg_ms"], 1) if lat.get("avg_ms") is not None else None,
-            "min": round(lat["min_ms"], 1) if lat.get("min_ms") is not None else None,
-            "max": round(lat["max_ms"], 1) if lat.get("max_ms") is not None else None,
+            "avg": _arrondi(sum(mesures) / len(mesures)) if mesures else None,
+            "min": _arrondi(mesures[0]) if mesures else None,
+            "max": _arrondi(mesures[-1]) if mesures else None,
+            "p50": _percentile(mesures, 50),
+            "p90": _percentile(mesures, 90),
+            "echantillon": len(mesures),
+            "non_mesurees": max(0, reponses - len(mesures)),
         },
         "by_mode": by_mode,
         "by_device": by_device,
@@ -152,6 +187,9 @@ async def vocal_config():
         "executor_model": config.get("executor_model"),
         "semantic_cache": config.get("semantic_cache", {}),
         "secrets_present": {
+            # Diagnostic de présence (T239) : on teste si AU MOINS UNE des deux
+            # clés existe — pas la valeur du token. Volontairement hors
+            # accesseur get_ha_token() (« cette clé précise existe-t-elle »).
             "HASS_TOKEN": bool(os.environ.get("HASS_TOKEN") or os.environ.get("HA_TOKEN")),
             "GEMINI_API_KEY": bool(os.environ.get("GEMINI_API_KEY")),
             "GEMINI_PAYANT_API_KEY": bool(os.environ.get("GEMINI_PAYANT_API_KEY")),

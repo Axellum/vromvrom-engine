@@ -17,12 +17,12 @@ Structure attendue :
 Créé dans le cadre de l'audit V5.5 (Axe A2 — PluginRegistry).
 """
 
-import os
-import json
 import importlib
 import importlib.util
+import json
 import logging
-from typing import Dict, Any, List, Optional
+import os
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class PluginInfo:
         version: str = "0.1.0",
         description: str = "",
         author: str = "",
-        agent_class: Optional[type] = None,
+        agent_class: type | None = None,
         enabled: bool = True,
         path: str = "",
     ):
@@ -54,7 +54,7 @@ class PluginInfo:
         self.enabled = enabled
         self.path = path
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "version": self.version,
@@ -84,10 +84,10 @@ class PluginRegistry:
             plugins_dir: Chemin du dossier de plugins. Par défaut : moteur_agents/plugins/
         """
         self._plugins_dir = plugins_dir or _PLUGINS_DIR
-        self._plugins: Dict[str, PluginInfo] = {}
+        self._plugins: dict[str, PluginInfo] = {}
         self._loaded = False
 
-    def discover(self) -> List[PluginInfo]:
+    def discover(self) -> list[PluginInfo]:
         """
         Scanne le dossier plugins/ et charge les métadonnées de chaque plugin.
 
@@ -117,7 +117,7 @@ class PluginRegistry:
             meta = {}
             if os.path.exists(meta_file):
                 try:
-                    with open(meta_file, "r", encoding="utf-8") as f:
+                    with open(meta_file, encoding="utf-8") as f:
                         meta = json.load(f)
                 except Exception as e:
                     logger.warning(f"[PLUGIN REGISTRY] Erreur lecture {meta_file} : {e}")
@@ -163,7 +163,7 @@ class PluginRegistry:
 
         return discovered
 
-    def _load_agent_class(self, plugin_name: str, agent_file: str) -> Optional[type]:
+    def _load_agent_class(self, plugin_name: str, agent_file: str) -> type | None:
         """
         Charge dynamiquement la classe d'agent depuis un fichier agent.py.
 
@@ -206,7 +206,7 @@ class PluginRegistry:
             )
             return None
 
-    def create_agent(self, plugin_name: str, **kwargs) -> Optional[Any]:
+    def create_agent(self, plugin_name: str, **kwargs) -> Any | None:
         """
         Instancie un agent à partir d'un plugin chargé.
 
@@ -249,11 +249,11 @@ class PluginRegistry:
             )
             return None
 
-    def get_all_plugins(self) -> List[Dict[str, Any]]:
+    def get_all_plugins(self) -> list[dict[str, Any]]:
         """Retourne les métadonnées de tous les plugins découverts."""
         return [p.to_dict() for p in self._plugins.values()]
 
-    def get_enabled_plugins(self) -> List[PluginInfo]:
+    def get_enabled_plugins(self) -> list[PluginInfo]:
         """Retourne uniquement les plugins activés ayant un agent."""
         return [
             p for p in self._plugins.values()

@@ -114,6 +114,8 @@ class AgentCreateBody(BaseModel):
     label: str | None = None
     tier: str = Field("automatique", description="Tier ou id de modèle littéral")
     system_prompt: str | None = None
+    # [#T233] Permissions d'outils : absent/null = tous les outils, [] = aucun.
+    allowed_tools: list[str] | None = None
 
 
 class AgentPatchBody(BaseModel):
@@ -123,6 +125,8 @@ class AgentPatchBody(BaseModel):
     enabled: bool | None = None
     interval_minutes: int | None = None
     system_prompt: str | None = None
+    # [#T233] Permissions d'outils (absent = inchangées, [] = aucun outil).
+    allowed_tools: list[str] | None = None
 
 
 def _load_config() -> dict:
@@ -204,6 +208,8 @@ def _custom_agent_dict(entry: dict) -> dict:
         "prompt_source": "config",
         "is_custom": True,
         "source": "config",
+        # [#T233] Permissions d'outils (absent/null = tous les outils, [] = aucun)
+        "allowed_tools": entry.get("allowed_tools"),
     }
 
 
@@ -276,6 +282,8 @@ def create_agent(body: AgentCreateBody):
         "tier": body.tier if body.tier in VALID_TIERS else body.tier.strip(),
         "system_prompt": (body.system_prompt or "").strip() or None,
         "enabled": True,
+        # [#T233] Permissions d'outils (null = tous les outils, [] = aucun)
+        "allowed_tools": body.allowed_tools,
     }
 
     def mutate(config: dict):
@@ -358,6 +366,10 @@ def update_agent(name: str, body: AgentPatchBody):
                     entry["system_prompt"] = body.system_prompt.strip() or None
                 if body.enabled is not None:
                     entry["enabled"] = body.enabled
+                # [#T233] Permissions d'outils : null = « tous les outils » (la
+                # distinction [] / null est conservée telle quelle en config).
+                if body.allowed_tools is not None:
+                    entry["allowed_tools"] = body.allowed_tools
                 updated.update(entry)
                 return
         raise HTTPException(

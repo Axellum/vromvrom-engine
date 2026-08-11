@@ -142,7 +142,6 @@ _UNTRACKED_PROVIDER_LINKS: dict[str, dict[str, str]] = {
     "openrouter": {"label": "OpenRouter", "dashboard_url": "https://openrouter.ai/credits", "plan": "API pay-as-you-go"},
     "minimax": {"label": "MiniMax", "dashboard_url": "https://platform.minimaxi.com/console", "plan": "API pay-as-you-go — dashboard en chinois, login téléphone/WeChat uniquement"},
     "grok": {"label": "xAI (Grok)", "dashboard_url": "https://console.x.ai/", "plan": "API pay-as-you-go"},
-    "github": {"label": "GitHub Models", "dashboard_url": "https://github.com/settings/billing", "plan": "Free Tier"},
 }
 
 
@@ -163,7 +162,7 @@ class ManualBalanceBody(BaseModel):
 def set_manual_provider_balance(body: ManualBalanceBody):
     """
     Enregistre un solde saisi à la main pour un provider sans API de solde
-    connue (Mistral, Cohere, Cerebras, Zhipu, MiniMax, xAI, GitHub...). Le
+    connue (Mistral, Cohere, Cerebras, Zhipu, MiniMax, xAI...). Le
     solde est réaffiché dans /api/billing avec un statut "manuel" et
     l'horodatage de la saisie, tant qu'une vraie API n'existe pas pour ce
     provider.
@@ -407,6 +406,27 @@ async def billing_launch_chrome():
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/api/billing/anthropic/reconciliation")
+def get_anthropic_reconciliation():
+    """
+    Réconcilie les coûts Anthropic RÉELS (exports CSV console.anthropic.com,
+    data/anthropic_usage_exports/) avec les coûts ESTIMÉS du moteur
+    (token_usage.cost_usd, tarifs du catalogue) — par jour (UTC).
+
+    Statuts de réponse :
+    - "ok"        : périodes journalières + totaux (écart absolu et relatif) ;
+    - "no_exports": aucun export CSV disponible (réponse explicite, jamais un
+                    zéro qui se lirait comme « aucun écart ») ;
+    - "no_data"   : CSV présents mais aucun contenu exploitable (voir logs).
+    """
+    try:
+        from api.services.billing_service import reconcile_anthropic_costs
+        return reconcile_anthropic_costs()
+    except Exception as e:
+        logger.error(f"[BILLING] Erreur réconciliation Anthropic : {e}")
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # ──────────────────────────────────────────────────────────────────

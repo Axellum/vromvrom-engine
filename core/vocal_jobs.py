@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 # ── Prompts spécialistes (TTS vocal Tab5) ─────────────────────────────
 
 _WEB_SYSTEM_PROMPT = (
-    "Tu es l'assistant vocal. Réponds en français en 2 à 3 phrases courtes, "
+    "Tu es l'assistant vocal d'Axel. Réponds en français en 2 à 3 phrases courtes, "
     "adaptées à une synthèse vocale. Pas de markdown, pas de listes à puces. "
     "Appuie-toi sur les résultats de recherche Google si disponibles."
 )
@@ -125,7 +125,7 @@ _GMAIL_MARKERS = ("mail", "email", "gmail", "courriel", "message", "boite", "bo�
 _DRIVE_MARKERS = ("drive", "fichier", "document", "pdf", "dossier", "pièce jointe", "piece jointe")
 
 _JOB_STATUSES = ("pending", "running", "done", "error", "cancelled")
-_DEFAULT_SATELLITE = "assist_satellite.example_satellite"
+_DEFAULT_SATELLITE = "assist_satellite.m5stack_tab5_home_assistant_hmi_satellite_assist"
 
 
 def create_vocal_job(

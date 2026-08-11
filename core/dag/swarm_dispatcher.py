@@ -3,6 +3,7 @@ core/dag/swarm_dispatcher.py — Module de dispatch asynchrone pour Swarm.
 """
 
 import logging
+
 from core.state import StateUpdate
 
 logger = logging.getLogger(__name__)

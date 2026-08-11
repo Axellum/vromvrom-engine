@@ -1,21 +1,79 @@
-# -*- coding: utf-8 -*-
 """Tests du cache sémantique LLM (Phase 3, item 17)."""
 
 import pytest
 
-from core.semantic_cache import SemanticCache, _prompt_id, CHROMA_AVAILABLE
+from core.semantic_cache import CHROMA_AVAILABLE, SemanticCache, _prompt_id
 
 pytestmark = pytest.mark.skipif(not CHROMA_AVAILABLE, reason="chromadb non installé")
 
 
+class _HashEmbedding:
+    """Embedding 100% local et déterministe : remplace l'ONNX par défaut de chromadb,
+    qui télécharge son modèle depuis S3 au premier usage (réseau externe interdit par
+    le garde-fou de tests/unit/conftest.py — voir #T261).
+
+    Vecteur one-hot indexé par le hash du texte (cosine) : deux textes identiques →
+    similarité 1, deux textes distincts → 0. Suffisant pour tester la logique de
+    similarité du cache sans dépendre d'un cache modèle local ni du réseau.
+    """
+
+    # Contrat du protocole chromadb EmbeddingFunction (1.5.x) : `name` est une
+    # méthode, appelée lors de la (dé)sérialisation de la config de collection.
+    @staticmethod
+    def name() -> str:
+        return "hash-embedding-local"
+
+    def default_space(self) -> str:
+        return "cosine"
+
+    def supported_spaces(self) -> list[str]:
+        return ["cosine", "l2", "ip"]
+
+    def __call__(self, input):
+        import hashlib
+
+        texts = [input] if isinstance(input, str) else list(input)
+        vecs = []
+        for text in texts:
+            idx = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:2], "big") % 65536
+            vec = [0.0] * 65536
+            vec[idx] = 1.0
+            vecs.append(vec)
+        return vecs
+
+    def embed_query(self, input):
+        # chromadb 1.5.x appelle embed_query() pour les query_texts.
+        return self.__call__(input)
+
+    def is_legacy(self) -> bool:
+        return False
+
+    def get_config(self):
+        return {}
+
+    @classmethod
+    def build_from_config(cls, config):
+        return cls()
+
+    def validate_config_update(self, old_config, new_config):
+        pass
+
+
 def _cache(threshold=0.95):
-    import chromadb, uuid
+    import uuid
+
+    import chromadb
+    from chromadb.config import Settings
+
     # Client éphémère + collection UNIQUE par test (EphemeralClient est partagé
     # dans le process → sans nom unique les tests se contamineraient).
+    # Télémetrie coupée + embedding local : sans cela, le DefaultEmbeddingFunction
+    # ONNX de chromadb télécharge son modèle depuis S3 au premier usage.
     return SemanticCache(
-        client=chromadb.EphemeralClient(),
+        client=chromadb.EphemeralClient(settings=Settings(anonymized_telemetry=False)),
         collection_name=f"test_cache_{uuid.uuid4().hex}",
         similarity_threshold=threshold,
+        embedding_function=_HashEmbedding(),
     )
 
 
@@ -73,8 +131,8 @@ class _CountingProvider:
 
 def test_fallback_provider_uses_semantic_cache(monkeypatch):
     """2ᵉ appel identique → servi par le cache, le provider n'est PAS rappelé."""
-    from core.llm.providers.deepseek import FallbackProvider
     import core.semantic_cache as sc_mod
+    from core.llm.providers.deepseek import FallbackProvider
 
     c = _cache()
     monkeypatch.setattr(sc_mod, "get_semantic_cache", lambda: c)
@@ -91,8 +149,8 @@ def test_fallback_provider_uses_semantic_cache(monkeypatch):
 
 def test_fallback_provider_opt_out(monkeypatch):
     """use_semantic_cache=False → le cache est court-circuité, provider rappelé."""
-    from core.llm.providers.deepseek import FallbackProvider
     import core.semantic_cache as sc_mod
+    from core.llm.providers.deepseek import FallbackProvider
 
     c = _cache()
     monkeypatch.setattr(sc_mod, "get_semantic_cache", lambda: c)

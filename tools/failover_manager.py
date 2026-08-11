@@ -16,7 +16,7 @@ Intégration dans le Moteur :
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Optional
 
 try:
@@ -41,7 +41,7 @@ class FailoverManager:
     cohérent sur la disponibilité du Deck dans le Moteur.
 
     Usage :
-        mgr = FailoverManager(mqtt_host="${OLLAMA_HOST:-localhost}")
+        mgr = FailoverManager(mqtt_host="${DECK_HOST:-192.168.1.x}")
         await mgr.start()
         status = await mgr.get_deck_status()
         await mgr.stop()
@@ -57,7 +57,7 @@ class FailoverManager:
 
     def __init__(
         self,
-        mqtt_host: str = "192.168.1.100",  # PC écoute en tant que broker
+        mqtt_host: str = "${PC_HOST:-192.168.1.x}",  # PC écoute en tant que broker
         mqtt_port: int = 1883,
         client_id: str = "moteur_failover_manager",
     ):
@@ -72,14 +72,14 @@ class FailoverManager:
         # ── État du Deck ──
         self.deck_failover_active: bool          = False
         self.failover_count:       int           = 0
-        self.last_seen:            Optional[str] = None  # ISO timestamp
+        self.last_seen:            str | None = None  # ISO timestamp
         self.last_status:          str           = "unknown"
 
         # ── Internals ──
-        self._mqtt_client: Optional[mqtt.Client] = None
+        self._mqtt_client: mqtt.Client | None = None
         self._connected   = False
         self._started     = False
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._initialized = True
 
         log.info("[FailoverManager] Initialisé. Broker MQTT : %s:%d", mqtt_host, mqtt_port)
@@ -119,12 +119,12 @@ class FailoverManager:
             if message.topic == MQTT_TOPIC_FAILOVER:
                 self._process_failover_event(status, ts)
             elif message.topic == MQTT_TOPIC_HEARTBEAT:
-                self.last_seen = ts or datetime.now(timezone.utc).isoformat()
+                self.last_seen = ts or datetime.now(UTC).isoformat()
 
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             log.warning("[FailoverManager] Message MQTT invalide : %s", e)
 
-    def _process_failover_event(self, status: str, timestamp: Optional[str]):
+    def _process_failover_event(self, status: str, timestamp: str | None):
         """Met à jour l'état interne selon l'événement reçu."""
         prev_active = self.deck_failover_active
 

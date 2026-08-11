@@ -35,21 +35,21 @@ def get_calendar_events(calendar_id: str = "primary", max_results: str = "10") -
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré. Exécutez setup_google_oauth.py"
-        
+
         # Conversion en int (les agents passent parfois des strings)
         try:
             max_r = int(max_results)
         except (ValueError, TypeError):
             max_r = 10
-        
+
         events = client.get_calendar_events(calendar_id, max_results=max_r)
-        
+
         if not events:
             return "Aucun événement à venir trouvé dans le calendrier."
-        
+
         # Formatage lisible pour l'agent
         lines = [f"📅 {len(events)} événement(s) à venir :"]
         for i, ev in enumerate(events, 1):
@@ -59,9 +59,9 @@ def get_calendar_events(calendar_id: str = "primary", max_results: str = "10") -
             location = ev.get("location", "")
             loc_str = f" — 📍 {location}" if location else ""
             lines.append(f"  {i}. {summary} | {start} → {end}{loc_str}")
-        
+
         return "\n".join(lines)
-        
+
     except Exception as e:
         logger.error(f"[Calendar Tool] Erreur : {e}")
         return f"Erreur lors de la récupération des événements : {e}"
@@ -76,15 +76,15 @@ def list_calendars() -> str:
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré. Exécutez setup_google_oauth.py"
-        
+
         calendars = client.get_calendars()
-        
+
         if not calendars:
             return "Aucun calendrier trouvé."
-        
+
         lines = [f"📋 {len(calendars)} calendrier(s) trouvé(s) :"]
         for cal in calendars:
             primary = " ⭐" if cal.get("primary") else ""
@@ -92,9 +92,9 @@ def list_calendars() -> str:
                 f"  • {cal.get('summary', '?')}{primary} "
                 f"(ID: {cal.get('id', '?')}, rôle: {cal.get('access_role', '?')})"
             )
-        
+
         return "\n".join(lines)
-        
+
     except Exception as e:
         logger.error(f"[Calendar Tool] Erreur list_calendars : {e}")
         return f"Erreur lors de la récupération des calendriers : {e}"
@@ -112,20 +112,20 @@ def list_drive_files(max_results: str = "20") -> str:
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré. Exécutez setup_google_oauth.py"
-        
+
         try:
             max_r = int(max_results)
         except (ValueError, TypeError):
             max_r = 20
-        
+
         files = client.get_drive_files(max_results=max_r)
-        
+
         if not files:
             return "Aucun fichier trouvé dans Google Drive."
-        
+
         lines = [f"📁 {len(files)} fichier(s) Drive récent(s) :"]
         for f in files:
             name = f.get("name", "?")
@@ -141,9 +141,9 @@ def list_drive_files(max_results: str = "20") -> str:
             except (ValueError, TypeError):
                 size_str = "?"
             lines.append(f"  • {name} [{short_mime}] ({size_str}) — modifié: {modified[:10]}")
-        
+
         return "\n".join(lines)
-        
+
     except Exception as e:
         logger.error(f"[Drive Tool] Erreur list_drive_files : {e}")
         return f"Erreur lors de la récupération des fichiers Drive : {e}"
@@ -163,24 +163,24 @@ def read_drive_file(file_id: str) -> str:
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré. Exécutez setup_google_oauth.py"
-        
+
         import requests
         headers = client._get_headers()
-        
+
         # D'abord, récupérer les métadonnées du fichier pour connaître le type
         meta_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?fields=mimeType,name"
         meta_resp = requests.get(meta_url, headers=headers, timeout=10)
-        
+
         if meta_resp.status_code != 200:
             return f"Erreur: Impossible de récupérer les métadonnées du fichier (HTTP {meta_resp.status_code})"
-        
+
         meta = meta_resp.json()
         mime_type = meta.get("mimeType", "")
         file_name = meta.get("name", "?")
-        
+
         # Google Docs/Sheets/Slides → export en texte brut
         if "google-apps" in mime_type:
             export_mime = "text/plain"
@@ -188,24 +188,24 @@ def read_drive_file(file_id: str) -> str:
                 export_mime = "text/csv"
             elif "presentation" in mime_type:
                 export_mime = "text/plain"
-            
+
             export_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType={export_mime}"
             resp = requests.get(export_url, headers=headers, timeout=30)
         else:
             # Fichiers standards → téléchargement direct
             download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
             resp = requests.get(download_url, headers=headers, timeout=30)
-        
+
         if resp.status_code != 200:
             return f"Erreur: Impossible de lire le fichier '{file_name}' (HTTP {resp.status_code})"
-        
+
         # Limiter la taille de la sortie pour éviter l'explosion de contexte
         content = resp.text
         if len(content) > 30000:
             content = content[:30000] + f"\n\n[... tronqué à 30000 caractères, fichier total: {len(resp.text)} chars]"
-        
+
         return f"📄 Contenu de '{file_name}' ({mime_type}) :\n\n{content}"
-        
+
     except Exception as e:
         logger.error(f"[Drive Tool] Erreur read_drive_file : {e}")
         return f"Erreur lors de la lecture du fichier Drive : {e}"
@@ -229,27 +229,27 @@ def search_gmail(query: str, max_results: str = "5") -> str:
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré."
-        
+
         try:
             max_r = int(max_results)
         except (ValueError, TypeError):
             max_r = 5
-        
+
         messages = client.search_gmail(query=query, max_results=max_r)
-        
+
         if not messages:
             return f"Aucun email trouvé pour la recherche: '{query}'"
-        
+
         lines = [f"📧 {len(messages)} email(s) trouvé(s) pour '{query}' :"]
         for i, msg in enumerate(messages, 1):
             lines.append(f"  {i}. [{msg['date'][:16]}] {msg['subject']}")
             lines.append(f"     De: {msg['from']}")
             if msg.get("snippet"):
                 lines.append(f"     → {msg['snippet'][:100]}")
-        
+
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"[Gmail Tool] Erreur search_gmail : {e}")
@@ -269,24 +269,24 @@ def read_spreadsheet(spreadsheet_id: str, range_notation: str = "Sheet1") -> str
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré."
-        
+
         data = client.get_sheets_data(spreadsheet_id, range_notation)
         values = data.get("values", [])
-        
+
         if not values:
             return f"Aucune donnée trouvée dans {range_notation}"
-        
+
         # Formatage en tableau texte
         lines = [f"📊 {data.get('rows', 0)} ligne(s) depuis {data.get('range', range_notation)} :"]
         for row in values[:50]:  # Limiter à 50 lignes
             lines.append("  | " + " | ".join(str(cell) for cell in row) + " |")
-        
+
         if len(values) > 50:
             lines.append(f"  ... ({len(values) - 50} lignes supplémentaires)")
-        
+
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"[Sheets Tool] Erreur read_spreadsheet : {e}")
@@ -305,10 +305,10 @@ def get_tasks(task_list_name: str = "@default") -> str:
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré."
-        
+
         # Si c'est un nom, essayer de trouver l'ID correspondant
         list_id = task_list_name
         if not task_list_name.startswith("@") and not task_list_name.startswith("M"):
@@ -317,18 +317,18 @@ def get_tasks(task_list_name: str = "@default") -> str:
                 if tl["title"].lower() == task_list_name.lower():
                     list_id = tl["id"]
                     break
-        
+
         tasks = client.get_tasks(task_list_id=list_id)
-        
+
         if not tasks:
             return "Aucune tâche en cours trouvée."
-        
+
         lines = [f"✅ {len(tasks)} tâche(s) en cours :"]
         for i, t in enumerate(tasks, 1):
             due = f" (échéance: {t['due'][:10]})" if t.get("due") else ""
             notes = f" — {t['notes'][:60]}" if t.get("notes") else ""
             lines.append(f"  {i}. {t['title']}{due}{notes}")
-        
+
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"[Tasks Tool] Erreur get_tasks : {e}")
@@ -348,26 +348,26 @@ def search_youtube(query: str, max_results: str = "5") -> str:
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré."
-        
+
         try:
             max_r = int(max_results)
         except (ValueError, TypeError):
             max_r = 5
-        
+
         videos = client.search_youtube(query=query, max_results=max_r)
-        
+
         if not videos:
             return f"Aucune vidéo trouvée pour: '{query}'"
-        
+
         lines = [f"🎬 {len(videos)} vidéo(s) trouvée(s) pour '{query}' :"]
         for i, v in enumerate(videos, 1):
             lines.append(f"  {i}. {v['title']}")
             lines.append(f"     📺 {v['channel']} — {v['published'][:10]}")
             lines.append(f"     🔗 {v['url']}")
-        
+
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"[YouTube Tool] Erreur search_youtube : {e}")
@@ -386,20 +386,20 @@ def get_contacts(max_results: str = "10") -> str:
     try:
         from core.gcp_oauth_client import get_gcp_client
         client = get_gcp_client()
-        
+
         if not client.available:
             return "Erreur: OAuth2 Google non configuré."
-        
+
         try:
             max_r = int(max_results)
         except (ValueError, TypeError):
             max_r = 10
-        
+
         contacts = client.get_contacts(max_results=max_r)
-        
+
         if not contacts:
             return "Aucun contact trouvé."
-        
+
         lines = [f"👥 {len(contacts)} contact(s) :"]
         for c in contacts:
             parts = [c.get("name", "?")]
@@ -408,7 +408,7 @@ def get_contacts(max_results: str = "10") -> str:
             if c.get("phone"):
                 parts.append(f"📱 {c['phone']}")
             lines.append(f"  • {' — '.join(parts)}")
-        
+
         return "\n".join(lines)
     except Exception as e:
         logger.error(f"[Contacts Tool] Erreur get_contacts : {e}")

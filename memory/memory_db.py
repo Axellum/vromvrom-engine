@@ -14,15 +14,15 @@ Auteur : Antigravity IDE + Axel
 Dernière mise à jour : 2026-06-16 (Refactoring v12.1.0)
 """
 
+import asyncio
+import logging
 import os
 import sqlite3
-import time
-import logging
-import threading
 import struct
-import asyncio
-from typing import Optional, Dict, List, Any
+import threading
+import time
 from dataclasses import dataclass
+from typing import Any, Optional
 
 logger = logging.getLogger("memory.memory_db")
 
@@ -76,10 +76,10 @@ class MemoryDB:
         facts = db.search_facts("audio Tab5")
         db.upsert_fact(category="esphome", title="Bug DAC", content="...", ...)
     """
-    
+
     _instance: Optional['MemoryDB'] = None
     _lock = threading.Lock()
-    
+
     @classmethod
     def get_instance(cls, db_path: str = DEFAULT_DB_PATH) -> 'MemoryDB':
         """Retourne le singleton de la base de données mémoire."""
@@ -88,13 +88,13 @@ class MemoryDB:
                 if cls._instance is None:
                     cls._instance = cls(db_path)
         return cls._instance
-    
+
     def __init__(self, db_path: str = DEFAULT_DB_PATH):
         self._db_path = db_path
         self._write_lock = threading.RLock()
         self._write_lock_async = asyncio.Lock()
         self._init_db()
-    
+
     def _get_conn(self) -> sqlite3.Connection:
         """Crée une connexion SQLite avec mode WAL et row_factory."""
         conn = sqlite3.connect(self._db_path, timeout=10)
@@ -113,7 +113,7 @@ class MemoryDB:
         await conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = aiosqlite.Row
         return conn
-    
+
     def _init_db(self):
         """Initialise le schéma de la base de données."""
         conn = self._get_conn()
@@ -138,7 +138,7 @@ class MemoryDB:
                 )
                 """
             )
-            
+
             # Index sur titre et catégorie
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_facts_cat ON facts(category)"
@@ -146,7 +146,7 @@ class MemoryDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_facts_relevance ON facts(relevance_score)"
             )
-            
+
             # Table FTS5 pour recherche plein texte ultra-rapide (BM25)
             # FTS5 requiert SQLite 3.9+ (présent dans Python 3.6+)
             try:
@@ -161,7 +161,7 @@ class MemoryDB:
                     )
                     """
                 )
-                
+
                 # Triggers pour maintenir la table FTS synchrone
                 conn.execute(
                     """
@@ -224,7 +224,7 @@ class MemoryDB:
                 )
                 """
             )
-            
+
             # Table des relations du graphe
             conn.execute(
                 """
@@ -246,7 +246,7 @@ class MemoryDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_rels_to ON graph_relations(to_entity)"
             )
-            
+
             # Table des leçons apprises (skills / optimisations)
             conn.execute(
                 """
@@ -262,7 +262,7 @@ class MemoryDB:
                 """
             )
 
-            # Table de cache d'embeddings des requêtes utilisateur 
+            # Table de cache d'embeddings des requêtes utilisateur
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS query_embeddings_cache (
@@ -293,7 +293,7 @@ class MemoryDB:
                 "CREATE INDEX IF NOT EXISTS idx_emb_source ON embeddings(source_type, source_id)"
             )
 
-            # Table de liaison fait-entité pour Graph-RAG relationnel 
+            # Table de liaison fait-entité pour Graph-RAG relationnel
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS fact_entity_links (
@@ -316,7 +316,7 @@ class MemoryDB:
                 )
                 """
             )
-            
+
             conn.commit()
             logger.info(f"[MEMORY DB] Base initialisée : {self._db_path}")
         finally:
@@ -329,7 +329,7 @@ class MemoryDB:
     # ──────────────────────────────────────────────────────────────
     # EMBEDDINGS
     # ──────────────────────────────────────────────────────────────
-    
+
     def store_embedding(self, source_type: str, source_id: str,
                         chunk_text: str, embedding: bytes,
                         model_name: str = "gemini-embedding-2",
@@ -350,9 +350,9 @@ class MemoryDB:
                 return cursor.lastrowid
             finally:
                 conn.close()
-    
+
     def get_embeddings_by_source(self, source_type: str,
-                                 source_id: str = None) -> List[Dict]:
+                                 source_id: str = None) -> list[dict]:
         """Récupère les embeddings d'une source."""
         conn = self._get_conn()
         try:
@@ -369,8 +369,8 @@ class MemoryDB:
             return [dict(r) for r in rows]
         finally:
             conn.close()
-            
-    def get_cached_query_embedding(self, query_hash: str) -> Optional[List[float]]:
+
+    def get_cached_query_embedding(self, query_hash: str) -> list[float] | None:
         """Récupère l'embedding d'une requête depuis le cache SQLite s'il existe ."""
         conn = self._get_conn()
         try:
@@ -390,7 +390,7 @@ class MemoryDB:
             conn.close()
 
     def store_query_embedding_cache(self, query_hash: str, query_text: str,
-                                    embedding: List[float]) -> None:
+                                    embedding: list[float]) -> None:
         """Enregistre l'embedding d'une requête dans le cache SQLite ."""
         now = time.time()
         try:
@@ -410,7 +410,7 @@ class MemoryDB:
         except Exception as e:
             logger.warning(f"[MEMORY DB] Erreur d'écriture dans le cache d'embeddings : {e}")
 
-    def get_all_cached_query_embeddings(self) -> List[Dict[str, Any]]:
+    def get_all_cached_query_embeddings(self) -> list[dict[str, Any]]:
         """Récupère l'intégralité du cache des requêtes avec leurs embeddings ."""
         conn = self._get_conn()
         try:
@@ -434,11 +434,11 @@ class MemoryDB:
             return []
         finally:
             conn.close()
-    
+
     # ──────────────────────────────────────────────────────────────
     # SYNC & METADATA
     # ──────────────────────────────────────────────────────────────
-    
+
     def set_sync_metadata(self, key: str, value: str):
         """Enregistre une métadonnée de synchronisation."""
         now = time.time()
@@ -453,8 +453,8 @@ class MemoryDB:
                 conn.commit()
             finally:
                 conn.close()
-    
-    def get_sync_metadata(self, key: str) -> Optional[str]:
+
+    def get_sync_metadata(self, key: str) -> str | None:
         """Récupère une métadonnée de synchronisation."""
         conn = self._get_conn()
         try:
@@ -464,8 +464,8 @@ class MemoryDB:
             return row["value"] if row else None
         finally:
             conn.close()
-    
-    def get_stats(self) -> Dict[str, Any]:
+
+    def get_stats(self) -> dict[str, Any]:
         """Retourne les statistiques globales de la base."""
         conn = self._get_conn()
         try:
@@ -475,10 +475,10 @@ class MemoryDB:
             relations_count = conn.execute("SELECT COUNT(*) as c FROM graph_relations").fetchone()["c"]
             skills_count = conn.execute("SELECT COUNT(*) as c FROM skills").fetchone()["c"]
             embeddings_count = conn.execute("SELECT COUNT(*) as c FROM embeddings").fetchone()["c"]
-            
+
             # Taille du fichier
             db_size = os.path.getsize(self._db_path) if os.path.exists(self._db_path) else 0
-            
+
             return {
                 "db_path": self._db_path,
                 "db_size_kb": round(db_size / 1024, 1),
@@ -505,15 +505,15 @@ class MemoryDB:
         return upsert_fact(self, category, title, content, source_file, tags, commit_hash, severity)
 
     def search_facts(self, query: str, category: str = None,
-                     limit: int = 10) -> List[Dict]:
+                     limit: int = 10) -> list[dict]:
         from .facts import search_facts
         return search_facts(self, query, category, limit)
 
-    def get_facts_by_category(self, category: str) -> List[Dict]:
+    def get_facts_by_category(self, category: str) -> list[dict]:
         from .facts import get_facts_by_category
         return get_facts_by_category(self, category)
 
-    def get_all_facts_count(self) -> Dict[str, int]:
+    def get_all_facts_count(self) -> dict[str, int]:
         from .facts import get_all_facts_count
         return get_all_facts_count(self)
 
@@ -526,7 +526,7 @@ class MemoryDB:
         from .facts import touch_fact
         return touch_fact(self, fact_id)
 
-    def search_facts_weighted(self, query: str, limit: int = 10) -> List[Dict]:
+    def search_facts_weighted(self, query: str, limit: int = 10) -> list[dict]:
         from .facts import search_facts_weighted
         return search_facts_weighted(self, query, limit)
 
@@ -534,7 +534,7 @@ class MemoryDB:
         from .facts import _ensure_facts_columns
         _ensure_facts_columns(self)
 
-    def get_stale_facts(self, threshold: float = 0.3) -> List[Dict]:
+    def get_stale_facts(self, threshold: float = 0.3) -> list[dict]:
         from .facts import get_stale_facts
         return get_stale_facts(self, threshold)
 
@@ -556,7 +556,7 @@ class MemoryDB:
         from .episodes import upsert_episode
         return upsert_episode(self, session_date, session_folder, summary, category, tags, source_file)
 
-    def search_episodes(self, query: str, limit: int = 10) -> List[Dict]:
+    def search_episodes(self, query: str, limit: int = 10) -> list[dict]:
         from .episodes import search_episodes
         return search_episodes(self, query, limit)
 
@@ -568,7 +568,7 @@ class MemoryDB:
 
     # --- Graph (memory/graph.py) ---
     def upsert_graph_entity(self, name: str, entity_type: str,
-                            observations: List[str] = None) -> int:
+                            observations: list[str] = None) -> int:
         from .graph import upsert_graph_entity
         return upsert_graph_entity(self, name, entity_type, observations)
 
@@ -577,26 +577,26 @@ class MemoryDB:
         from .graph import upsert_graph_relation
         return upsert_graph_relation(self, from_entity, to_entity, relation_type)
 
-    def search_graph(self, query: str, limit: int = 10) -> Dict[str, Any]:
+    def search_graph(self, query: str, limit: int = 10) -> dict[str, Any]:
         from .graph import search_graph
         return search_graph(self, query, limit)
 
-    def get_full_graph(self) -> Dict[str, Any]:
+    def get_full_graph(self) -> dict[str, Any]:
         from .graph import get_full_graph
         return get_full_graph(self)
 
     def gc_graph_entities(self, max_observations: int = 15,
-                          max_age_days: int = 30) -> Dict[str, int]:
+                          max_age_days: int = 30) -> dict[str, int]:
         from .graph import gc_graph_entities
         return gc_graph_entities(self, max_observations, max_age_days)
 
     async def gc_graph_entities_async(self, max_observations: int = 15,
-                                      max_age_days: int = 30) -> Dict[str, int]:
+                                      max_age_days: int = 30) -> dict[str, int]:
         from .graph import gc_graph_entities_async
         return await gc_graph_entities_async(self, max_observations, max_age_days)
 
     async def upsert_graph_entity_async(self, name: str, entity_type: str,
-                                         observations: List[str] = None) -> int:
+                                         observations: list[str] = None) -> int:
         from .graph import upsert_graph_entity_async
         return await upsert_graph_entity_async(self, name, entity_type, observations)
 
@@ -604,11 +604,11 @@ class MemoryDB:
         from .graph import link_fact_to_entity
         return link_fact_to_entity(self, fact_id, entity_name)
 
-    def get_connected_facts_for_entity(self, entity_name: str, limit: int = 5) -> List[Dict]:
+    def get_connected_facts_for_entity(self, entity_name: str, limit: int = 5) -> list[dict]:
         from .graph import get_connected_facts_for_entity
         return get_connected_facts_for_entity(self, entity_name, limit)
 
-    def get_connected_entities_for_fact(self, fact_id: int) -> List[Dict]:
+    def get_connected_entities_for_fact(self, fact_id: int) -> list[dict]:
         from .graph import get_connected_entities_for_fact
         return get_connected_entities_for_fact(self, fact_id)
 
@@ -616,7 +616,7 @@ class MemoryDB:
         from .graph import link_fact_to_entity_async
         return await link_fact_to_entity_async(self, fact_id, entity_name)
 
-    async def get_connected_facts_for_entity_async(self, entity_name: str, limit: int = 5) -> List[Dict]:
+    async def get_connected_facts_for_entity_async(self, entity_name: str, limit: int = 5) -> list[dict]:
         from .graph import get_connected_facts_for_entity_async
         return await get_connected_facts_for_entity_async(self, entity_name, limit)
 
@@ -624,11 +624,11 @@ class MemoryDB:
     def record_learned_lesson(self, category: str, title: str,
                               content: str, source_file: str = "",
                               tags: str = "",
-                              severity: str = "minor") -> Dict[str, Any]:
+                              severity: str = "minor") -> dict[str, Any]:
         from .skills import record_learned_lesson
         return record_learned_lesson(self, category, title, content, source_file, tags, severity)
 
-    def _get_lecon_md_path(self, category: str) -> Optional[str]:
+    def _get_lecon_md_path(self, category: str) -> str | None:
         from .skills import _get_lecon_md_path
         return _get_lecon_md_path(self, category)
 
@@ -640,6 +640,6 @@ class MemoryDB:
     async def record_learned_lesson_async(self, category: str, title: str,
                                            content: str, source_file: str = "",
                                            tags: str = "",
-                                           severity: str = "minor") -> Dict[str, Any]:
+                                           severity: str = "minor") -> dict[str, Any]:
         from .skills import record_learned_lesson_async
         return await record_learned_lesson_async(self, category, title, content, source_file, tags, severity)

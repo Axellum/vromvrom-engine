@@ -17,14 +17,14 @@ Modèles multimodaux utilisables :
 - claude-sonnet-4-6 via CLI (inclus dans l'abonnement Pro)
 """
 
-import os
-import base64
-import logging
 import asyncio
+import base64
 import json
+import logging
+import os
 import subprocess
 import tempfile
-from typing import Optional, Dict, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +49,11 @@ class VisualQAService:
 
     async def capture_and_analyze(
         self,
-        url: Optional[str] = None,
+        url: str | None = None,
         question: str = "Analyse cette interface. Est-elle visuellement correcte, harmonieuse et ergonomique ?",
         model_tier: str = "moyen",
-        session_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """
         Capture un screenshot et l'analyse via un LLM multimodal.
 
@@ -119,7 +119,7 @@ class VisualQAService:
         analysis["screenshot_path"] = screenshot_path
         return analysis
 
-    async def capture_screenshot(self, url: str) -> Optional[str]:
+    async def capture_screenshot(self, url: str) -> str | None:
         """
         Capture un screenshot via Puppeteer (subprocess Node.js).
 
@@ -221,8 +221,8 @@ const puppeteer = require('puppeteer-core');
         image_base64: str,
         question: str,
         model_tier: str = "moyen",
-        session_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """
         Analyse multimodale d'un screenshot via un LLM supportant la vision.
 
@@ -335,8 +335,8 @@ Score sur 10 : 1-3 = médiocre, 4-5 = passable, 6-7 = correct, 8-9 = bon, 10 = e
 
     async def _call_gemini_multimodal(
         self, provider, system_prompt: str, user_prompt: str,
-        image_base64: str, session_id: Optional[str] = None
-    ) -> Optional[Dict]:
+        image_base64: str, session_id: str | None = None
+    ) -> dict | None:
         """
         Appel Gemini avec image multimodale via l'API REST directe.
 
@@ -436,7 +436,7 @@ Score sur 10 : 1-3 = médiocre, 4-5 = passable, 6-7 = correct, 8-9 = bon, 10 = e
             logger.warning(f"[VISUAL-QA] Erreur appel Gemini multimodal : {e}")
             return None
 
-    def analyze_lvgl_code(self, yaml_content: str, cpp_content: str = "") -> Dict[str, Any]:
+    def analyze_lvgl_code(self, yaml_content: str, cpp_content: str = "") -> dict[str, Any]:
         """
         Analyse textuelle enrichie d'un code LVGL (quand Puppeteer n'est pas applicable).
 
@@ -489,7 +489,7 @@ Score sur 10 : 1-3 = médiocre, 4-5 = passable, 6-7 = correct, 8-9 = bon, 10 = e
         return analysis
 
     @staticmethod
-    def _error_result(error_msg: str) -> Dict[str, Any]:
+    def _error_result(error_msg: str) -> dict[str, Any]:
         """Retourne un résultat d'erreur formaté."""
         return {
             "success": False,

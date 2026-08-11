@@ -3,10 +3,13 @@ api/routes/metrics.py — Routes API pour le Dashboard de Métriques V6.
 
 Observabilité Data-Driven.
 
-Expose les données de télémétrie agrégées depuis les sources SQLite et JSON :
-- session_history.db : sessions moteur, token_usage, quota_snapshots, billing
-- routing_metrics.db : décisions de routage, scores Elo
-- token_usage.json : consommation par modèle
+Expose les données de télémétrie agrégées depuis la base unifiée
+moteur_runtime.db (core.runtime_db) :
+- token_usage : consommation réelle par appel (tokens, coût facturé) — seule
+  source de vérité pour l'argent et les tokens (#T294)
+- sessions : sessions moteur (started_at REAL)
+- quota_snapshots : quotas par canal (table clé/valeur, sans notion de coût)
+- routing_decisions / model_elo_scores : routage et scores Elo
 
 Endpoints :
 - GET /api/metrics/telemetry  : Données agrégées pour le dashboard Chart.js
@@ -16,6 +19,7 @@ Endpoints :
 """
 
 import asyncio
+import contextvars
 import logging
 import os
 import sqlite3
@@ -47,8 +51,17 @@ async def serve_metrics_dashboard():
     return RedirectResponse(url="/#metrics")
 
 
-def _safe_query(db_path: str, query: str, params: tuple = ()) -> list:
-    """Requête SQLite sécurisée sur la base unifiée avec gestion d'erreur."""
+def _safe_query(db_path: str, query: str, params: tuple = ()) -> list | None:
+    """
+    Requête SQLite sécurisée sur la base unifiée.
+
+    Retour :
+    - une liste de lignes en cas de succès (vide si zéro ligne : mesure nulle) ;
+    - None en cas de DÉFAUT DE CODE (colonne/table inexistante) : journalisé en
+      error et remonté dans la réponse via `query_errors`. Un appelant ne doit
+      jamais convertir None en 0 — ce serait exactement l'exception déguisée en
+      mesure que cette correction supprime (#T294).
+    """
     try:
         conn = get_connection()
         conn.row_factory = sqlite3.Row
@@ -56,9 +69,60 @@ def _safe_query(db_path: str, query: str, params: tuple = ()) -> list:
         rows = [dict(row) for row in cursor.fetchall()]
         conn.close()
         return rows
+    except sqlite3.OperationalError as e:
+        logger.error(f"[METRICS] Défaut de code : requête invalide — {e}")
+        _record_query_error(query, str(e))
+        return None
     except Exception as e:
         logger.warning(f"[METRICS] Erreur SQLite unifiée : {e}")
         return []
+
+
+# Registre des défauts de requête détectés pendant une réponse (ContextVar :
+# isolé par requête HTTP, vidé par _reset_query_errors à l'entrée de chaque
+# endpoint). Additif : jamais présent dans la réponse si rien n'a échoué.
+# default=None (jamais une liste mutable, cf. B039) : initialisation paresseuse
+# dans _record_query_error.
+_metrics_query_errors: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "metrics_query_errors", default=None
+)
+
+
+def _record_query_error(query: str, error: str) -> None:
+    """Enregistre un défaut de requête pour la réponse en cours (liste créée à la demande)."""
+    errors = _metrics_query_errors.get()
+    if errors is None:
+        errors = []
+        _metrics_query_errors.set(errors)
+    errors.append(f"{query} — {error}")
+
+
+def _reset_query_errors() -> None:
+    """Ouvre un registre d'erreurs de requête vierge pour la réponse en cours."""
+    _metrics_query_errors.set([])
+
+
+def _attach_query_errors(payload: dict) -> dict:
+    """Ajoute `query_errors` (additif) si des requêtes ont échoué pendant la réponse."""
+    errors = _metrics_query_errors.get() or []
+    if errors:
+        payload["query_errors"] = errors
+    return payload
+
+
+def _kpi_number(rows: list | None, key: str) -> int | float | None:
+    """Extrait un KPI agrégé : nombre si la mesure est connue (0 si zéro ligne),
+    None si la requête a échoué — un défaut de code ne doit jamais devenir un 0."""
+    if rows is None:
+        return None
+    return (rows[0][key] or 0) if rows else 0
+
+
+def _rows_or_empty(rows: list | None) -> list:
+    """Normalise le retour de _safe_query pour les usages hors périmètre KPI : un
+    échec (None) y vaut liste vide — l'erreur reste journalisée en error et
+    remonte via query_errors."""
+    return rows if rows is not None else []
 
 
 @router.get("/api/metrics/telemetry")
@@ -74,7 +138,13 @@ async def get_telemetry(
     - Stats par modèle (usage, Elo, coût/qualité)
     - Stats de routage (fast-path vs slow-path)
     - Prévisions budgétaires
+
+    Doctrine #T294 : un champ dont la requête a échoué (défaut de code) reste
+    null côté API et remonte dans `query_errors` — jamais un 0 menteur.
     """
+    # Registre d'erreurs de requête vierge pour cette réponse (ContextVar isolée).
+    _reset_query_errors()
+
     # Calculer le timestamp de début selon la période
     period_map = {
         "1h": 3600,
@@ -86,17 +156,23 @@ async def get_telemetry(
     seconds = period_map.get(period, 24 * 3600)
     since_ts = time.time() - seconds
 
+    agents, agent_unassigned = _get_agent_stats(since_ts)
+
     result = {
         "period": period,
         "generated_at": datetime.now().isoformat(),
         "time_series": _get_time_series(since_ts),
-        "agent_stats": _get_agent_stats(since_ts),
+        "agent_stats": agents,
         "model_stats": _get_model_stats(since_ts),
         "routing_stats": _get_routing_stats(since_ts),
         "kpis": _get_kpis(since_ts),
         "budget_forecast": _get_budget_forecast(),
     }
-    return result
+    if agent_unassigned:
+        # agent_name est souvent NULL côté écrivains : distinguer « aucun agent
+        # renseigné » d'un tableau vide, sans inventer de ligne « null ».
+        result["agent_stats_unassigned_count"] = agent_unassigned
+    return _attach_query_errors(result)
 
 
 @router.get("/api/metrics/elo")
@@ -178,13 +254,13 @@ def _observed_performance(since_ts: float) -> list:
     observed: dict[str, dict] = {}
 
     # 1. Consommation réelle (token_usage) — appels, tokens, coût facturé.
-    for row in _safe_query(
+    for row in _rows_or_empty(_safe_query(
         _SESSION_DB,
         "SELECT model, COUNT(*) AS calls, SUM(total_tokens) AS total_tokens, "
         "SUM(cost_usd) AS cost_usd "
         "FROM token_usage WHERE timestamp > ? GROUP BY model",
         (since_ts,),
-    ):
+    )):
         model = row["model"]
         if not model:
             continue
@@ -203,12 +279,12 @@ def _observed_performance(since_ts: float) -> list:
         }
 
     # 2. Scores Elo (model_elo_scores) — agrégés sur tous les domaines.
-    for row in _safe_query(
+    for row in _rows_or_empty(_safe_query(
         _SESSION_DB,
         "SELECT model_name, SUM(total_matches) AS matches, SUM(wins) AS wins, "
         "SUM(losses) AS losses, AVG(elo_score) AS elo, AVG(avg_latency_ms) AS latency "
         "FROM model_elo_scores GROUP BY model_name",
-    ):
+    )):
         model = row["model_name"]
         if not model:
             continue
@@ -223,14 +299,14 @@ def _observed_performance(since_ts: float) -> list:
         entry["avg_latency_ms"] = round(row["latency"], 1) if row["latency"] is not None else None
 
     # 3. Latence et succès mesurés au routage (routing_decisions).
-    for row in _safe_query(
+    for row in _rows_or_empty(_safe_query(
         _ROUTING_DB,
         "SELECT resolved_model, AVG(latency_ms) AS latency, COUNT(*) AS n, "
         "SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS ok "
         "FROM routing_decisions WHERE timestamp > ? AND resolved_model IS NOT NULL "
         "GROUP BY resolved_model",
         (since_ts,),
-    ):
+    )):
         model = row["resolved_model"]
         if not model:
             continue
@@ -249,20 +325,20 @@ def _observed_performance(since_ts: float) -> list:
 
 def _load_runs(limit: int) -> list:
     """Charge les derniers comparatifs déclenchés depuis l'IHM, avec leurs résultats."""
-    runs = _safe_query(
+    runs = _rows_or_empty(_safe_query(
         _SESSION_DB,
         "SELECT run_id, prompt, system_prompt, created_at, finished_at, status "
         "FROM benchmark_runs ORDER BY created_at DESC LIMIT ?",
         (limit,),
-    )
+    ))
     for run in runs:
-        run["results"] = _safe_query(
+        run["results"] = _rows_or_empty(_safe_query(
             _SESSION_DB,
             "SELECT model, status, latency_ms, response_text, response_chars, "
             "prompt_tokens, completion_tokens, cost_usd, error_message "
             "FROM benchmark_results WHERE run_id = ? ORDER BY latency_ms",
             (run["run_id"],),
-        )
+        ))
     return runs
 
 
@@ -279,12 +355,13 @@ async def get_benchmarks(
     """
     period_map = {"1h": 3600, "6h": 6 * 3600, "24h": 24 * 3600, "7d": 7 * 86400, "30d": 30 * 86400}
     since_ts = time.time() - period_map.get(period, 30 * 86400)
-    return {
+    _reset_query_errors()
+    return _attach_query_errors({
         "period": period,
         "generated_at": datetime.now().isoformat(),
         "observed": _observed_performance(since_ts),
         "runs": _load_runs(limit),
-    }
+    })
 
 
 def _bench_one(model: str, system_prompt: str, user_prompt: str,
@@ -415,37 +492,45 @@ async def run_benchmark(body: BenchmarkRequest):
 @router.get("/api/metrics/routing")
 async def get_routing_stats_endpoint():
     """Statistiques détaillées de routage (catégories, fast/slow path)."""
-    return _get_routing_stats(time.time() - 7 * 24 * 3600)
+    _reset_query_errors()
+    return _attach_query_errors(_get_routing_stats(time.time() - 7 * 24 * 3600))
 
 
 @router.get("/api/metrics/agents")
 async def get_agent_stats_endpoint():
-    """Performance détaillée par agent."""
-    return _get_agent_stats(time.time() - 7 * 24 * 3600)
+    """Performance détaillée par agent (agent_name ; NULL exclus du tableau et
+    comptés via `agent_stats_unassigned_count` dans /api/metrics/telemetry)."""
+    _reset_query_errors()
+    agents, _ = _get_agent_stats(time.time() - 7 * 24 * 3600)
+    return _attach_query_errors(agents if agents is not None else [])
 
 
 # ──────────────────────────────────────────────────────────────────
 # Fonctions d'agrégation internes
 # ──────────────────────────────────────────────────────────────────
 
-def _get_time_series(since_ts: float) -> dict:
+def _get_time_series(since_ts: float) -> dict | None:
     """
     Séries temporelles pour les graphiques Chart.js.
-    Agrège tokens et coûts par tranche horaire depuis quota_snapshots.
+
+    Agrège tokens et coûts par tranche horaire depuis token_usage — seule source
+    de vérité (timestamp, total_tokens, cost_usd). Retourne None si la requête a
+    échoué (défaut de code) : le graphique ne doit pas afficher « aucune donnée
+    sur la période » quand la mesure est cassée.
     """
-    # Données depuis les snapshots de quota (enregistrés toutes les 60s)
-    snapshots = _safe_query(
+    rows = _safe_query(
         _SESSION_DB,
-        "SELECT timestamp, gemini_free_tpm, claude_cli_tph, "
-        "gemini_cli_tph, estimated_cost_usd "
-        "FROM quota_snapshots WHERE timestamp > ? ORDER BY timestamp",
+        "SELECT timestamp, total_tokens, cost_usd "
+        "FROM token_usage WHERE timestamp > ? ORDER BY timestamp",
         (since_ts,),
     )
+    if rows is None:
+        return None
 
     # Agrégation par heure
     hourly = {}
-    for snap in snapshots:
-        ts = snap.get("timestamp", 0)
+    for row in rows:
+        ts = row.get("timestamp", 0)
         hour_key = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:00")
         if hour_key not in hourly:
             hourly[hour_key] = {
@@ -453,12 +538,8 @@ def _get_time_series(since_ts: float) -> dict:
                 "cost_usd": 0.0,
                 "data_points": 0,
             }
-        hourly[hour_key]["tokens"] += (
-            (snap.get("gemini_free_tpm") or 0)
-            + (snap.get("claude_cli_tph") or 0)
-            + (snap.get("gemini_cli_tph") or 0)
-        )
-        hourly[hour_key]["cost_usd"] += snap.get("estimated_cost_usd") or 0
+        hourly[hour_key]["tokens"] += row.get("total_tokens") or 0
+        hourly[hour_key]["cost_usd"] += row.get("cost_usd") or 0
         hourly[hour_key]["data_points"] += 1
 
     # Formatage pour Chart.js (labels + datasets)
@@ -470,32 +551,50 @@ def _get_time_series(since_ts: float) -> dict:
     }
 
 
-def _get_agent_stats(since_ts: float) -> list:
-    """Stats par agent depuis les sessions moteur."""
+def _get_agent_stats(since_ts: float) -> tuple[list | None, int]:
+    """
+    Stats par agent depuis token_usage — agrégées sur la colonne agent_name.
+
+    Distingue trois situations, jamais confondues :
+    - requête en échec (défaut de code) : liste None, l'erreur remonte via query_errors ;
+    - zéro ligne sur la période : liste vide ;
+    - appels dont agent_name est NULL (non renseigné par les écrivains) : exclus
+      du tableau, mais comptés dans le second élément, exposé additivement via
+      `agent_stats_unassigned_count` dans la réponse.
+    """
     rows = _safe_query(
         _SESSION_DB,
-        "SELECT model_name as agent, "
+        "SELECT agent_name as agent, "
         "COUNT(*) as total_calls, "
         "SUM(CASE WHEN prompt_tokens > 0 THEN 1 ELSE 0 END) as successes, "
         "SUM(prompt_tokens) as total_input, "
         "SUM(completion_tokens) as total_output, "
         "AVG(prompt_tokens + completion_tokens) as avg_tokens "
         "FROM token_usage WHERE timestamp > ? "
-        "GROUP BY model_name ORDER BY total_calls DESC",
+        "GROUP BY agent_name ORDER BY total_calls DESC",
         (since_ts,),
     )
+    if rows is None:
+        return None, 0
 
+    agents = []
+    unassigned = 0
     for row in rows:
+        if not row.get("agent"):
+            # agent_name NULL : non renseigné par les écrivains — pas un agent nommé.
+            unassigned += row.get("total_calls") or 0
+            continue
         total = row.get("total_calls", 1) or 1
         row["success_rate"] = round(
             (row.get("successes", 0) / total) * 100, 1
         )
+        agents.append(row)
 
-    return rows
+    return agents, unassigned
 
 
-def _get_model_stats(since_ts: float) -> dict:
-    """Stats par modèle avec Elo intégré."""
+def _get_model_stats(since_ts: float) -> dict | None:
+    """Stats par modèle avec Elo intégré (token_usage, requête déjà correcte)."""
     # Charger depuis token_usage SQLite
     usage = {}
     rows = _safe_query(
@@ -511,6 +610,10 @@ def _get_model_stats(since_ts: float) -> dict:
         """,
         (since_ts,),
     )
+    if rows is None:
+        # Défaut de code : le tableau ne doit pas afficher « aucun usage » quand
+        # la mesure est cassée — l'erreur remonte via query_errors.
+        return None
     for row in rows:
         usage[row["model"]] = {
             "total_tokens": row["total_tokens"] or 0,
@@ -566,23 +669,30 @@ def _get_routing_stats(since_ts: float) -> dict:
 
 
 def _get_kpis(since_ts: float) -> dict:
-    """KPIs bannière (coût total, sessions, taux de succès, tokens)."""
-    # Coût estimé total
+    """KPIs bannière (coût total, sessions, tokens).
+
+    Source unique : token_usage pour l'argent et les tokens (la même qui alimente
+    le tableau « Usage par modèle »), sessions.started_at (REAL) pour les
+    sessions. Doctrine du fichier : une requête en échec rend None, jamais 0 —
+    un 0 serait une exception déguisée en mesure (#T294).
+    """
+    # Coût réellement facturé (token_usage) — seule source de vérité de l'argent.
     billing = _safe_query(
         _SESSION_DB,
-        "SELECT SUM(estimated_cost_usd) as total_cost "
-        "FROM quota_snapshots WHERE timestamp > ?",
+        "SELECT SUM(cost_usd) as total_cost "
+        "FROM token_usage WHERE timestamp > ?",
         (since_ts,),
     )
 
-    # Nombre de sessions
+    # Nombre de sessions : started_at est REAL — comparaison numérique directe.
+    # (comparer un ISO-8601 à un REAL rendrait 0 en SQLite : nombre < texte).
     sessions = _safe_query(
         _SESSION_DB,
-        "SELECT COUNT(*) as count FROM sessions WHERE start_time > ?",
-        (datetime.fromtimestamp(since_ts).isoformat(),),
+        "SELECT COUNT(*) as count FROM sessions WHERE started_at > ?",
+        (since_ts,),
     )
 
-    # Tokens totaux depuis token_usage
+    # Tokens totaux depuis token_usage (inchangé : déjà correct).
     tokens = _safe_query(
         _SESSION_DB,
         "SELECT SUM(prompt_tokens + completion_tokens) as total "
@@ -590,29 +700,34 @@ def _get_kpis(since_ts: float) -> dict:
         (since_ts,),
     )
 
+    total_cost = _kpi_number(billing, "total_cost")
     return {
-        "total_cost_usd": round(
-            (billing[0]["total_cost"] or 0) if billing else 0, 4
-        ),
-        "total_sessions": (sessions[0]["count"] or 0) if sessions else 0,
-        "total_tokens": (tokens[0]["total"] or 0) if tokens else 0,
+        "total_cost_usd": round(total_cost, 4) if total_cost is not None else None,
+        "total_sessions": _kpi_number(sessions, "count"),
+        "total_tokens": _kpi_number(tokens, "total"),
     }
 
 
-def _get_budget_forecast() -> dict:
+def _get_budget_forecast() -> dict | None:
     """
     Projection budgétaire sur 7 jours basée sur la consommation moyenne.
+
+    Agrégation journalière de token_usage (cost_usd) — même source que le KPI
+    coût et le tableau « Usage par modèle ». None si la requête a échoué : les
+    prévisions ne doivent pas valoir $0 quand la mesure est cassée.
     """
     # Coût moyen des 7 derniers jours
     seven_days_ago = time.time() - 7 * 24 * 3600
     daily_costs = _safe_query(
         _SESSION_DB,
         "SELECT DATE(datetime(timestamp, 'unixepoch')) as day, "
-        "SUM(estimated_cost_usd) as daily_cost "
-        "FROM quota_snapshots WHERE timestamp > ? "
+        "SUM(cost_usd) as daily_cost "
+        "FROM token_usage WHERE timestamp > ? "
         "GROUP BY day ORDER BY day",
         (seven_days_ago,),
     )
+    if daily_costs is None:
+        return None
 
     if not daily_costs:
         return {"avg_daily_cost": 0, "projected_7d": 0, "projected_30d": 0}

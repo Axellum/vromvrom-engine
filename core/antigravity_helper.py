@@ -6,22 +6,22 @@ Auteur : Antigravity IDE
 Date : 2026-06-16
 """
 
-import os
+import base64
 import glob
 import json
 import logging
-import shutil
-import tempfile
-import sqlite3
-import base64
+import os
 import re
+import shutil
+import sqlite3
+import tempfile
 from datetime import datetime, timedelta
-from typing import Tuple, Dict, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def decode_protobuf_varint(data: bytes, index: int = 0) -> Tuple[int, int]:
+def decode_protobuf_varint(data: bytes, index: int = 0) -> tuple[int, int]:
     """Décode un entier encodé en varint protobuf à partir d'un index donné."""
     result = 0
     shift = 0
@@ -37,16 +37,16 @@ def decode_protobuf_varint(data: bytes, index: int = 0) -> Tuple[int, int]:
     return result, index
 
 
-def get_antigravity_ide_usage() -> Dict[str, Any]:
+def get_antigravity_ide_usage() -> dict[str, Any]:
     """Scanne le répertoire brain d'Antigravity IDE pour compter les messages des 5 dernières heures et en déduire le reset glissant."""
     user_home = os.path.expanduser("~")
     brain_dir = os.path.join(user_home, ".gemini", "antigravity-ide", "brain")
     now = datetime.now()
     t_5h = now - timedelta(hours=5)
-    
+
     gemini_requests = []
     others_requests = []
-    
+
     if os.path.exists(brain_dir):
         pattern = os.path.join(brain_dir, "*", ".system_generated", "logs", "transcript.jsonl")
         for filepath in glob.glob(pattern):
@@ -55,17 +55,17 @@ def get_antigravity_ide_usage() -> Dict[str, Any]:
                 mtime = datetime.fromtimestamp(os.path.getmtime(filepath))
                 if mtime < t_5h:
                     continue
-                    
-                with open(filepath, "r", encoding="utf-8") as f:
+
+                with open(filepath, encoding="utf-8") as f:
                     lines = [line.strip() for line in f if line.strip()]
-                    
+
                 # Détecter le modèle de la session (Claude vs Gemini)
                 is_claude = False
                 for line in lines:
                     if "claude" in line.lower() or "opus" in line.lower() or "sonnet" in line.lower():
                         is_claude = True
                         break
-                        
+
                 for line in lines:
                     try:
                         step = json.loads(line)
@@ -76,7 +76,7 @@ def get_antigravity_ide_usage() -> Dict[str, Any]:
                                 dt_naive = dt.replace(tzinfo=None)
                                 if dt.tzinfo:
                                     dt_naive = dt.astimezone().replace(tzinfo=None)
-                                    
+
                                 if dt_naive > t_5h:
                                     if is_claude:
                                         others_requests.append(dt_naive)
@@ -86,24 +86,24 @@ def get_antigravity_ide_usage() -> Dict[str, Any]:
                         pass
             except Exception:
                 pass
-                
+
     # Tri
     gemini_requests.sort()
     others_requests.sort()
-    
+
     # Calcul des temps de recharge restants
     gemini_reset = 0
     if gemini_requests:
         oldest = gemini_requests[0]
         reset_time = oldest + timedelta(hours=5)
         gemini_reset = max(0, int((reset_time - now).total_seconds()))
-        
+
     others_reset = 0
     if others_requests:
         oldest = others_requests[0]
         reset_time = oldest + timedelta(hours=5)
         others_reset = max(0, int((reset_time - now).total_seconds()))
-        
+
     return {
         "gemini": {
             "used": len(gemini_requests),
@@ -118,7 +118,7 @@ def get_antigravity_ide_usage() -> Dict[str, Any]:
     }
 
 
-def get_antigravity_status() -> Dict[str, Any]:
+def get_antigravity_status() -> dict[str, Any]:
     """Récupère passivement le profil utilisateur et les crédits d'IA d'Antigravity IDE depuis sa base SQLite locale."""
     if os.name == "nt":  # Windows
         appdata = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
@@ -126,7 +126,7 @@ def get_antigravity_status() -> Dict[str, Any]:
     else:  # Linux/Mac (Steam Deck ou serveur)
         user_home = os.path.expanduser("~")
         db_path = os.path.join(user_home, ".config", "Antigravity IDE", "User", "globalStorage", "state.vscdb")
-    
+
     result = {
         "connected": False,
         "user": "Non connecté",
@@ -139,34 +139,34 @@ def get_antigravity_status() -> Dict[str, Any]:
         },
         "error": None
     }
-    
+
     if not os.path.exists(db_path):
         result["error"] = "Base de données introuvable"
         return result
-        
+
     temp_dir = tempfile.gettempdir()
     temp_db_path = os.path.join(temp_dir, f"antigravity_state_temp_{os.getpid()}.vscdb")
-    
+
     try:
         # Copie temporaire sécurisée pour éviter les verrous
         shutil.copy2(db_path, temp_db_path)
-        
+
         conn = sqlite3.connect(temp_db_path)
         cursor = conn.cursor()
-        
+
         # Sélectionner les clés d'état requises
         cursor.execute("SELECT key, value FROM ItemTable WHERE key IN ('antigravityUnifiedStateSync.modelCredits', 'antigravityUnifiedStateSync.userStatus', 'antigravityUnifiedStateSync.oauthToken');")
         rows = cursor.fetchall()
         data = {row[0]: row[1] for row in rows}
-        
+
         conn.close()
-        
+
         # Suppression immédiate de la copie
         try:
             os.remove(temp_db_path)
         except Exception:
             pass
-            
+
         # 1. Extraction du statut OAuth
         if 'antigravityUnifiedStateSync.oauthToken' in data:
             oauth_b64 = data['antigravityUnifiedStateSync.oauthToken']
@@ -194,18 +194,18 @@ def get_antigravity_status() -> Dict[str, Any]:
                     val_b64 = match.group(1)
                     val_bytes = base64.b64decode(val_b64)
                     status_text = val_bytes.decode('utf-8', errors='ignore')
-                    
+
                     # Extraction Email
                     email_match = re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", status_text)
                     if email_match:
                         result["email"] = email_match.group(0)
-                        
+
                     # Extraction Plan
                     plan_match = re.search(r"(Google AI [a-zA-Z0-9\s]+|[a-z0-9\-]+tier)", status_text)
                     if plan_match:
                         plan_val = plan_match.group(0)
                         result["plan"] = "Google AI Ultra" if plan_val == "g1-ultra-tier" else plan_val
-                        
+
                     # Extraction Nom d'utilisateur
                     clean_text = "".join([c if (c.isalnum() or c in " @.-_") else " " for c in status_text])
                     name_match = re.search(r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)", clean_text)
@@ -242,5 +242,5 @@ def get_antigravity_status() -> Dict[str, Any]:
                 os.remove(temp_db_path)
             except Exception:
                 pass
-                
+
     return result

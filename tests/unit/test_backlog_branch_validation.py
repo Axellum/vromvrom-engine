@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""
 Régression : le charset strict des noms de branche Git (P0-1.3) ne doit pas
 être contournable par un saut de ligne final.

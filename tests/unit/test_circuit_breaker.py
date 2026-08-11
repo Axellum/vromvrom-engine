@@ -139,7 +139,7 @@ def test_live_latency_penalty_scales_with_latency():
 
 def test_live_latency_penalty_is_capped():
     """La pénalité doit rester plafonnée (tie-breaker, pas un facteur dominant)."""
-    from core.llm_gateway import get_live_latency_penalty, LIVE_LATENCY_MAX_PENALTY
+    from core.llm_gateway import LIVE_LATENCY_MAX_PENALTY, get_live_latency_penalty
 
     very_slow_cb = CircuitBreaker.get_or_create("routing-latency-model-very-slow")
     very_slow_cb.record_success(latency=60.0)  # 60s, extrême

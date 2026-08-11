@@ -33,7 +33,7 @@ discussion) restent au moteur uniquement.
 2. Fusionner `tab5_local_fallback_intents.yaml` dans le bloc `intent_script:`
    (ou l'inclure).
 3. Déposer `tab5_engine_health_failover.yaml` dans `packages/` et **adapter** :
-   - `MOTEUR_URL` (IP:port du Deck, défaut `192.168.1.x:8000`) ;
+   - `MOTEUR_URL` (IP:port du Deck, défaut `${DECK_HOST:-192.168.1.x}:8000`) ;
    - `PIPELINE_LOCAL` = libellé exact de l'option « pipeline local » du
      `select.m5stack_tab5_home_assistant_hmi_assistant`.
 4. Redémarrer HA (ou recharger YAML + intents).

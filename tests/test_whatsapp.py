@@ -3,8 +3,9 @@ tests/test_whatsapp.py — Tests unitaires pour WhatsAppService et ses webhooks 
 """
 
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from core.whatsapp_service import WhatsAppService
@@ -25,9 +26,9 @@ def clean_env():
     for key in keys_to_remove:
         if key in os.environ:
             del os.environ[key]
-            
+
     yield
-    
+
     # Restaurer l'environnement d'origine
     os.environ.clear()
     os.environ.update(orig_env)
@@ -44,7 +45,7 @@ def test_whatsapp_service_init_twilio():
     """Vérifie l'initialisation du service en mode Twilio."""
     os.environ["TWILIO_ACCOUNT_SID"] = "AC_test"
     os.environ["TWILIO_AUTH_TOKEN"] = "token_test"
-    
+
     WhatsAppService._instance = None
     service = WhatsAppService()
     assert service.mode == "twilio"
@@ -56,7 +57,7 @@ def test_whatsapp_service_init_meta():
     """Vérifie l'initialisation du service en mode Meta Cloud API."""
     os.environ["META_WHATSAPP_ACCESS_TOKEN"] = "meta_token"
     os.environ["META_WHATSAPP_PHONE_NUMBER_ID"] = "phone_id"
-    
+
     WhatsAppService._instance = None
     service = WhatsAppService()
     assert service.mode == "meta"
@@ -71,17 +72,17 @@ async def test_send_message_twilio_success(mock_post):
     os.environ["TWILIO_ACCOUNT_SID"] = "AC_test"
     os.environ["TWILIO_AUTH_TOKEN"] = "token_test"
     os.environ["WHATSAPP_USER_PHONE_NUMBER"] = "+33612345678"
-    
+
     WhatsAppService._instance = None
     service = WhatsAppService()
-    
+
     # Simuler un retour HTTP 201 Created
     mock_response = MagicMock()
     mock_response.status_code = 201
     mock_post.return_value = mock_response
-    
+
     res = await service.send_message("Hello World")
-    
+
     assert res is True
     mock_post.assert_called_once()
     # Vérifier l'URL et les données d'appel
@@ -98,16 +99,16 @@ async def test_send_message_meta_success(mock_post):
     os.environ["META_WHATSAPP_ACCESS_TOKEN"] = "meta_token"
     os.environ["META_WHATSAPP_PHONE_NUMBER_ID"] = "phone_id"
     os.environ["WHATSAPP_USER_PHONE_NUMBER"] = "+33612345678"
-    
+
     WhatsAppService._instance = None
     service = WhatsAppService()
-    
+
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_post.return_value = mock_response
-    
+
     res = await service.send_message("Test Meta")
-    
+
     assert res is True
     mock_post.assert_called_once()
     args, kwargs = mock_post.call_args
@@ -119,9 +120,9 @@ async def test_send_message_meta_success(mock_post):
 def test_meta_webhook_verification_success():
     """Teste la validation GET du webhook Meta (challenge)."""
     os.environ["WHATSAPP_WEBHOOK_VERIFY_TOKEN"] = "my_token"
-    
+
     response = client.get("/api/webhook/whatsapp/meta?hub.mode=subscribe&hub.verify_token=my_token&hub.challenge=12345")
-    
+
     assert response.status_code == 200
     assert response.text == "12345"
 
@@ -129,21 +130,21 @@ def test_meta_webhook_verification_success():
 def test_meta_webhook_verification_failure():
     """Teste l'échec de validation GET du webhook Meta avec un mauvais token."""
     os.environ["WHATSAPP_WEBHOOK_VERIFY_TOKEN"] = "my_token"
-    
+
     response = client.get("/api/webhook/whatsapp/meta?hub.mode=subscribe&hub.verify_token=wrong_token&hub.challenge=12345")
-    
+
     assert response.status_code == 403
 
 
 def test_webhook_twilio_post_security_failure():
     """Vérifie que le webhook Twilio refuse les requêtes sans token de sécurité valide."""
     os.environ["WHATSAPP_WEBHOOK_VERIFY_TOKEN"] = "my_token"
-    
+
     response = client.post(
         "/api/webhook/whatsapp/twilio",
         data={"From": "whatsapp:+33612345678", "Body": "Test", "To": "whatsapp:+14155238886"}
     )
-    
+
     assert response.status_code == 403
 
 
@@ -151,12 +152,12 @@ def test_webhook_twilio_post_security_failure():
 def test_webhook_twilio_post_security_success(mock_process):
     """Vérifie que le webhook Twilio accepte les requêtes avec token de sécurité valide."""
     os.environ["WHATSAPP_WEBHOOK_VERIFY_TOKEN"] = "my_token"
-    
+
     response = client.post(
         "/api/webhook/whatsapp/twilio?token=my_token",
         data={"From": "whatsapp:+33612345678", "Body": "Test", "To": "whatsapp:+14155238886"}
     )
-    
+
     assert response.status_code == 200
     assert response.json() == {"status": "queued"}
     mock_process.assert_called_once()

@@ -51,20 +51,20 @@ _ACTION_INFINITIVES = frozenset({
 
 # Pièce → (entité, attribut) pour la température (source = capteur clim connu).
 _TEMPERATURE_SOURCES: dict[str, tuple[str, str]] = {
-    "salon": ("climate.salon_daikinap71273_clim", "current_temperature"),
+    "salon": ("climate.living_room", "current_temperature"),
 }
 _TEMPERATURE_DEFAULT_ROOM = "salon"
 
 # Pièce → (entité lumière, libellé TTS).
 _LIGHT_ENTITIES: dict[str, tuple[str, str]] = {
-    "salon": ("light.salon", "du salon"),
-    "chambre": ("light.h6008_2", "de la chambre"),
-    "chevet": ("light.h6008", "de chevet"),
-    "cuisine": ("light.sonoff_1000f18da8", "de la cuisine"),
+    "salon": ("light.living_room", "du salon"),
+    "chambre": ("light.bedroom", "de la chambre"),
+    "chevet": ("light.bedside", "de chevet"),
+    "cuisine": ("light.kitchen", "de la cuisine"),
 }
 
 _VOLET_STATE_ENTITY = "input_text.volet_serre_etat"
-_VOLET_COVER_ENTITY = "cover.volet_serre_rideau"
+_VOLET_COVER_ENTITY = "cover.living_room_blind"
 
 
 @dataclass(frozen=True)

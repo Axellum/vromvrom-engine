@@ -8,8 +8,8 @@ de contexte du LLM. Prévient les fuites accidentelles de secrets via le modèle
 Créé dans le cadre de l'audit V5.5 (Axe S2).
 """
 
-import re
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 

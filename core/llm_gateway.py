@@ -3,7 +3,7 @@ core/llm_gateway.py — Passerelle unifiée d'accès aux ~18 providers LLM.
 
 Instancie et orchestre tous les providers (DeepSeek, Gemini natif/compat,
 Claude natif/CLI, Mistral, Cohere, Cerebras, OpenRouter, xAI, MiniMax,
-DeepInfra, GitHub Models, LM Studio/Ollama locaux...) derrière une interface
+DeepInfra, LM Studio/Ollama locaux...) derrière une interface
 unique. Sélectionne le provider par tier via ProviderScorer (core/provider_scorer.py :
 coût + quota + solde + latence live), applique le Circuit Breaker par modèle
 (core/llm/circuit_breaker.py) et bascule en cascade sur échec.
@@ -47,6 +47,15 @@ try:
 except ImportError:
     GeminiNativeProvider = None
 
+# [T284] Chargement du .env de la racine du dépôt AVANT toute lecture de
+# os.environ : les clés API ne sont lues nulle part à l'import (uniquement dans
+# LLMGateway.__init__), donc cet appel suffit pour tout le gateway, quel que
+# soit le répertoire courant du point d'entrée qui l'importe. Idempotent :
+# un second appel (autre point d'entrée, tests) ne recharge rien.
+from core.env_bootstrap import bootstrap_env, missing_key_message  # noqa: E402
+
+bootstrap_env()
+
 
 # [#T118] Poids de la latence live (CircuitBreaker.avg_latency_ms) dans le score
 # de routage — un tie-breaker en complément du cascade_priority statique, pas un
@@ -84,9 +93,9 @@ class LLMGateway:
         ds_key = deepseek_key or os.environ.get("DEEPSEEK_API_KEY")
         if not ds_key:
             logger.warning(
-                "[LLMGateway] DEEPSEEK_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('DEEPSEEK_API_KEY')} — "
                 "les providers DeepSeek seront désactivés. "
-                "Ajoutez DEEPSEEK_API_KEY=sk-... dans moteur_agents/.env"
+                "Ajoutez DEEPSEEK_API_KEY dans moteur_agents/.env"
             )
         gem_free_key = gemini_key or os.environ.get("GEMINI_API_KEY")
         # Clé payante de secours (s'il y en a une, sinon on fallback sur la clé gratuite si billing activé)
@@ -95,73 +104,65 @@ class LLMGateway:
         mistral_key = os.environ.get("MISTRAL_API_KEY")
         if not mistral_key:
             logger.warning(
-                "[LLMGateway] MISTRAL_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('MISTRAL_API_KEY')} — "
                 "les providers Mistral seront désactivés. "
-                "Ajoutez MISTRAL_API_KEY=... dans moteur_agents/.env"
+                "Ajoutez MISTRAL_API_KEY dans moteur_agents/.env"
             )
 
         cohere_key = os.environ.get("COHERE_API_KEY")
         if not cohere_key:
             logger.info(
-                "[LLMGateway] COHERE_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('COHERE_API_KEY')} — "
                 "les providers Cohere seront désactivés. "
-                "Ajoutez COHERE_API_KEY=... dans moteur_agents/.env"
+                "Ajoutez COHERE_API_KEY dans moteur_agents/.env"
             )
 
         cerebras_free_key = os.environ.get("CEREBRAS_API_KEY")
         cerebras_paid_key = os.environ.get("CEREBRAS_PAYANT_API_KEY")
         if not cerebras_free_key and not cerebras_paid_key:
             logger.info(
-                "[LLMGateway] CEREBRAS_API_KEY / CEREBRAS_PAYANT_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('CEREBRAS_API_KEY / CEREBRAS_PAYANT_API_KEY')} — "
                 "les providers Cerebras seront désactivés."
             )
 
         openrouter_key = os.environ.get("OPENROUTER_API_KEY")
         if not openrouter_key:
             logger.info(
-                "[LLMGateway] OPENROUTER_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('OPENROUTER_API_KEY')} — "
                 "les providers OpenRouter seront désactivés. "
-                "Ajoutez OPENROUTER_API_KEY=... dans moteur_agents/.env"
+                "Ajoutez OPENROUTER_API_KEY dans moteur_agents/.env"
             )
 
         xai_key = os.environ.get("XAI_API_KEY")
         if not xai_key:
             logger.info(
-                "[LLMGateway] XAI_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('XAI_API_KEY')} — "
                 "les providers xAI seront désactivés. "
-                "Ajoutez XAI_API_KEY=... dans moteur_agents/.env"
+                "Ajoutez XAI_API_KEY dans moteur_agents/.env"
             )
 
         minimax_key = os.environ.get("MINIMAX_API_KEY")
         if not minimax_key:
             logger.info(
-                "[LLMGateway] MINIMAX_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('MINIMAX_API_KEY')} — "
                 "les providers MiniMax seront désactivés. "
-                "Ajoutez MINIMAX_API_KEY=... dans moteur_agents/.env"
+                "Ajoutez MINIMAX_API_KEY dans moteur_agents/.env"
             )
 
         deepinfra_key = os.environ.get("DEEPINFRA_API_KEY")
         if not deepinfra_key:
             logger.info(
-                "[LLMGateway] DEEPINFRA_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('DEEPINFRA_API_KEY')} — "
                 "les providers DeepInfra seront désactivés. "
-                "Ajoutez DEEPINFRA_API_KEY=... dans moteur_agents/.env"
-            )
-
-        github_key = os.environ.get("GITHUB_TOKEN")
-        if not github_key:
-            logger.info(
-                "[LLMGateway] GITHUB_TOKEN absente du .env — "
-                "les providers GitHub Models seront désactivés. "
-                "Ajoutez GITHUB_TOKEN=github_pat_... dans moteur_agents/.env"
+                "Ajoutez DEEPINFRA_API_KEY dans moteur_agents/.env"
             )
 
         zhipu_key = os.environ.get("ZHIPU_API_KEY")
         if not zhipu_key:
             logger.info(
-                "[LLMGateway] ZHIPU_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('ZHIPU_API_KEY')} — "
                 "les providers Zhipu AI seront désactivés. "
-                "Ajoutez ZHIPU_API_KEY=... dans moteur_agents/.env"
+                "Ajoutez ZHIPU_API_KEY dans moteur_agents/.env"
             )
 
         # Coding Plan Alibaba (Lite/Pro) — clé sk-sp-* uniquement.
@@ -172,18 +173,18 @@ class LLMGateway:
         )
         if not dashscope_key:
             logger.info(
-                "[LLMGateway] DASHSCOPE_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('DASHSCOPE_API_KEY')} — "
                 "le Coding Plan Alibaba (DashScope) sera désactivé. "
-                "Ajoutez DASHSCOPE_API_KEY=sk-sp-... dans moteur_agents/.env"
+                "Ajoutez DASHSCOPE_API_KEY dans moteur_agents/.env"
             )
 
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
         if not anthropic_key:
             logger.info(
-                "[LLMGateway] ANTHROPIC_API_KEY absente du .env — "
+                f"[LLMGateway] {missing_key_message('ANTHROPIC_API_KEY')} — "
                 "l'accès direct à l'API Anthropic sera désactivé (seul le CLI "
                 "Claude Pro reste disponible via claude_cli). "
-                "Ajoutez ANTHROPIC_API_KEY=sk-ant-... dans moteur_agents/.env"
+                "Ajoutez ANTHROPIC_API_KEY dans moteur_agents/.env"
             )
 
 
@@ -344,16 +345,6 @@ class LLMGateway:
                 "deepinfra/deepseek-r1": _make_compat("deepinfra", "deepseek-ai/DeepSeek-R1", deepinfra_key),
             }
 
-        # --- GitHub Models ---
-        _github = {}
-        if github_key:
-            _github = {
-                "github": _make_compat("github", "gpt-4o-mini", github_key),
-                "github/gpt-4o": _make_compat("github", "gpt-4o", github_key),
-                "github/gpt-4o-mini": _make_compat("github", "gpt-4o-mini", github_key),
-                "github/meta-llama-3.3-70b-instruct": _make_compat("github", "meta-llama-3.3-70b-instruct", github_key),
-            }
-
         # --- Zhipu AI (Z.ai) ---
         _zhipu = {}
         if zhipu_key:
@@ -433,7 +424,7 @@ class LLMGateway:
             "domotique-qwen7b:q4": _make_compat("ollama_local", "domotique-qwen7b:q4", "ollama"),
             "qwen2.5-coder:7b": _make_compat("ollama_local", "qwen2.5-coder:7b", "ollama"),
             "deepseek-r1:8b": _make_compat("ollama_local", "deepseek-r1:8b", "ollama"),
-            # Variante joignable en LAN (${OLLAMA_HOST:-192.168.1.x}) depuis le Deck — cf. commentaire
+            # Variante joignable en LAN (${LM_STUDIO_HOST:-192.168.1.x}) depuis le Deck — cf. commentaire
             # dans OPENAI_COMPAT_PROVIDERS["ollama_pc"]. Utilisée par le fast path vocal
             # (FAST_PATH_PROVIDERS) pour du local-first même quand le moteur tourne sur le Deck.
             # Timeout dédié (connect 2s, read 15s) — PAS la famille "lmstudio" (120s de read) :
@@ -454,7 +445,6 @@ class LLMGateway:
             **_xai,
             **_minimax,
             **_deepinfra,
-            **_github,
             **_zhipu,
             **_dashscope,
             **_anthropic_native,
@@ -462,7 +452,7 @@ class LLMGateway:
 
             "local": LMStudioProvider(),
             # === STEAM DECK EDGE AI (Ollama RDNA2) ===
-            # Endpoint réseau local : http://${ENGINE_HOST:-192.168.1.x}:11434
+            # Endpoint réseau local : http://${DECK_HOST:-192.168.1.x}:11434
             # Disponibilité vérifiée dynamiquement via ping_available()
             # Tiers recommandés : parsing_logs, yaml_format, resume_court
             "deck_ollama":       OllamaDeckProvider(),                              # phi3:mini par défaut
@@ -537,7 +527,10 @@ class LLMGateway:
             self.providers["gemini-2.5-flash"] = self.providers["gemini-2.5-flash-free"]
             logger.info(f"✅ Provider Gemini Gratuit ({_provider_type}) activé avec succès.")
         else:
-            logger.warning("Clé GEMINI_API_KEY (gratuite) non fournie.")
+            logger.warning(
+                f"[LLMGateway] {missing_key_message('GEMINI_API_KEY')} — "
+                "le provider Gemini gratuit sera désactivé."
+            )
 
         # 2. Enregistrement des versions payantes (clé payante GCP)
         # Enregistrées uniquement si GEMINI_PAYANT_API_KEY est explicitement définie dans le .env
@@ -598,7 +591,10 @@ class LLMGateway:
                 self.providers["gemini-3-pro-preview-paid"] = GeminiProvider(api_key=gem_paid_key, model="gemini-3-pro-preview")
             logger.info(f"✅ Provider Gemini Payant ({_provider_type}) activé avec succès.")
         else:
-            logger.info("Clé GEMINI_PAYANT_API_KEY absente du .env — les providers GCP payants sont désactivés.")
+            logger.info(
+                f"[LLMGateway] {missing_key_message('GEMINI_PAYANT_API_KEY')} — "
+                "les providers GCP payants sont désactivés."
+            )
 
     def get_access_map(self) -> dict[str, dict[str, Any]]:
         """
@@ -633,8 +629,6 @@ class LLMGateway:
                 provider_type = "minimax"
             elif "deepinfra" in name:
                 provider_type = "deepinfra"
-            elif "github" in name:
-                provider_type = "github"
             elif "local" in name or "deck_ollama" in name:
                 provider_type = "local"
 

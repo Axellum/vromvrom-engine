@@ -17,15 +17,17 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
-_PHRASES_YAML = _REPO_ROOT / "scripts" / "domotic_phrases.example.yaml"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_PHRASES_YAML = _REPO_ROOT / "scripts" / "domotic_phrases.yaml"
 _CACHE_DIRS = (
-    _REPO_ROOT / "audio_lib",
+    _REPO_ROOT / "00ProjetTab" / "audio_lib",
+    Path(r".\00ProjetTab\audio_lib"),
+    Path(r".\00ProjetTab\audio_lib"),
 )
 
 # Phrases fixes du moteur (fallback si domotic_phrases.yaml absent sur le Deck)
 _EXTRA_PHRASES: dict[str, str] = {
-    "vocal_bonjour": "Bonjour, que veux-tu contrôler ?",
+    "vocal_bonjour_axel": "Bonjour Axel, que veux-tu contrôler ?",
     "vocal_merci": "De rien. Que veux-tu contrôler ?",
     "vocal_ha_echec": "Je n'ai pas compris la commande domotique.",
     "lum_salon_on": "Lumière du salon allumée.",
@@ -43,17 +45,17 @@ _EXTRA_PHRASES: dict[str, str] = {
 
 # entity_id HA → (service fragment → phrase_id)
 _ENTITY_SERVICE_PHRASES: dict[str, dict[str, str]] = {
-    "light.salon": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
-    "light.h6008_2": {"turn_on": "lum_chambre_on", "turn_off": "lum_chambre_off"},
-    "light.h6008": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
-    "light.h600c": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
+    "light.living_room": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
+    "light.bedroom": {"turn_on": "lum_chambre_on", "turn_off": "lum_chambre_off"},
+    "light.bedside": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
+    "light.hallway": {"turn_on": "lum_salon_on", "turn_off": "lum_salon_off"},
     "light.cuisine": {"turn_on": "lum_cuisine_on", "turn_off": "lum_cuisine_off"},
     "light.chambre": {"turn_on": "lum_chambre_on", "turn_off": "lum_chambre_off"},
     "light.jardin": {"turn_on": "lum_jardin_on", "turn_off": "lum_jardin_off"},
-    "climate.salon_daikinap71273_clim": {"turn_on": "clim_salon_on", "turn_off": "clim_salon_off"},
+    "climate.living_room": {"turn_on": "clim_salon_on", "turn_off": "clim_salon_off"},
     "climate.salon": {"turn_on": "clim_salon_on", "turn_off": "clim_salon_off"},
     "climate.chambre": {"turn_on": "clim_chambre_on", "turn_off": "clim_chambre_off"},
-    "cover.volet_serre_rideau": {"open_cover": "vol_salon_ouvert", "close_cover": "vol_salon_ferme"},
+    "cover.living_room_blind": {"open_cover": "vol_salon_ouvert", "close_cover": "vol_salon_ferme"},
 }
 
 
@@ -119,15 +121,67 @@ def cache_file_for_phrase(phrase_id: str) -> Path | None:
     return None
 
 
+# Réponse de repli si le LLM invente un appel d'outil / du JSON technique.
+_TOOL_DUMP_FALLBACK = (
+    "Je ne peux pas vérifier ça en direct ici : je n'ai pas d'accès aux outils "
+    "ni à une recherche web pour cette question. Dis-moi autrement ce dont tu as besoin, "
+    "ou demande la météo, l'actu ou ton agenda si tu veux une recherche."
+)
+
+# Signatures typiques d'un dump d'outil halluciné (Cerebras / gpt-oss).
+_TOOL_DUMP_MARKERS = (
+    '{"tool"',
+    '{"tool":',
+    '"tool_calls"',
+    '"arguments":',
+    "we will call the mcp",
+    "call the mcp tool",
+    "search_ha_entities",
+    "get_models_catalog",
+    "tab5-engine",
+    "ha-custom",
+    '"status": "success"',
+    '"status":"success"',
+    "function_call",
+    "<|tool",
+    "tool_request",
+)
+
+
+def looks_like_tool_or_code_dump(text: str) -> bool:
+    """True si la réponse ressemble à du JSON d'outil / code technique, pas du français TTS."""
+    if not text or not str(text).strip():
+        return False
+    raw = str(text).strip()
+    low = raw.lower()
+    if any(m in low for m in _TOOL_DUMP_MARKERS):
+        return True
+    # Trop de structure JSON / code vs texte naturel
+    braces = raw.count("{") + raw.count("}") + raw.count("[") + raw.count("]")
+    if braces >= 6 and ("{" in raw[:80] or raw.lstrip().startswith("{")):
+        return True
+    if raw.count('"') >= 12 and ("{" in raw or "[" in raw):
+        return True
+    # Blocs de code restants
+    if "```" in raw or low.startswith("import ") or low.startswith("def "):
+        return True
+    return False
+
+
 def sanitize_discussion_tts(text: str, max_sentences: int = 3, max_chars: int = 420) -> str:
     """
     Nettoie une réponse LLM pour le mode Discussion vocal Tab5.
-    Supprime le markdown et limite la longueur pour un TTS fluide.
+    Supprime le markdown, refuse les dumps d'outils/JSON, limite la longueur TTS.
     """
     if not text:
         return ""
     t = str(text).strip()
+    if looks_like_tool_or_code_dump(t):
+        return _TOOL_DUMP_FALLBACK
     t = re.sub(r"```.*?```", " ", t, flags=re.DOTALL)
+    # Seconde passe après retrait des fences
+    if looks_like_tool_or_code_dump(t):
+        return _TOOL_DUMP_FALLBACK
     t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)
     t = re.sub(r"\*([^*]+)\*", r"\1", t)
     t = re.sub(r"#{1,6}\s*", "", t)
@@ -136,6 +190,8 @@ def sanitize_discussion_tts(text: str, max_sentences: int = 3, max_chars: int = 
     t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)
     t = re.sub(r"\n+", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
+    if looks_like_tool_or_code_dump(t):
+        return _TOOL_DUMP_FALLBACK
     parts = re.split(r"(?<=[.!?…])\s+", t)
     if len(parts) > max_sentences:
         t = " ".join(parts[:max_sentences]).strip()

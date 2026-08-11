@@ -31,6 +31,15 @@ def record_vocal_turn(
     text = str(content).strip()[:_MAX_CONTENT_LEN]
     if not text:
         return
+    # Ne pas polluer l'historique avec des dumps JSON/outils (renforce les hallucinations).
+    if role == "assistant":
+        try:
+            from core.vocal_tts_cache import looks_like_tool_or_code_dump
+            if looks_like_tool_or_code_dump(text):
+                logger.info("[VOCAL_SESSION] Tour assistant dump d'outil ignoré")
+                return
+        except Exception:
+            pass
     try:
         from core.runtime_db import get_connection
 
@@ -97,9 +106,21 @@ def build_vocal_session_context(
     turns = get_recent_vocal_turns(conversation_id, max_turns=max_turns)
     if not turns:
         return ""
+    try:
+        from core.vocal_tts_cache import looks_like_tool_or_code_dump
+    except Exception:
+        looks_like_tool_or_code_dump = lambda _t: False  # noqa: E731
+
     lines = ["\n\n[HISTORIQUE VOCAL RÉCENT — ne pas répéter mot pour mot]"]
+    kept = 0
     for turn in turns:
-        label = "User" if turn["role"] == "user" else "Assistant"
-        lines.append(f"{label}: {turn['content']}")
+        content = turn["content"]
+        if turn["role"] == "assistant" and looks_like_tool_or_code_dump(content):
+            continue
+        label = "Axel" if turn["role"] == "user" else "Assistant"
+        lines.append(f"{label}: {content}")
+        kept += 1
+    if kept == 0:
+        return ""
     lines.append("Réponds en tenant compte de cet historique si pertinent.")
     return "\n".join(lines)

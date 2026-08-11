@@ -32,6 +32,10 @@ _WEB_MARKERS = (
     "google", "recherche", "cherche sur", "prix de", "cours de", "bitcoin",
     "resultat", "résultat", "score", "match", "qui a gagne", "qui a gagné",
     "journal", "presse", "titres",
+    # Infos fraîches / sorties produits → spécialiste web (pas chat sans outils)
+    "dernier modele", "dernier modèle", "derniere version", "dernière version",
+    "vient de sortir", "qui est sorti", "modele sorti", "modèle sorti",
+    "nouveaute", "nouveauté", "sortie de",
 )
 _CALENDAR_MARKERS = (
     "calendrier", "agenda", "rendez-vous", "rendez vous", "rdv", "reunion",
@@ -189,6 +193,18 @@ async def _try_zero_llm_ha_command(user_prompt: str) -> str | None:
     return "Je n'ai pas pu exécuter cette commande."
 
 
+async def _try_zero_llm_ha_state(user_prompt: str) -> str | None:
+    """Lecture d'état domotique déterministe (température/état clim/volet/lumière).
+
+    Court-circuite les outils LLM (ha_list/ha_get_state), qui choisissaient parfois
+    un doublon HS (ex. capteur Sonoff cloud « unavailable ») au lieu de la source
+    vivante. Retourne None si ce n'est pas une question d'état → la cascade continue.
+    """
+    from services.ha_state_query import resolve_ha_state_query
+
+    return await resolve_ha_state_query(user_prompt)
+
+
 async def _process_vocal_job(
     job_id: str,
     intent: VocalIntent,
@@ -271,6 +287,21 @@ async def handle_discussion(
             response_text=ha_tts,
             agents_used=["ha_command", "vocal_host"],
             routing_type="discussion_ha_command",
+            metadata=meta,
+        )
+
+    # 1b) Lectures d'état HA déterministes (température / état) — fiabilité vs outils LLM
+    try:
+        state_tts = await _try_zero_llm_ha_state(user_prompt)
+    except Exception as exc:
+        logger.warning("[VOCAL_HOST] Zero-LLM état HA échec : %s", exc)
+        state_tts = None
+    if state_tts:
+        meta["ha_zero_llm_state"] = True
+        return DiscussionHostResult(
+            response_text=state_tts,
+            agents_used=["ha_state", "vocal_host"],
+            routing_type="discussion_ha_state",
             metadata=meta,
         )
 

@@ -15,7 +15,7 @@ from core.vocal_tools import (
 
 
 def test_ha_call_service_refuse_homeassistant_restart():
-    out = _tool_ha_call_service("light.salon", "homeassistant.restart", {})
+    out = _tool_ha_call_service("light.living_room", "homeassistant.restart", {})
     assert "Refusé" in out
 
 

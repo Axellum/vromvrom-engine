@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tests/test_execution_budget.py — Budget global d'exécution (P2-3.4).
 

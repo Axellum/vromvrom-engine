@@ -4,9 +4,9 @@ Fusionne, pondère et déduplique sémantiquement les contextes (Faits, RAG, Ép
 pour éviter le "prompt bloat" avant d'envoyer le payload au Planner.
 """
 
-import re
 import logging
-from typing import Dict, List, Any, Optional
+import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class RouterContextCompressor:
     - context_loader (Fichiers MD)    : 0.10 (Priorité 4)
     """
 
-    def __init__(self, max_chars: int = 12000, llm_gateway: Optional[Any] = None):
+    def __init__(self, max_chars: int = 12000, llm_gateway: Any | None = None):
         """
         Args:
             max_chars: Budget maximum de caractères (12000 chars ≈ 3000 tokens).
@@ -51,7 +51,7 @@ class RouterContextCompressor:
         union = set1.union(set2)
         return len(intersection) / len(union)
 
-    def compress(self, contexts: Dict[str, str]) -> str:
+    def compress(self, contexts: dict[str, str]) -> str:
         """
         Fusionne et déduplique les contextes en respectant les poids et le budget.
         
@@ -68,14 +68,14 @@ class RouterContextCompressor:
 
         # Définir l'ordre de traitement par priorité de poids décroissant
         priority_order = ["facts", "rag", "episodes", "context_loader"]
-        
+
         # Liste globale des phrases déjà sélectionnées pour la déduplication
-        selected_sentences: List[str] = []
+        selected_sentences: list[str] = []
         # Ensembles de tokens des phrases sélectionnées pour accélérer la recherche Jaccard
-        selected_tokens_list: List[set[str]] = []
-        
+        selected_tokens_list: list[set[str]] = []
+
         # Dictionnaire pour stocker les blocs compressés par catégorie
-        compressed_blocks: Dict[str, List[str]] = {k: [] for k in priority_order}
+        compressed_blocks: dict[str, list[str]] = {k: [] for k in priority_order}
 
         for source in priority_order:
             content = active_sources.get(source)
@@ -84,7 +84,7 @@ class RouterContextCompressor:
 
             # Découper le contenu en lignes (ou blocs de phrases)
             lines = [line.strip() for line in content.split("\n") if line.strip()]
-            
+
             for line in lines:
                 # Si la ligne est trop courte (ex: titres ou marqueurs de début), on la garde directement
                 if len(line) < 20:
@@ -134,7 +134,7 @@ class RouterContextCompressor:
                 continue
 
             header = source_headers.get(source, f"\n\n*** {source.upper()} ***")
-            
+
             source_content_lines = []
             header_added = False
             for line in lines:
@@ -147,7 +147,7 @@ class RouterContextCompressor:
                 if total_len + added_len > effective_max_chars:
                     budget_exceeded = True
                     break
-                
+
                 source_content_lines.append(line)
                 total_len += added_len
                 header_added = True
@@ -162,7 +162,7 @@ class RouterContextCompressor:
 
         # Fallback résumé LLM (si le budget est dépassé de façon critique et qu'un résumé est demandé)
         # En pratique, le découpage au budget évite tout prompt bloat.
-        
+
         result = "".join(final_parts).strip()
         logger.info(f"[CONTEXT_COMPRESSOR] Consolidation : {sum(len(v) for v in active_sources.values()):,} chars → {len(result):,} chars (budget: {self.max_chars})")
         return result

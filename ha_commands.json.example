@@ -15,7 +15,7 @@
         "salon allume"
       ],
       "service": "light.turn_on",
-      "entity_id": "light.salon"
+      "entity_id": "light.living_room"
     },
     {
       "phrases": [
@@ -33,7 +33,7 @@
         "coupe le salon"
       ],
       "service": "light.turn_off",
-      "entity_id": "light.salon"
+      "entity_id": "light.living_room"
     },
     {
       "phrases": [
@@ -42,7 +42,7 @@
         "mets la chambre"
       ],
       "service": "light.turn_on",
-      "entity_id": "light.h6008_2"
+      "entity_id": "light.bedroom"
     },
     {
       "phrases": [
@@ -54,7 +54,7 @@
         "éteins les lumières de la chambre"
       ],
       "service": "light.turn_off",
-      "entity_id": "light.h6008_2"
+      "entity_id": "light.bedroom"
     },
     {
       "phrases": [
@@ -62,7 +62,7 @@
         "allume la lumiere chevet salon"
       ],
       "service": "light.turn_on",
-      "entity_id": "light.h6008"
+      "entity_id": "light.bedside"
     },
     {
       "phrases": [
@@ -70,7 +70,7 @@
         "éteins le chevet salon"
       ],
       "service": "light.turn_off",
-      "entity_id": "light.h6008"
+      "entity_id": "light.bedside"
     },
     {
       "phrases": [
@@ -78,7 +78,7 @@
         "allume la lumiere pied"
       ],
       "service": "light.turn_on",
-      "entity_id": "light.h600c"
+      "entity_id": "light.hallway"
     },
     {
       "phrases": [
@@ -86,7 +86,7 @@
         "éteins le spot pied"
       ],
       "service": "light.turn_off",
-      "entity_id": "light.h600c"
+      "entity_id": "light.hallway"
     },
     {
       "phrases": [
@@ -98,7 +98,7 @@
         "monte le volet du salon",
         "monte les volets du salon"
       ],
-      "service": "script.tab5_volet_action",
+      "service": "script.blind_action",
       "entity_id": "",
       "service_data": {"action": "open"}
     },
@@ -115,7 +115,7 @@
         "descend les volets du salon",
         "baisse les volets du salon"
       ],
-      "service": "script.tab5_volet_action",
+      "service": "script.blind_action",
       "entity_id": "",
       "service_data": {"action": "close"}
     },
@@ -132,7 +132,7 @@
         "stop les volets du salon",
         "arrete les volets du salon"
       ],
-      "service": "script.tab5_volet_action",
+      "service": "script.blind_action",
       "entity_id": "",
       "service_data": {"action": "stop"}
     },
@@ -143,7 +143,7 @@
         "demarre la clim salon"
       ],
       "service": "climate.turn_on",
-      "entity_id": "climate.salon_daikinap71273_clim"
+      "entity_id": "climate.living_room"
     },
     {
       "phrases": [
@@ -152,7 +152,7 @@
         "arrete la clim salon"
       ],
       "service": "climate.turn_off",
-      "entity_id": "climate.salon_daikinap71273_clim"
+      "entity_id": "climate.living_room"
     },
     {
       "phrases": [
@@ -161,7 +161,7 @@
         "active okay nabu"
       ],
       "service": "switch.turn_on",
-      "entity_id": "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+      "entity_id": "switch.example_wake_word"
     },
     {
       "phrases": [
@@ -170,7 +170,7 @@
         "coupe le wake word"
       ],
       "service": "switch.turn_off",
-      "entity_id": "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+      "entity_id": "switch.example_wake_word"
     }
   ]
 }

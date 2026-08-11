@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core/elo_core.py — Cœur Elo partagé (fonctions pures, sans I/O).
 
@@ -16,7 +15,6 @@ conserve ses propres constantes (Elo de référence, K) et sa propre persistance
 Toutes les fonctions sont pures et déterministes → testables sans BDD.
 """
 
-from typing import Tuple
 
 # Constantes par défaut (chaque appelant peut surcharger).
 DEFAULT_K = 32.0
@@ -57,7 +55,7 @@ def adaptive_k(total_matches: int, k_initial: float, k_stable: float, threshold:
     return k_initial if total_matches < threshold else k_stable
 
 
-def reviewer_score_to_outcome(reviewer_score: float) -> Tuple[float, str]:
+def reviewer_score_to_outcome(reviewer_score: float) -> tuple[float, str]:
     """
     Convertit un score ReviewerAgent (1-10) en outcome Elo + libellé.
 

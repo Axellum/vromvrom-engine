@@ -1,9 +1,16 @@
-import logging
-import json
+"""
+agents/prompt_engineer_agent.py — Transforme une demande brouillonne en prompt
+expert structuré (Few-Shot, CoT, balises), prêt à copier-coller vers un autre LLM.
+
+Tier fort par défaut, timeout 60s. Sortie = uniquement le texte du prompt
+final, sans bavardage.
+"""
 import asyncio
-from core.state import TaskPayload, StateUpdate
+import logging
+
 from agents.base_agent import BaseAgent
 from core.llm_gateway import LLMGateway
+from core.state import StateUpdate, TaskPayload
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +21,12 @@ class PromptEngineerAgent(BaseAgent):
     enrichi du contexte du système ou formaté pour une IA cible.
     """
     def __init__(self, llm_gateway: LLMGateway, provider_name: str = "fort"):
+        # [#T188] Prompt externalisé en Markdown (contexte_ia/03_Software/prompts_agents/
+        # prompt_engineer.md) ; la chaîne ci-dessous reste le repli si le fichier est absent.
+        from core.prompt_loader import load_agent_prompt
         super().__init__(
             name="prompt_engineer",
-            system_prompt="""Tu es le PromptEngineerAgent, un expert absolu en ingénierie de prompt.
+            system_prompt=load_agent_prompt("prompt_engineer", """Tu es le PromptEngineerAgent, un expert absolu en ingénierie de prompt.
 Ton rôle est de prendre la demande brouillonne de l'utilisateur et de construire un prompt parfait, hyper-structuré, 
 destiné à être lu par un autre LLM (comme DeepSeek, Claude Opus ou Gemini).
 
@@ -27,16 +37,16 @@ Règles pour un bon prompt :
 4. Demander à l'IA cible de réfléchir étape par étape (Chain-of-Thought) si nécessaire.
 5. Définir explicitement le format de sortie attendu.
 
-Retourne UNIQUEMENT le texte du prompt final optimisé, sans bavardage avant ni après, prêt à être copié-collé."""
+Retourne UNIQUEMENT le texte du prompt final optimisé, sans bavardage avant ni après, prêt à être copié-collé.""")
         )
         self.gateway = llm_gateway
         self.provider_name = provider_name
-        
+
     async def invoke(self, payload: TaskPayload) -> StateUpdate:
         from core.llm_gateway import load_config
         config = load_config()
         session_id = payload.metadata.get("session_id")
-        
+
         # Détermination du fournisseur
         if self.provider_name in ["leger", "moyen", "fort", "automatique"]:
             _, provider = self.gateway.get_provider_for_tier(self.provider_name, config)
@@ -45,11 +55,11 @@ Retourne UNIQUEMENT le texte du prompt final optimisé, sans bavardage avant ni 
                 provider = self.gateway.get_provider(self.provider_name)
             except ValueError:
                 _, provider = self.gateway.get_provider_for_tier("fort", config)
-                
+
         user_prompt = f"Objectif initial de l'utilisateur : {payload.task_objective}\nContexte fourni : {payload.relevant_context}\n\nGénère le prompt optimisé."
-        
+
         logger.info("[PROMPT_ENGINEER] Génération d'un prompt hyper-optimisé...")
-        
+
         try:
             # On laisse 60 secondes au modèle pour générer le prompt (un peu plus long si appel API complexe)
             response = await asyncio.wait_for(
@@ -60,14 +70,14 @@ Retourne UNIQUEMENT le texte du prompt final optimisé, sans bavardage avant ni 
                 ),
                 timeout=60.0
             )
-            
+
             return StateUpdate(
                 agent_name=self.name,
                 status="success",
                 result_data=response,
                 next_agent="END"
             )
-            
+
         except Exception as e:
             logger.error(f"[PROMPT_ENGINEER] Échec de la génération : {e}")
             return StateUpdate(

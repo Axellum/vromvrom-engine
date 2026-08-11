@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 # Ajouter le répertoire parent au path pour importer les modules du moteur
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.state import GlobalState, ExecutionPhase
+from core.state import ExecutionPhase, GlobalState
 
 
 class TestCheckpoint:
@@ -40,19 +40,19 @@ class TestCheckpoint:
         try:
             from core.checkpoint import CheckpointManager
             cm = CheckpointManager()
-            
+
             # Création d'un état de test
             state = GlobalState(session_id="session_test_save_load")
             state.current_phase = ExecutionPhase.PLANNING
             state.working_memory["cle_test"] = "valeur_test"
-            
+
             # Sauvegarde
             saved_id = cm.save(state)
             assert saved_id == "session_test_save_load"
-            
+
             # Vérification de l'existence
             assert cm.exists("session_test_save_load") is True
-            
+
             # Chargement
             loaded = cm.load("session_test_save_load")
             assert loaded is not None
@@ -67,16 +67,16 @@ class TestCheckpoint:
         try:
             from core.checkpoint import CheckpointManager
             cm = CheckpointManager()
-            
+
             state = GlobalState(session_id="session_test_delete")
             cm.save(state)
             assert cm.exists("session_test_delete") is True
-            
+
             # Suppression
             deleted = cm.delete("session_test_delete")
             assert deleted is True
             assert cm.exists("session_test_delete") is False
-            
+
             # Supprimer une session inexistante
             assert cm.delete("inexistant") is False
         finally:
@@ -87,12 +87,12 @@ class TestCheckpoint:
         try:
             from core.checkpoint import CheckpointManager
             cm = CheckpointManager()
-            
+
             state1 = GlobalState(session_id="session_1")
             state2 = GlobalState(session_id="session_2")
             cm.save(state1)
             cm.save(state2)
-            
+
             checkpoints = cm.list_checkpoints()
             assert len(checkpoints) >= 2
             ids = {cp["session_id"] for cp in checkpoints}
@@ -106,11 +106,11 @@ class TestCheckpoint:
         try:
             from core.checkpoint import CheckpointManager
             cm = CheckpointManager()
-            
+
             state = GlobalState(session_id="session_cleanup_test")
             cm.save(state)
             assert cm.exists("session_cleanup_test") is True
-            
+
             # Forcer une date de mise à jour très ancienne pour la session
             conn = cm._get_conn()
             conn.execute(
@@ -119,7 +119,7 @@ class TestCheckpoint:
             )
             conn.commit()
             conn.close()
-            
+
             # Nettoyer les checkpoints de plus de 2 heures
             cleaned = cm.cleanup(max_age_hours=2)
             assert cleaned == 1

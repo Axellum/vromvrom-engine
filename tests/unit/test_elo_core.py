@@ -1,13 +1,12 @@
-# -*- coding: utf-8 -*-
 """Tests du cœur Elo partagé (core/elo_core.py) — fonctions pures."""
 
 import pytest
 
 from core.elo_core import (
-    expected_score,
-    updated_elo,
     adaptive_k,
+    expected_score,
     reviewer_score_to_outcome,
+    updated_elo,
 )
 
 

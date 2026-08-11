@@ -23,8 +23,8 @@ Intégration dans engine.py :
 
 import logging
 
-from core.workflow_bridge import WorkflowBridge
 from core.state import TaskPayload
+from core.workflow_bridge import WorkflowBridge
 
 logger = logging.getLogger(__name__)
 
@@ -49,21 +49,28 @@ class WorkflowExecutor:
         status: str,
         result_data: str = "",
         session_id: str = "",
+        require_explicit_condition: bool = False,
     ) -> list[TaskPayload]:
         """
         Résout les transitions conditionnelles du workflow et retourne
         les TaskPayload correspondants.
-        
+
         Args:
             current_agent: Nom de l'agent qui vient de terminer
             status: "success" ou "error"
             result_data: Résultat de l'agent (transmis comme contexte)
             session_id: ID de la session en cours
-            
+            require_explicit_condition: [#T219] n'accepter que les cibles
+                atteintes via une arête explicitement conditionnée par `status`
+                (cf. WorkflowBridge.get_next_agents). Le moteur l'active sur le
+                chemin d'erreur.
+
         Returns:
             Liste de TaskPayload à exécuter (peut être vide si pas de transition)
         """
-        next_agents = self._bridge.get_next_agents(current_agent, status)
+        next_agents = self._bridge.get_next_agents(
+            current_agent, status, require_explicit_condition=require_explicit_condition
+        )
 
         if not next_agents:
             return []
@@ -112,13 +119,13 @@ class WorkflowExecutor:
         data = self._bridge._ensure_loaded()
         nodes = data.get("nodes", [])
         connections = data.get("connections", [])
-        
+
         agents = [
-            n.get("agentName", "?") 
-            for n in nodes 
+            n.get("agentName", "?")
+            for n in nodes
             if n.get("type") == "agent"
         ]
-        
+
         transitions = []
         nodes_map = {n.get("id"): n for n in nodes}
         for conn in connections:
@@ -129,7 +136,7 @@ class WorkflowExecutor:
                 "to": to_node.get("agentName", "?"),
                 "condition": conn.get("condition")
             })
-        
+
         return {
             "agents": agents,
             "transitions": transitions,

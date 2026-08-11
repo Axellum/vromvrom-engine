@@ -11,10 +11,8 @@ Usage :
   python tools/strip_vtags.py [--dry-run] [--path moteur_agents/]
 """
 
-import re
-import sys
-import os
 import argparse
+import re
 from pathlib import Path
 
 # Correspond à [V<chiffres><séparateur><alphanum optionnel>]

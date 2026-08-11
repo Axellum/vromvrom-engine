@@ -1,20 +1,20 @@
-# -*- coding: utf-8 -*-
 """
 tools/llm_as_a_judge.py — Script d'audit automatique des modifications de code par LLM (Gemini 3.5 Flash).
 """
 
-import os
-import sys
-import json
-import subprocess
 import argparse
+import os
+import subprocess
+import sys
+
 import requests
+
 
 def load_dotenv():
     """Charge le fichier .env s'il existe dans le répertoire parent ou courant."""
     for path in [".env", "../.env", "moteur_agents/.env"]:
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if not line or line.startswith("#"):
@@ -56,7 +56,7 @@ def call_gemini(system_prompt: str, user_prompt: str, api_key: str, model: str) 
         ],
         "temperature": 0.1
     }
-    
+
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=120)
         response.raise_for_status()
@@ -118,7 +118,7 @@ def main():
 
     # Charger le .env pour avoir les clés
     load_dotenv()
-    
+
     # Récupérer la clé API Gemini
     api_key = os.environ.get("GEMINI_PAYANT_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -134,7 +134,7 @@ def main():
             sys.exit(1)
         target_name = f"Fichier: {args.file}"
         try:
-            with open(args.file, "r", encoding="utf-8", errors="ignore") as f:
+            with open(args.file, encoding="utf-8", errors="ignore") as f:
                 source_content = f.read()
         except Exception as e:
             print(f"Erreur lors de la lecture du fichier : {e}")
@@ -155,17 +155,17 @@ def main():
 
     print(f"Lancement de l'audit pour : {target_name} avec {args.model}...")
     user_prompt = f"Voici le contenu à analyser ({target_name}) :\n\n```diff\n{source_content}\n```"
-    
+
     report = call_gemini(SYSTEM_PROMPT, user_prompt, api_key, args.model)
-    
+
     if not report:
         print("Erreur : Impossible d'obtenir le rapport de l'API Gemini.")
         sys.exit(1)
-        
+
     print("\n" + "="*80)
     print(report)
     print("="*80 + "\n")
-    
+
     # Extraction de la note pour retour de code
     try:
         # Cherche le verdict dans le rapport (ex: "Verdict : 8/10")

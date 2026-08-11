@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core/safe_io.py — Écritures de fichiers sûres (P1-2.3).
 
@@ -15,10 +14,10 @@ WAL + `busy_timeout` (protection inter-process canonique) et n'utilisent pas ce
 module : un FileLock grossier ne ferait que sérialiser inutilement les writers.
 """
 
-import os
 import json
-import tempfile
 import logging
+import os
+import tempfile
 from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)

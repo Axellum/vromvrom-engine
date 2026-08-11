@@ -13,9 +13,9 @@ Auteur : Antigravity IDE + Axel — 2026-06-04
 """
 
 import asyncio
-import threading
 import logging
-from typing import Any, Dict, Optional, Set
+import threading
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class AppState:
             return
 
         # ── État d'exécution ──
-        self.execution_state: Dict[str, Any] = {
+        self.execution_state: dict[str, Any] = {
             "status": "idle",       # "idle" | "running" | "success" | "error"
             "objective": "",
             "engine_state": None,   # GlobalState sérialisé
@@ -88,7 +88,7 @@ class AppState:
         if _HAS_CACHETOOLS:
             self.chat_history: Any = TTLCache(maxsize=500, ttl=600)
         else:
-            self.chat_history: Dict = {}
+            self.chat_history: dict = {}
 
         # ── Router global ──
         self.global_router = None   # Instance core.router.Router
@@ -107,7 +107,7 @@ class AppState:
 
         # ── SSE Clients ──
         # set() protégé par asyncio.Lock (pas de list.remove() concurrent)
-        self.sse_clients: Set[asyncio.Queue] = set()
+        self.sse_clients: set[asyncio.Queue] = set()
         self.sse_lock = asyncio.Lock()
 
         # ── Cache fast-path ──
@@ -115,7 +115,7 @@ class AppState:
         if _HAS_CACHETOOLS:
             self.fast_path_cache: Any = TTLCache(maxsize=100, ttl=15)
         else:
-            self.fast_path_cache: Dict = {}
+            self.fast_path_cache: dict = {}
 
         self._initialized = True
         logger.info("[AppState] ✅ État partagé initialisé (singleton thread-safe).")

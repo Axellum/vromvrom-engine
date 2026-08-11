@@ -8,16 +8,14 @@ Vérifie :
 - La compatibilité rétroactive (champs optionnels)
 """
 
-import sys
 import os
+import sys
+
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.state import (
-    TaskPayload, StateUpdate, GlobalState,
-    ExecutionPhase, TaskStatus, WorkflowMetadata
-)
+from core.state import ExecutionPhase, GlobalState, StateUpdate, TaskPayload, TaskStatus, WorkflowMetadata
 
 
 class TestTaskPayload:
@@ -60,7 +58,7 @@ class TestTaskPayload:
         )
         json_str = original.model_dump_json()
         restored = TaskPayload.model_validate_json(json_str)
-        
+
         assert restored.task_objective == original.task_objective
         assert restored.metadata == original.metadata
         assert restored.task_id == original.task_id
@@ -153,10 +151,10 @@ class TestGlobalState:
             status="success",
             result_data="Plan OK"
         ))
-        
+
         json_str = state.model_dump_json()
         restored = GlobalState.model_validate_json(json_str)
-        
+
         assert restored.session_id == "roundtrip_001"
         assert restored.current_phase == ExecutionPhase.EXECUTING
         assert len(restored.history) == 1

@@ -6,13 +6,21 @@ tournait avec les droits du process moteur sur le Deck) par un runner GitHub
 Actions jetable :
 
 1. Création d'une branche éphémère `toolmaker/validate-<id>` via l'API Git Data
-   (blob → tree → commit → ref : un seul événement push, donc un seul run) ;
-2. Le workflow `.github/workflows/toolmaker_validate.yml` exécute le candidat
-   dans une VM GitHub isolée (aucun accès réseau au LAN Deck/HA, GITHUB_TOKEN
-   du job sans aucune permission) et échoue si `SANDBOX_OK` n'apparaît pas ;
+   (blobs → tree → commit → ref : un seul événement push, donc un seul run) ;
+2. Le workflow `.github/workflows/toolmaker_validate.yml` exécute les fichiers
+   `test_*.py` poussés dans une VM GitHub isolée (aucun accès réseau au LAN
+   Deck/HA, GITHUB_TOKEN du job sans aucune permission) et échoue si
+   `SANDBOX_OK` n'apparaît pas dans la sortie ;
 3. Le verdict (conclusion du run) est interrogé par l'API REST Actions en
    polling asyncio ;
 4. La branche éphémère est supprimée dans tous les cas (finally).
+
+[#T190] Le candidat n'est plus un fichier unique (outil + bloc de test injecté)
+mais deux fichiers : `<tool_name>.py` (l'outil) et `test_<tool_name>.py` (son
+test minimal — import + appel + retour non None). C'est ce fichier de test,
+exactement, que le runner exécute et qui est ensuite persisté à côté de
+l'outil dans `plugins/auto_generated/<tool_name>/`. Un outil dont le test
+échoue est rejeté, jamais enregistré.
 
 Choix SYNCHRONE (le flux attend le verdict, ~30 s à 2 min) plutôt qu'asynchrone
 avec notification après coup : le ToolMaker n'est pas sur un chemin interactif
@@ -25,8 +33,8 @@ fait avec `await asyncio.sleep`, il ne bloque jamais l'event loop.
 Sécurité (fail-closed) : sans PAT dédié (`MOTEUR_TOOLMAKER_PAT`), la validation
 ÉCHOUE — il n'y a aucun repli vers une exécution locale. Le PAT doit être un
 fine-grained token limité à CE dépôt (Contents: read/write, Actions: read),
-distinct de `GITHUB_TOKEN` (clé LLM GitHub Models dans ce projet) et de tout
-PAT existant plus large (cf. audit config Antigravity).
+distinct de `GITHUB_TOKEN` (sans usage LLM depuis le retrait de GitHub
+Models le 30/07/2026, #T280) et de tout PAT existant plus large (cf. audit config Antigravity).
 """
 
 import asyncio
@@ -39,8 +47,9 @@ logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
 
-# Chemin du candidat dans la branche éphémère — doit correspondre au workflow.
-CANDIDATE_PATH = ".toolmaker_sandbox/candidate_full.py"
+# Chemin des fichiers candidats dans la branche éphémère — doit correspondre
+# au workflow (il exécute .toolmaker_sandbox/test_*.py).
+CANDIDATE_DIR = ".toolmaker_sandbox"
 
 
 def _get_pat() -> str | None:
@@ -61,17 +70,20 @@ async def _gh(client, method: str, path: str, **kwargs):
 
 
 async def validate_candidate_remote(
-    full_code: str,
+    files: dict[str, str],
     timeout_s: float | None = None,
     poll_interval_s: float = 6.0,
     _client=None,
 ) -> dict:
     """
-    Pousse le code candidat sur une branche éphémère, attend le verdict du
-    workflow `ToolMaker Validate`, puis supprime la branche.
+    Pousse les fichiers candidats sur une branche éphémère, attend le verdict
+    du workflow `ToolMaker Validate`, puis supprime la branche.
 
     Args:
-        full_code: Code candidat complet (outil + bloc de test SANDBOX_OK).
+        files: Dictionnaire {chemin_relatif: contenu} des fichiers poussés
+               sous CANDIDATE_DIR — l'outil (`<tool_name>.py`) et son test
+               minimal (`test_<tool_name>.py`, [#T190]). Le workflow exécute
+               les test_*.py et échoue sans `SANDBOX_OK` en sortie.
         timeout_s: Délai global d'attente du verdict (défaut : env
                    MOTEUR_TOOLMAKER_TIMEOUT_S ou 300 s).
         poll_interval_s: Intervalle de polling de l'API Actions.
@@ -93,6 +105,9 @@ async def validate_candidate_remote(
             ),
             "run_url": None,
         }
+
+    if not files:
+        return {"passed": False, "error": "Aucun fichier candidat fourni", "run_url": None}
 
     if timeout_s is None:
         try:
@@ -127,24 +142,29 @@ async def validate_candidate_remote(
         ).json()
         base_tree_sha = base_commit["tree"]["sha"]
 
-        # 2. blob → tree → commit → ref : un seul push, donc un seul run.
-        blob = (
-            await _gh(
-                client, "POST", f"/repos/{repo}/git/blobs",
-                json={"content": full_code, "encoding": "utf-8"},
-            )
-        ).json()
+        # 2. blobs → tree → commit → ref : un seul push, donc un seul run.
+        #    [#T190] Chaque fichier (outil + test) a son propre blob ; le tree
+        #    les référence tous sous CANDIDATE_DIR, chemins relatifs au dépôt.
+        tree_entries = []
+        for rel_path, content in files.items():
+            blob = (
+                await _gh(
+                    client, "POST", f"/repos/{repo}/git/blobs",
+                    json={"content": content, "encoding": "utf-8"},
+                )
+            ).json()
+            tree_entries.append({
+                "path": f"{CANDIDATE_DIR}/{rel_path}",
+                "mode": "100644",
+                "type": "blob",
+                "sha": blob["sha"],
+            })
         tree = (
             await _gh(
                 client, "POST", f"/repos/{repo}/git/trees",
                 json={
                     "base_tree": base_tree_sha,
-                    "tree": [{
-                        "path": CANDIDATE_PATH,
-                        "mode": "100644",
-                        "type": "blob",
-                        "sha": blob["sha"],
-                    }],
+                    "tree": tree_entries,
                 },
             )
         ).json()

@@ -7,16 +7,13 @@ Vérifie que :
   3. Les échecs marquent le span ERROR avec llm.error
   4. FallbackProvider émet un span par tentative (via in-memory SDK)
 """
-import asyncio
 import pytest
-
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from core.otel import llm_span, set_span_tokens, _NoOpSpan
-
+from core.otel import _NoOpSpan, llm_span, set_span_tokens
 
 # ─── Fixture : exporter en mémoire ───────────────────────────────────────────
 
@@ -100,8 +97,9 @@ def test_set_span_tokens_noop_on_noop_span():
 async def test_fallback_provider_emits_span_per_attempt(otel_exporter):
     """FallbackProvider doit créer un span OTel pour chaque tentative de provider."""
     from unittest.mock import AsyncMock
-    from core.llm.providers.deepseek import FallbackProvider
+
     from core.llm.circuit_breaker import CircuitBreaker
+    from core.llm.providers.deepseek import FallbackProvider
 
     # Nettoyer le registre pour ce test
     CircuitBreaker._registry.pop("model-primary", None)

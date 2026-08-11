@@ -43,6 +43,95 @@ MIN_KEYWORD_SCORE_THRESHOLD = 0.05
 MIN_LLM_CONFIDENCE = 0.7
 
 # ──────────────────────────────────────────────────────────────────
+# [#T273] Garde HITL sur les court-circuits vers l'Executor
+# ──────────────────────────────────────────────────────────────────
+# L'approbation humaine (#T267) est posée dans `_check_hitl_before_dag`, donc
+# UNIQUEMENT sur le chemin DAG. Or le Router court-circuite les catégories
+# `files`/`database`/`sysadmin` directement vers l'Executor, qui écrit des
+# fichiers et lance des commandes shell — sans jamais croiser ce point de
+# contrôle. Mesuré en production le 11/08 : l'objectif « écris le fichier
+# /tmp/preuve_t267.txt … » a produit `run_terminal_command : echo … > …` avec
+# ZÉRO demande d'approbation, session en `success`, branche fusionnée.
+#
+# Correctif : une requête qui demande une ACTION (écrire, supprimer, exécuter…)
+# ne peut plus emprunter le raccourci. Elle repart vers le Planner, donc vers le
+# DAG, donc vers le point de contrôle qui sait désormais suspendre proprement.
+# On perd la latence du raccourci sur ces requêtes-là ; c'est le prix d'un
+# contrôle qui ne se contourne pas.
+#
+# Les requêtes de LECTURE (« lis », « affiche », « cherche ») gardent le
+# raccourci : elles ne peuvent rien casser, et ce sont les plus fréquentes.
+_ACTIONS_A_RISQUE = (
+    # Écriture / modification / suppression de fichiers
+    "ecris", "ecrire", "ecrit", "cree", "creer", "creation",
+    "modifie", "modifier", "edite", "editer", "remplace", "remplacer",
+    "supprime", "supprimer", "efface", "effacer", "vide", "vider",
+    "renomme", "renommer", "deplace", "deplacer", "copie", "copier",
+    "ajoute", "ajouter", "insere", "inserer", "sauvegarde", "sauvegarder",
+    "enregistre", "enregistrer", "genere", "generer", "corrige", "corriger",
+    "write", "create", "delete", "remove", "rename", "move", "append",
+    # Exécution de commandes / administration
+    "execute", "executer", "lance", "lancer", "demarre", "demarrer",
+    "redemarre", "redemarrer", "arrete", "arreter", "installe", "installer",
+    "desinstalle", "desinstaller", "configure", "configurer", "deploie",
+    "deployer", "run ", "exec", "chmod", "chown", "mkdir", "rm ", "rmdir",
+    "kill", "sudo", "apt ", "pip install", "git commit", "git push",
+)
+
+# Kill-switch : `MOTEUR_ROUTER_GARDE_HITL=0` restaure le raccourci d'avant
+# #T273 (donc l'exécution d'actions sans approbation possible).
+def garde_hitl_routage_active() -> bool:
+    """[#T273] La garde qui empêche de contourner l'approbation est-elle active ?"""
+    return os.environ.get("MOTEUR_ROUTER_GARDE_HITL", "1").strip().lower() not in ("0", "false", "off")
+
+
+# ──────────────────────────────────────────────────────────────────
+# [#T173] Contexte projet LÉGER sur le chat rapide (casual_chat)
+# ──────────────────────────────────────────────────────────────────
+# Le chat rapide est le chemin le plus utilisé (865 échanges vocaux mesurés sur
+# vocal_audit_log) mais partait SANS aucun contexte projet, là où les autres
+# catégories en reçoivent. On lui injecte le strict nécessaire pour situer les
+# projets d'Axel : le profil utilisateur (catégorie "core" du ContextLoader,
+# déjà chargée en mémoire — §1 de rules_global.md, 3 445 chars mesurés le 11/08).
+# La latence est LE critère de ce chemin (p50 1,6 s / p90 3,6 s) : un contexte
+# trop gros la dégraderait, et le remède serait pire que le mal. Le plafond
+# couvre donc le profil complet + une marge, pas la documentation entière.
+CASUAL_CHAT_CONTEXT_CATEGORIES = ["core"]  # Profil utilisateur (rules_global.md)
+CASUAL_CHAT_MAX_CONTEXT_CHARS = 4000  # §1 profil (3 445 chars) + marge ≈ 1 100 tokens
+
+# Plafond des autres catégories (valeur inchangée, nommée pour ne plus être magique)
+CONTEXT_LOADER_MAX_CHARS = 8000
+
+# Kill-switch : `MOTEUR_CHAT_CONTEXTE_PROJET=0` restaure le comportement d'avant
+# #T173 (aucun contexte projet injecté sur casual_chat, à l'identique).
+def contexte_projet_chat_rapide_active() -> bool:
+    """[#T173] Le chat rapide reçoit-il son contexte projet léger ?"""
+    return os.environ.get("MOTEUR_CHAT_CONTEXTE_PROJET", "1").strip().lower() not in ("0", "false", "off")
+
+
+def _sans_accents(texte: str) -> str:
+    """Normalise les accents — le STT vocal et les clients tapent souvent sans."""
+    for source, cible in (
+        ("éèêë", "e"), ("àâä", "a"), ("îï", "i"), ("ôö", "o"), ("ûüù", "u"), ("ç", "c"),
+    ):
+        for c in source:
+            texte = texte.replace(c, cible)
+    return texte
+
+
+def requete_demande_une_action(user_prompt: str) -> bool:
+    """
+    [#T273] La requête demande-t-elle d'AGIR (écrire, supprimer, exécuter) ?
+
+    Volontairement large : un faux positif envoie la requête au Planner (plus
+    lent, mais correct et approuvable), tandis qu'un faux négatif laisse une
+    action s'exécuter sans supervision. L'asymétrie des conséquences dicte le
+    réglage.
+    """
+    texte = _sans_accents((user_prompt or "").lower())
+    return any(mot in texte for mot in _ACTIONS_A_RISQUE)
+
+# ──────────────────────────────────────────────────────────────────
 # Mapping : catégorie du Router → catégories du ContextLoader
 # ──────────────────────────────────────────────────────────────────
 CATEGORY_TO_CONTEXT = {
@@ -51,7 +140,7 @@ CATEGORY_TO_CONTEXT = {
     "database":        ["home_assistant"],
     "analysis":        ["analysis"],
     "files":           [],  # Pas de contexte spécifique
-    "casual_chat":     [],  # Pas de contexte spécifique
+    "casual_chat":     CASUAL_CHAT_CONTEXT_CATEGORIES,  # [#T173] profil utilisateur léger
     "sysadmin":        [],  # Pas de contexte spécifique
     "deck_edge":        [],  # Edge AI — routage vers Ollama Deck
 }
@@ -142,7 +231,7 @@ class Router:
                 "weight": 1.2
             },
             "sysadmin": {
-                "keywords": ["ssh", "deck", "steamdeck", "popydeck", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
+                "keywords": ["ssh", "deck", "steamdeck", "remote-host", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
                 "weight": 1.5
             },
             # Catégorie deck_edge : requêtes de tâches légères à router vers Ollama sur le Deck
@@ -290,30 +379,54 @@ class Router:
                         "model_tier": model_tier
                     }
                     logger.info("[ROUTER] Commande simple Home Assistant → Handoff rapide vers l'HA Agent (Tier léger Gemini Flash, max 2 tours).")
-            elif dominant_category in ["files", "database"]:
-                # Court-circuit direct vers l'Executor pour des opérations simples
-                target_agent = "executor"
-                routing_type = "executor_direct"
-                model_tier = "moyen"
-                logger.info(f"[ROUTER] Opération simple de {dominant_category} → Court-circuit direct vers l'Executor (Tier moyen).")
-            elif dominant_category == "sysadmin":
-                # SysAdminAgent supprimé — routage vers Executor avec contexte sysadmin
-                target_agent = "executor"
-                routing_type = "sysadmin_direct"
-                model_tier = "moyen"
-                payload_metadata = {
-                    "is_direct_command": True,
-                    "routing_type": routing_type,
-                    "model_tier": model_tier
-                }
-                logger.info("[ROUTER] Commande SysAdmin Linux détectée → Handoff vers l'Executor (outils terminal).")
+            elif dominant_category in ["files", "database", "sysadmin"]:
+                # [#T273] Le raccourci vers l'Executor saute le point d'approbation
+                # HITL (posé sur le chemin DAG). On ne l'autorise donc plus quand la
+                # requête demande d'AGIR : elle repart au Planner pour devenir un
+                # plan approuvable. La lecture, elle, garde le raccourci.
+                if garde_hitl_routage_active() and requete_demande_une_action(user_prompt):
+                    # target_agent reste self.default_agent ("planner")
+                    routing_type = "planner_pour_approbation"
+                    payload_metadata = {
+                        "hitl_garde_routage": True,
+                        "categorie_dominante": dominant_category,
+                    }
+                    logger.info(
+                        f"[ROUTER] [T273] Action détectée sur '{dominant_category}' → "
+                        f"raccourci Executor REFUSÉ, passage par le Planner pour que le plan "
+                        f"soit approuvable (le HITL ne couvre que le chemin DAG)."
+                    )
+                elif dominant_category == "sysadmin":
+                    # SysAdminAgent supprimé — routage vers Executor avec contexte sysadmin
+                    target_agent = "executor"
+                    routing_type = "sysadmin_direct"
+                    model_tier = "moyen"
+                    payload_metadata = {
+                        "is_direct_command": True,
+                        "routing_type": routing_type,
+                        "model_tier": model_tier
+                    }
+                    logger.info("[ROUTER] Commande SysAdmin Linux détectée → Handoff vers l'Executor (outils terminal).")
+                else:
+                    # Court-circuit direct vers l'Executor pour des opérations simples
+                    target_agent = "executor"
+                    routing_type = "executor_direct"
+                    model_tier = "moyen"
+                    logger.info(f"[ROUTER] Opération simple de {dominant_category} → Court-circuit direct vers l'Executor (Tier moyen).")
 
         return target_agent, routing_type, model_tier, payload_metadata
 
-    async def analyze_request(self, user_prompt: str) -> tuple[TaskPayload, str]:
+    async def analyze_request(self, user_prompt: str, session_id: str = "") -> tuple[TaskPayload, str]:
         """
         Détermine la nature de la requête, enrichit le contexte via le RAG local,
         et choisit le premier agent à invoquer (avec possibilité de court-circuit direct).
+
+        [#T296] `session_id` n'est pas utilisé par le routage lui-même : il sert
+        uniquement à horodater la décision dans `routing_decisions`, où la colonne
+        était vide sur 68/68 lignes. Sans lui, une décision de routage ne pouvait
+        être rapprochée d'aucune consommation réelle. Paramètre explicite plutôt
+        que ContextVar : les six appelants connaissent tous leur session, la
+        magie n'apporterait rien ici.
         """
         relevant_context = "Nouvelle requête utilisateur (Initiale)."
         up_prompt = user_prompt.upper()
@@ -421,7 +534,15 @@ class Router:
         # Pré-construire context_categories AVANT l'appel RAG pour le filtrage
         context_categories = []
         if dominant_category and dominant_category in CATEGORY_TO_CONTEXT:
-            context_categories.extend(CATEGORY_TO_CONTEXT[dominant_category])
+            # [#T173] Kill-switch : `MOTEUR_CHAT_CONTEXTE_PROJET=0` → aucun contexte
+            # projet sur le chat rapide (comportement d'avant, strictement identique).
+            if dominant_category == "casual_chat" and not contexte_projet_chat_rapide_active():
+                logger.info(
+                    "[ROUTER] [T173] Kill-switch MOTEUR_CHAT_CONTEXTE_PROJET=0 : "
+                    "aucun contexte projet sur le chat rapide."
+                )
+            else:
+                context_categories.extend(CATEGORY_TO_CONTEXT[dominant_category])
         if is_esphome:
             context_categories.append("esphome")
         if is_moteur:
@@ -455,16 +576,30 @@ class Router:
         )
 
         # 5bis. Collecte des contextes pour compression (v12.3.0)
+        # [#T173] Le chat rapide est désormais couvert : il reçoit un contexte
+        # projet LÉGER, plafonné explicitement pour ne pas dégrader sa latence.
         structured_context = ""
-        if context_categories and dominant_category != "casual_chat":
+        if context_categories:
             # Rechargement si des fichiers ont changé
             self.context_loader.reload_if_stale()
 
+            max_chars = (
+                CASUAL_CHAT_MAX_CONTEXT_CHARS
+                if dominant_category == "casual_chat"
+                else CONTEXT_LOADER_MAX_CHARS  # Limiter pour ne pas exploser le prompt
+            )
             structured_context = self.context_loader.get_context_for_categories(
-                context_categories, max_chars=8000  # Limiter pour ne pas exploser le prompt
+                context_categories, max_chars=max_chars
             )
             if structured_context:
-                logger.info(f"[ROUTER] Contexte 3-Layers chargé : {len(structured_context):,} chars")
+                # Garantie en dur : le plafond ne doit JAMAIS être dépassé, même si
+                # le loader déborde de quelques caractères (marqueur de troncature).
+                if len(structured_context) > max_chars:
+                    structured_context = structured_context[:max_chars]
+                logger.info(
+                    f"[ROUTER] Contexte 3-Layers chargé : {len(structured_context):,} chars "
+                    f"(plafond {max_chars:,})"
+                )
 
         # Collecte mémoire épisodique
         episodic_context = ""
@@ -594,6 +729,7 @@ class Router:
                 llm_classifier_used=(max_score < MIN_KEYWORD_SCORE_THRESHOLD and self.llm_gateway is not None),
                 context_categories=context_categories,
                 latency_ms=_routing_latency_ms,
+                session_id=session_id or "",
             )
             logger.info(f"[ROUTER] Métriques enregistrées (latence: {_routing_latency_ms:.1f}ms)")
         except Exception as _rm_err:

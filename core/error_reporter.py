@@ -24,13 +24,12 @@ import time
 import traceback
 from collections import deque
 from threading import Lock
-from typing import Deque, Dict, List
 
 logger = logging.getLogger("moteur.swallowed")
 
 # Ring buffer borné des dernières erreurs avalées (diagnostic).
 _MAX_RECENT = 200
-_recent: Deque[Dict] = deque(maxlen=_MAX_RECENT)
+_recent: deque[dict] = deque(maxlen=_MAX_RECENT)
 _lock = Lock()
 
 _LEVELS = {
@@ -67,7 +66,7 @@ def report_swallowed(context: str, exc: BaseException, *, level: str = "warning"
         })
 
 
-def get_recent_errors(limit: int = 50) -> List[Dict]:
+def get_recent_errors(limit: int = 50) -> list[dict]:
     """Retourne les dernières erreurs avalées (plus récentes d'abord)."""
     with _lock:
         items = list(_recent)

@@ -2,13 +2,13 @@
 core/llm/providers/base.py — Classe de base abstraite pour les LLM providers.
 """
 
-from abc import ABC, abstractmethod
-from typing import Dict, Any
 import asyncio
 import shutil
 import subprocess
 import sys
 import time
+from abc import ABC, abstractmethod
+from typing import Any
 
 
 def run_cli_command(cmd: list, **kwargs) -> subprocess.CompletedProcess:
@@ -19,24 +19,35 @@ def run_cli_command(cmd: list, **kwargs) -> subprocess.CompletedProcess:
     chaîne shell). Résout l'exécutable et gère le cas Windows où les `.cmd`/`.bat`
     ne sont pas lançables directement via CreateProcess (on passe alors par
     `cmd /c`, toujours sans shell, donc sans interprétation de chaîne).
+
+    [#T292] Sous Windows, la ligne passée à cmd.exe est ENCADRÉE d'une paire de
+    guillemets supplémentaire : cmd.exe retire la paire extérieure quand la ligne
+    qui suit `/c` commence ET finit par un guillemet, ce qui dépouillait le chemin
+    de l'exécutable de ses guillemets (coupure au premier espace, ex: « Antigravity
+    IDE »). La ligne encadrée est passée en CHAÎNE avec `executable=cmd.exe` :
+    passée en liste, subprocess la re-quote et échapperait les guillemets internes
+    avec des backslashes, que cmd.exe ne sait pas dépouiller.
     """
     argv = list(cmd)
+    executable = None
     if argv:
         argv[0] = shutil.which(argv[0]) or argv[0]
         if sys.platform == "win32" and str(argv[0]).lower().endswith((".cmd", ".bat")):
-            argv = ["cmd", "/c", *argv]
+            ligne = subprocess.list2cmdline(argv)
+            executable = shutil.which("cmd") or "cmd"
+            argv = f'cmd /c "{ligne}"'
     kwargs.pop("shell", None)  # garde-fou : on force shell=False ci-dessous
-    return subprocess.run(argv, shell=False, **kwargs)
+    return subprocess.run(argv, shell=False, executable=executable, **kwargs)
 
 class LLMProvider(ABC):
     """Interface standard pour tout fournisseur de modèle de langage (SRP)."""
-    
+
     @abstractmethod
     def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
         pass
-        
+
     @abstractmethod
-    def generate_structured(self, system_prompt: str, user_prompt: str, schema: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    def generate_structured(self, system_prompt: str, user_prompt: str, schema: dict[str, Any], **kwargs) -> dict[str, Any]:
         pass
 
     def generate_stream(self, system_prompt: str, user_prompt: str, **kwargs):
@@ -54,7 +65,7 @@ class LLMProvider(ABC):
         if isinstance(full_response, dict):
             yield {"token": str(full_response), "done": True, "usage": None}
             return
-        
+
         text = str(full_response)
         words = text.split(" ")
         for i, word in enumerate(words):
@@ -79,7 +90,7 @@ class LLMProvider(ABC):
         return await asyncio.to_thread(self.generate, system_prompt, user_prompt, **kwargs)
 
     async def generate_structured_async(
-        self, system_prompt: str, user_prompt: str, schema: Dict[str, Any], **kwargs
-    ) -> Dict[str, Any]:
+        self, system_prompt: str, user_prompt: str, schema: dict[str, Any], **kwargs
+    ) -> dict[str, Any]:
         """[D5] Variante asynchrone de generate_structured(). Même principe que generate_async."""
         return await asyncio.to_thread(self.generate_structured, system_prompt, user_prompt, schema, **kwargs)

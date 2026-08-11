@@ -20,12 +20,12 @@ Configuration :
 Il appelle directement l'API Gemini REST (pas de LLMGateway, pas de moteur).
 """
 
+import argparse
+import logging
 import os
 import sys
 import time
-import logging
-import argparse
-from typing import Optional, Dict, Any
+from typing import Any
 
 # Chargement du .env si présent
 try:
@@ -36,7 +36,7 @@ except ImportError:
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
     if os.path.exists(env_path):
         try:
-            with open(env_path, "r", encoding="utf-8") as f:
+            with open(env_path, encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line and not line.startswith("#") and "=" in line:
@@ -164,10 +164,10 @@ class WorkerStandalone:
         self._start_time = time.time()
         self._tasks_completed = 0
         self._tasks_failed = 0
-        self._current_task: Optional[str] = None
+        self._current_task: str | None = None
         self._task_history: list = []  # Historique des 50 dernières tâches
 
-    async def execute_task(self, request: dict) -> Dict[str, Any]:
+    async def execute_task(self, request: dict) -> dict[str, Any]:
         """Exécute une tâche via l'API Gemini et retourne le résultat."""
         task_id = request.get("task_id", f"task_{int(time.time())}")
         objective = request.get("task_objective", "")
@@ -261,7 +261,7 @@ class WorkerStandalone:
                 },
             }
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """État du worker (heartbeat + métriques)."""
         return {
             "name": self.name,
@@ -381,13 +381,13 @@ def main():
         )
         sys.exit(1)
 
-    logger.info(f"╔══════════════════════════════════════════════╗")
-    logger.info(f"║  Moteur — Worker Standalone               ║")
+    logger.info("╔══════════════════════════════════════════════╗")
+    logger.info("║  Moteur — Worker Standalone               ║")
     logger.info(f"║  Nom    : {args.name:<35}║")
     logger.info(f"║  Port   : {args.port:<35}║")
     logger.info(f"║  Modèle : {GEMINI_MODEL:<35}║")
     logger.info(f"║  API Key: {'✅ OK':<35}║")
-    logger.info(f"╚══════════════════════════════════════════════╝")
+    logger.info("╚══════════════════════════════════════════════╝")
 
     daemon = WorkerStandalone(name=args.name, port=args.port, host=args.host)
     app = daemon.create_app()

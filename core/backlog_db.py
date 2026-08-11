@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tab5-engine Antigravity  - Système de Backlog Ultra-Fiable
 Fichier : core/backlog_db.py
@@ -15,7 +14,7 @@ import logging
 import sqlite3
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiosqlite
 import filelock
@@ -63,15 +62,22 @@ async def db_write_lock_context():
     """
     Gestionnaire de contexte asynchrone pour les opérations d'ÉCRITURE (verrou exclusif).
     1. Acquiert un verrou asyncio pour protéger l'event loop courante.
-    2. Acquiert un verrou de fichier physique (filelock) de manière synchrone sur le
-       thread principal pour éviter les conflits d'accès multi-processus/multi-threads
+    2. Acquiert un verrou de fichier physique (filelock) de manière synchrone hors de
+       l'event loop pour éviter les conflits d'accès multi-processus/multi-threads
        particulièrement sensibles sous Windows.
-    3. Libère le verrou de fichier de manière asynchrone pour éviter de bloquer l'event loop.
+    3. Libère le verrou de fichier hors de l'event loop.
     """
     async with _db_write_lock:
         db_path = get_db_path()
         lock_path = db_path + ".backlog.lock"
-        lock = filelock.FileLock(lock_path)
+        # [#T293] `thread_local=False` : le FileLock est créé DANS ce contexte et
+        # protégé par `_db_write_lock` (asyncio.Lock) — une seule coroutine l'utilise
+        # à la fois, donc son état peut être partagé entre threads sans risque.
+        # Sans cela, acquire (worker A) et release (worker B) atterrissant sur des
+        # threads différents rendaient la libération SILENCIEUSEMENT inopérante
+        # (le compteur d'acquisition est stocké par thread par défaut) : le verrou
+        # fuitait jusqu'à la mort du processus.
+        lock = filelock.FileLock(lock_path, thread_local=False)
         try:
             await asyncio.to_thread(lock.acquire, timeout=10)
         except filelock.Timeout:
@@ -81,15 +87,26 @@ async def db_write_lock_context():
             )
             raise TimeoutError(
                 f"Le verrou de la base de données ({lock_path}) est bloqué par un autre processus."
-            )
+            ) from None
         try:
             yield
         finally:
             try:
                 # Libération déportée dans un thread pour éviter de bloquer l'event loop
                 await asyncio.to_thread(lock.release)
+                # [#T293] Un verrou non relâché doit être VISIBLE dans le journal :
+                # la libération était un no-op silencieux quand l'état n'était pas
+                # partagé entre threads — on vérifie donc l'état réel après coup.
+                if lock.is_locked:
+                    logger.error(
+                        f"Le verrou {lock_path} est encore détenu après sa libération "
+                        "(fuite de verrou) : les écritures suivantes échoueront."
+                    )
             except Exception as e:
-                logger.warning(f"Erreur lors de la libération du verrou : {e}")
+                logger.error(
+                    f"Erreur lors de la libération du verrou {lock_path} : {e}",
+                    exc_info=True,
+                )
 
 
 @asynccontextmanager
@@ -159,7 +176,7 @@ async def add_task(
     title: str,
     description: str,
     priority: int = 2,
-    scheduled_at: Optional[float] = None,
+    scheduled_at: float | None = None,
 ) -> int:
     """
     Insère une nouvelle tâche dans le backlog et retourne son identifiant unique.
@@ -196,7 +213,7 @@ async def add_task(
             raise
 
 
-async def get_next_task() -> Optional[Dict[str, Any]]:
+async def get_next_task() -> dict[str, Any] | None:
     """
     Récupère la tâche 'pending' la plus prioritaire éligible pour exécution immédiate.
     Une tâche est éligible si son statut est 'pending' et que son paramètre `scheduled_at`
@@ -298,7 +315,7 @@ async def update_task_status(task_id: int, status: str, **kwargs) -> bool:
             raise
 
 
-async def get_all_tasks(limit: int = 50) -> List[Dict[str, Any]]:
+async def get_all_tasks(limit: int = 50) -> list[dict[str, Any]]:
     """
     Retourne la liste des tâches du backlog triées par date de création décroissante.
 
@@ -324,7 +341,7 @@ async def get_all_tasks(limit: int = 50) -> List[Dict[str, Any]]:
             raise
 
 
-async def get_task_stats() -> Dict[str, int]:
+async def get_task_stats() -> dict[str, int]:
     """
     Retourne un résumé statistique du nombre de tâches regroupées par statut.
 
@@ -361,7 +378,46 @@ async def get_task_stats() -> Dict[str, int]:
             raise
 
 
-async def get_task_by_id(task_id: int) -> Optional[Dict[str, Any]]:
+# Statuts considérés "actifs" (tâche déjà suivie ou définitivement écartée) pour
+# le dédoublonnage de l'auditeur autonome (core/auditor_agent.py) — 'failed' est
+# inclus car ces tâches ne repassent PAS en 'pending' automatiquement
+# (get_next_task() ne sélectionne que 'pending'), 'abandoned' aussi car une tâche
+# ayant échoué 3 fois reste un signal de problème réel à traiter à la main plutôt
+# que ré-injecté silencieusement par l'auditeur.
+NON_TERMINAL_STATUSES = ("pending", "running", "paused", "failed", "abandoned")
+
+
+async def get_active_task_titles(
+    statuses: tuple[str, ...] = NON_TERMINAL_STATUSES,
+) -> list[str]:
+    """
+    Retourne les titres des tâches non terminales, pour le dédoublonnage de
+    l'auditeur autonome (évite de proposer deux fois la même tâche déjà
+    suivie, gelée ou abandonnée).
+
+    :param statuses: Statuts à considérer comme "actifs" (par défaut NON_TERMINAL_STATUSES).
+    :return: Liste des titres de tâches correspondants.
+    """
+    async with db_read_lock_context():
+        db_path = get_db_path()
+        placeholders = ",".join("?" * len(statuses))
+        try:
+            async with _connect_db(db_path) as db:
+                async with db.execute(
+                    f"SELECT title FROM backlog_tasks WHERE status IN ({placeholders})",
+                    tuple(statuses),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                    return [row[0] for row in rows]
+        except Exception as e:
+            logger.error(
+                f"Erreur lors de la récupération des titres actifs pour dédoublonnage : {e}",
+                exc_info=True,
+            )
+            raise
+
+
+async def get_task_by_id(task_id: int) -> dict[str, Any] | None:
     """
     Récupère une tâche spécifique par son identifiant unique.
 

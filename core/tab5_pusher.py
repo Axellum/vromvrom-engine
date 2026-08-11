@@ -15,7 +15,7 @@ Prérequis HA :
         dreamer_suggestions: {max: 255}
       input_boolean:
         moteur_alert_active: {}
-  - Variable d'environnement : HA_TOKEN=<token_longue_duree>
+  - Variable d'environnement : HASS_TOKEN=<token_longue_duree> (repli : HA_TOKEN)
 
 Auteur : Antigravity IDE + Axel
 Date : 2026-06-06
@@ -27,6 +27,7 @@ import os
 import aiohttp
 
 from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
+from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
 
 logger = logging.getLogger(__name__)
 
@@ -57,14 +58,14 @@ class Tab5Pusher:
         """
         Args:
             ha_url:   URL HA (défaut : http://${HA_HOST:-192.168.1.x}:8123)
-            ha_token: Token Bearer HA (défaut : env HA_TOKEN)
+            ha_token: Token Bearer HA (défaut : env HASS_TOKEN, repli HA_TOKEN)
         """
         self.ha_url   = ha_url   or os.environ.get("HA_URL", DEFAULT_HA_URL)
-        self.ha_token = ha_token or os.environ.get("HA_TOKEN", "")
+        self.ha_token = ha_token or get_ha_token()
         self._session: aiohttp.ClientSession | None = None
 
         if not self.ha_token:
-            logger.warning("[TAB5 PUSHER] HA_TOKEN manquant — les push échoueront silencieusement")
+            logger.warning("[TAB5 PUSHER] Token HA manquant (HASS_TOKEN/HA_TOKEN) — les push échoueront silencieusement")
 
     # ──────────────────────────────────────────────────────────────
     # Internals

@@ -15,10 +15,10 @@ Voix par défaut recommandées :
   - male-qingnian (Jeune homme / Dynamique)
 """
 
-import os
 import logging
+import os
+
 import requests
-from typing import Optional
 
 logger = logging.getLogger("tools.minimax_tts")
 
@@ -29,31 +29,31 @@ class MiniMaxTTSProvider:
         tts = MiniMaxTTSProvider()
         audio_path = tts.synthesize("Bonjour, j'adore ma maison connectée !", voice_id="female-yujie")
     """
-    
+
     BASE_URL = "https://api.minimax.io/v1/t2a_v2"
-    
-    def __init__(self, api_key: Optional[str] = None):
+
+    def __init__(self, api_key: str | None = None):
         """
         Args:
             api_key: Clé API MiniMax (défaut: MINIMAX_API_KEY du .env)
         """
         self.api_key = api_key or os.environ.get("MINIMAX_API_KEY", "")
         self.available = bool(self.api_key)
-        
+
         if not self.available:
             logger.warning("[MiniMax TTS] Aucune clé API configurée dans l'environnement")
-            
+
     def synthesize(
         self,
         text: str,
         voice_id: str = "female-shaonv",
-        output_path: Optional[str] = None,
+        output_path: str | None = None,
         model: str = "speech-02-hd",
         speed: float = 1.0,
         volume: float = 1.0,
         pitch: int = 0,
         sample_rate: int = 32000
-    ) -> Optional[str]:
+    ) -> str | None:
         """Synthétise du texte en un fichier audio MP3.
         
         Args:
@@ -72,12 +72,12 @@ class MiniMaxTTSProvider:
         if not self.available:
             logger.error("[MiniMax TTS] Clé API absente. Synthèse impossible.")
             return None
-            
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "model": model,
             "text": text,
@@ -92,40 +92,40 @@ class MiniMaxTTSProvider:
                 "sample_rate": sample_rate
             }
         }
-        
+
         try:
             logger.info(f"[MiniMax TTS] Requête de synthèse ({model}) pour {len(text)} caractères (voix: {voice_id})")
             response = requests.post(self.BASE_URL, headers=headers, json=payload, timeout=20.0)
-            
+
             if response.status_code != 200:
                 logger.error(f"[MiniMax TTS] Erreur API HTTP {response.status_code}: {response.text}")
                 return None
-                
+
             res_json = response.json()
             base_resp = res_json.get("base_resp", {})
             if base_resp.get("status_code") != 0:
                 logger.error(f"[MiniMax TTS] Erreur interne API: {base_resp.get('status_msg')} (code: {base_resp.get('status_code')})")
                 return None
-                
+
             hex_audio = res_json.get("data", {}).get("audio", "")
             if not hex_audio:
                 logger.error("[MiniMax TTS] Aucun flux audio retourné par l'API")
                 return None
-                
+
             # Décodage des données hexadécimales en binaire
             audio_bytes = bytes.fromhex(hex_audio)
-            
+
             # Définir le chemin de sortie par défaut dans le dossier temp si non spécifié
             if not output_path:
                 import tempfile
                 output_path = os.path.join(tempfile.gettempdir(), f"minimax_tts_{voice_id}.mp3")
-                
+
             with open(output_path, "wb") as f:
                 f.write(audio_bytes)
-                
+
             logger.info(f"[MiniMax TTS] ✅ Audio MP3 généré avec succès : {output_path} ({len(audio_bytes)} octets)")
             return output_path
-            
+
         except Exception as e:
             logger.error(f"[MiniMax TTS] Erreur inattendue durant la synthèse : {e}")
             return None
@@ -153,7 +153,7 @@ def minimax_tts_synthesize(
     provider = MiniMaxTTSProvider()
     if not provider.available:
         return "Erreur : La clé MINIMAX_API_KEY est manquante dans les variables d'environnement."
-        
+
     res = provider.synthesize(text=text, voice_id=voice_id, output_path=output_path or None)
     if res:
         return f"✅ Audio MiniMax généré avec succès dans : {res}"

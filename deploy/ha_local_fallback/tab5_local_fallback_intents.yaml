@@ -2,94 +2,94 @@
 # Source de vérité : ha_commands.json (moteur). Régénérer après modif.
 # Noyau de secours : commandes vitales servies par HA Assist LOCAL quand
 # le moteur (Steam Deck) est injoignable.
-Tab5CoreClimateSalonDaikinap71273ClimOff:
+Tab5CoreClimateLivingRoomOff:
   action:
   - service: climate.turn_off
     target:
-      entity_id: climate.salon_daikinap71273_clim
+      entity_id: climate.living_room
   speech:
     text: Climatisation éteinte.
-Tab5CoreClimateSalonDaikinap71273ClimOn:
+Tab5CoreClimateLivingRoomOn:
   action:
   - service: climate.turn_on
     target:
-      entity_id: climate.salon_daikinap71273_clim
+      entity_id: climate.living_room
   speech:
     text: Climatisation allumée.
-Tab5CoreLightH60082Off:
+Tab5CoreLightBedroomOff:
   action:
   - service: light.turn_off
     target:
-      entity_id: light.h6008_2
+      entity_id: light.bedroom
   speech:
     text: Lumière éteinte.
-Tab5CoreLightH60082On:
+Tab5CoreLightBedroomOn:
   action:
   - service: light.turn_on
     target:
-      entity_id: light.h6008_2
+      entity_id: light.bedroom
   speech:
     text: Lumière allumée.
-Tab5CoreLightH6008Off:
+Tab5CoreLightBedsideOff:
   action:
   - service: light.turn_off
     target:
-      entity_id: light.h6008
+      entity_id: light.bedside
   speech:
     text: Lumière éteinte.
-Tab5CoreLightH6008On:
+Tab5CoreLightBedsideOn:
   action:
   - service: light.turn_on
     target:
-      entity_id: light.h6008
+      entity_id: light.bedside
   speech:
     text: Lumière allumée.
-Tab5CoreLightH600cOff:
+Tab5CoreLightHallwayOff:
   action:
   - service: light.turn_off
     target:
-      entity_id: light.h600c
+      entity_id: light.hallway
   speech:
     text: Lumière éteinte.
-Tab5CoreLightH600cOn:
+Tab5CoreLightHallwayOn:
   action:
   - service: light.turn_on
     target:
-      entity_id: light.h600c
+      entity_id: light.hallway
   speech:
     text: Lumière allumée.
-Tab5CoreLightSalonOff:
+Tab5CoreLightLivingRoomOff:
   action:
   - service: light.turn_off
     target:
-      entity_id: light.salon
+      entity_id: light.living_room
   speech:
     text: Lumière éteinte.
-Tab5CoreLightSalonOn:
+Tab5CoreLightLivingRoomOn:
   action:
   - service: light.turn_on
     target:
-      entity_id: light.salon
+      entity_id: light.living_room
   speech:
     text: Lumière allumée.
 Tab5CoreVoletClose:
   action:
   - data:
       action: close
-    service: script.tab5_volet_action
+    service: script.blind_action
   speech:
     text: Volet fermé.
 Tab5CoreVoletOpen:
   action:
   - data:
       action: open
-    service: script.tab5_volet_action
+    service: script.blind_action
   speech:
     text: Volet ouvert.
 Tab5CoreVoletStop:
   action:
   - data:
       action: stop
-    service: script.tab5_volet_action
+    service: script.blind_action
   speech:
     text: Volet arrêté.

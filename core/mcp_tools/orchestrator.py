@@ -10,21 +10,17 @@ dans le meme process que le reste du serveur MCP - aucune fragmentation
 d'etat entre process.
 """
 import logging
-import os
-import json
 
-from core.mcp_app import mcp
-from core.engine import Engine
-from core.router import Router
-from core.llm_gateway import LLMGateway
-from tools.tool_registry import ToolRegistry
+from agents.antigravity_agent import AntigravityAgent
 from agents.executor import ExecutorAgent
 from agents.planner import PlannerAgent
-from agents.antigravity_agent import AntigravityAgent
-from tools.system import read_file, write_file, validate_config_yaml
-from tools.terminal import run_terminal_command
-from tools.api import call_api
+from core.engine import Engine
+from core.llm_gateway import LLMGateway
+from core.mcp_app import mcp
+from core.router import Router
 from memory.context_manager import ContextManager
+from tools.registry_setup import register_base_tools, register_extended_tools
+from tools.tool_registry import ToolRegistry
 
 logger = logging.getLogger("mcp_server.orchestrator")
 
@@ -58,36 +54,28 @@ def setup_engine(session_id: str = "mcp_session"):
     gateway = get_gateway()
     registry = ToolRegistry()
     context_manager = ContextManager(llm_gateway=gateway)
-    
-    # Enregistrement des outils
-    registry.register("read_file", read_file, "Lit le contenu d'un fichier texte local.")
-    registry.register("write_file", write_file, "Crée ou modifie un fichier texte local.")
-    registry.register("run_terminal_command", run_terminal_command, "Exécute une commande système sur la machine hôte.")
-    registry.register("call_api", call_api, "Effectue une requête HTTP (GET/POST) vers une API distante.")
-    registry.register("validate_config_yaml", validate_config_yaml, "Valide la syntaxe et les dépendances d'un fichier YAML ESPHome.")
 
-    
-    # Initialisation des agents selon la stratégie de ventilation et config.json
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-    config = {
-        "planner_model": "deepseek-reasoner",
-        "executor_model": "deepseek-chat",
-        "antigravity_model": "gemini"
-    }
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                config.update(json.load(f))
-        except Exception as e:
-            logging.error(f"Erreur chargement config.json: {e}")
+    # [#T213] Enregistrement factorisé (partagé avec core/factory.py et
+    # services/pipeline_service.py) : le serveur MCP gagne Git Safety et les
+    # familles étendues Workspace/Cloud/Imagen, absentes ici avant (divergence
+    # silencieuse des 3 sites de registry).
+    register_base_tools(registry)
+    register_extended_tools(registry)
+
+    # [P0-audit-2026-07-09] config.json racine (source unique, cf. core/factory.py)
+    # au lieu d'un core/mcp_tools/config.json qui n'a jamais existé sur disque : ce
+    # fallback codé en dur tournait en permanence déconnecté de la config réelle
+    # (modifier la config via l'IHM ne changeait pas les modèles utilisés ici).
+    from core.llm_gateway import load_config
+    config = load_config()
 
     from agents.ha_agent import HACommandAgent
 
-    executor = ExecutorAgent(llm_gateway=gateway, tool_registry=registry, provider_name=config["executor_model"])
-    planner = PlannerAgent(llm_gateway=gateway, provider_name=config["planner_model"])
-    antigravity_agent = AntigravityAgent(llm_gateway=gateway, provider_name=config["antigravity_model"])
-    ha_agent = HACommandAgent(llm_gateway=gateway, tool_registry=registry, provider_name=config["executor_model"])
-    
+    executor = ExecutorAgent(llm_gateway=gateway, tool_registry=registry, provider_name=config.get("executor_model", "automatique"))
+    planner = PlannerAgent(llm_gateway=gateway, provider_name=config.get("planner_model", "fort"))
+    antigravity_agent = AntigravityAgent(llm_gateway=gateway, provider_name=config.get("antigravity_model", "fort"))
+    ha_agent = HACommandAgent(llm_gateway=gateway, tool_registry=registry, provider_name=config.get("executor_model", "automatique"))
+
     # Assemblage
     engine = Engine(session_id=session_id, context_manager=context_manager)
     engine.register_agent(executor)
@@ -113,12 +101,16 @@ async def _run_engine_pipeline(task: str, session_id: str, planner_tier: str = N
 
     if planner_tier:
         # L'attribut est 'agents' (public), pas '_agents' (privé)
+        # [P0-audit-2026-07-09] Ancien hasattr(agent, "_provider_name") (avec
+        # underscore) : PlannerAgent stocke l'attribut SANS underscore
+        # (self.provider_name, agents/planner.py) -> ce hasattr était toujours
+        # faux, l'override de modèle demandé ici n'avait jamais d'effet.
         for agent in engine.agents.values():
-            if agent.name == "planner" and hasattr(agent, "_provider_name"):
-                agent._provider_name = planner_tier
+            if agent.name == "planner" and hasattr(agent, "provider_name"):
+                agent.provider_name = planner_tier
                 logger.info(f"[DELEGATION] Modèle du planificateur configuré sur : {planner_tier}")
 
-    initial_payload, starting_agent = await router.analyze_request(task)
+    initial_payload, starting_agent = await router.analyze_request(task, session_id=session_id)
     return await engine.run(initial_payload, starting_agent)
 
 # ═══════════════════════════════════════════════════════
@@ -141,14 +133,14 @@ async def run_tab5_agent(user_request: str) -> str:
         result_summary.append("=== Trace de l'exécution ===")
         for idx, update in enumerate(final_state.history):
             result_summary.append(f"[{idx+1}] Agent '{update.agent_name}' ({update.status}) : {str(update.result_data)[:300]}...")
-        
+
         result_summary.append("\n=== Résultat Final ===")
         if final_state.history:
             last_result = final_state.history[-1].result_data
             result_summary.append(str(last_result))
         else:
             result_summary.append("Aucun résultat généré.")
-            
+
         return "\n".join(result_summary)
     except Exception as e:
         return f"Erreur lors de l'exécution du moteur Tab5 : {str(e)}"
@@ -166,14 +158,15 @@ async def query_deepseek(
     """
     Appel direct à un modèle DeepSeek (bypass le pipeline complet du moteur).
     Idéal pour du raisonnement low-cost ou des tâches algorithmiques.
-    
-    Modèles disponibles :
-      - deepseek-chat (alias deepseek-v4-flash) : $0.14/$0.28 par M tokens — ultra économique
-      - deepseek-reasoner (R1) : $0.55/$2.19 — Chain of Thought, champion algorithmique
-      - deepseek-v4-pro : $0.435/$0.87 — raisonnement avancé
-    
-    Solde compte : ~$19.95 USD.
-    
+
+    Modèles disponibles et tarification dynamique (cf. core/pricing.py) :
+      - deepseek-chat (alias deepseek-v4-flash) : Tarifs dynamiques avec pic/hors-pic
+      - deepseek-reasoner (R1) : Tarifs dynamiques avec pic/hors-pic (Chain of Thought)
+      - deepseek-v4-pro : Tarifs dynamiques avec pic/hors-pic
+
+    Les coûts d'inférence en heure de pic sont doublés à partir du 15 juillet 2026.
+    Référez-vous à core/pricing.py pour le calcul exact des coûts en temps réel.
+
     Args:
         prompt: Le prompt pour DeepSeek.
         model: Modèle DeepSeek (défaut: deepseek-chat).
@@ -181,11 +174,11 @@ async def query_deepseek(
         temperature: Température de génération (défaut: 0.7).
     """
     gateway = get_gateway()
-    
+
     try:
-        # Chercher le provider DeepSeek correspondant
-        provider = gateway.providers.get(model)
-        if not provider:
+        # Chercher la clé du provider DeepSeek correspondant
+        resolved = model if model in gateway.providers else None
+        if not resolved:
             # Essayer les alias courants
             alias_map = {
                 "deepseek-chat": "deepseek-chat",
@@ -194,21 +187,27 @@ async def query_deepseek(
                 "deepseek-v4-pro": "deepseek-v4-pro",
                 "r1": "deepseek-reasoner",
             }
-            resolved = alias_map.get(model.lower(), model)
-            provider = gateway.providers.get(resolved)
-        
-        if not provider:
+            candidate = alias_map.get(model.lower(), model)
+            if candidate in gateway.providers:
+                resolved = candidate
+
+        if not resolved:
             available = [k for k in gateway.providers if "deepseek" in k.lower()]
             return f"❌ Modèle '{model}' non trouvé. Providers DeepSeek disponibles : {available}"
-        
-        # generate() attend (system_prompt, user_prompt, **kwargs)
-        # Avant le fix : un seul argument → TypeError 'missing positional argument'
-        import asyncio
+
+        # [#T212] get_provider() (et non gateway.providers[...]) : l'appel passe
+        # par le wrapping Circuit Breaker commun au lieu de le contourner.
+        provider = gateway.get_provider(resolved)
+
+        # generate_async() attend (system_prompt, user_prompt, **kwargs)
+        # [#T123] Cohérence post-migration D5 : les autres outils utilisent
+        # generate_async() (httpx natif pour les providers OpenAI-compat), pas
+        # asyncio.to_thread(generate, ...) qui force un thread bloquant.
         sys_prompt = system_prompt if system_prompt else "Tu es un assistant expert."
-        result = await asyncio.to_thread(
-            provider.generate, sys_prompt, prompt, temperature=temperature
+        result = await provider.generate_async(
+            sys_prompt, prompt, temperature=temperature
         )
-        
+
         return f"{result}\n\n---\n📊 Modèle: {model} | DeepSeek API directe"
     except Exception as e:
         return f"❌ Erreur DeepSeek ({model}): {e}"
@@ -226,10 +225,10 @@ async def get_engine_status() -> str:
     Ne lance aucune inférence — lecture pure des données internes.
     """
     gateway = get_gateway()
-    
+
     try:
         status_parts = ["🔧 **État du Moteur Agents**\n"]
-        
+
         # Circuit Breakers
         try:
             cb_status = gateway.get_circuit_breakers_status()
@@ -244,7 +243,7 @@ async def get_engine_status() -> str:
             status_parts.append(f"  📊 Total : {cb_status.get('total_providers', 0)} providers, {cb_status.get('total_circuit_breakers', 0)} CB actifs")
         except Exception as e:
             status_parts.append(f"⚠️ Circuit Breakers non disponibles : {e}")
-        
+
         # Token Tracker
         try:
             from core.token_tracker import get_global_summary
@@ -258,24 +257,24 @@ async def get_engine_status() -> str:
                     status_parts.append(f"    - {m}: {data.get('total_tokens', 0):,} tokens | ${data.get('cost_usd', 0):.4f}")
         except Exception as e:
             status_parts.append(f"⚠️ Token Tracker non disponible : {e}")
-        
+
         # KeyPool (si disponible via le gateway)
         try:
             from core.key_pool import GeminiKeyPool
             pool = GeminiKeyPool()
             pool_stats = pool.get_stats()
-            status_parts.append(f"\n### KeyPool Gemini")
+            status_parts.append("\n### KeyPool Gemini")
             status_parts.append(f"  🔑 Clés Free Tier : {pool_stats.get('available', '?')}/{pool_stats.get('total', '?')} disponibles")
             status_parts.append(f"  💳 Clé payante : {'✅' if pool_stats.get('has_paid') else '❌'}")
         except Exception:
             pass  # KeyPool optionnel
-        
+
         # Providers configurés
-        status_parts.append(f"\n### Providers Configurés")
+        status_parts.append("\n### Providers Configurés")
         for name, provider in gateway.providers.items():
             provider_type = type(provider).__name__
             status_parts.append(f"  - **{name}** → {provider_type}")
-        
+
         return "\n".join(status_parts)
     except Exception as e:
         return f"❌ Erreur status : {e}"
@@ -284,12 +283,26 @@ async def get_engine_status() -> str:
 # Helpers de routage partagés (recommandation + délégation, #T40)
 # ═══════════════════════════════════════════════════════
 
-# Paniers de tiers du catalogue dynamique par contrainte budgétaire.
-_BUDGET_TIERS = {
-    "free":  ["local", "free"],
-    "cheap": ["leger", "moyen"],
-    "best":  ["pro", "fort"],
+# Paniers de modèles du catalogue dynamique par contrainte budgétaire.
+# [#T246] Deux axes distincts du catalogue, à ne pas mélanger :
+#   - la colonne `tier` (économie : local/free/subscription/paid) ;
+#   - la colonne `routing_tier` (capacité : leger/moyen/fort).
+# Le panier "free" filtre sur `tier` : aucun modèle n'a routing_tier 'free'/'local',
+# le filtrer sur routing_tier le vidait structurellement (les outils MCP répondaient
+# « catalogue free vide » alors qu'il est plein).
+_BUDGET_BASKETS = {
+    "free":  {"catalog_tiers": ["local", "free"]},
+    "cheap": {"routing_tiers": ["leger", "moyen"]},
+    "best":  {"routing_tiers": ["fort"]},
 }
+
+
+def _describe_basket(effective_budget: str) -> str:
+    """Description lisible d'un panier pour l'en-tête de recommandation."""
+    basket = _BUDGET_BASKETS.get(effective_budget, _BUDGET_BASKETS["cheap"])
+    if "catalog_tiers" in basket:
+        return "tier catalogue : " + ", ".join(basket["catalog_tiers"])
+    return "routing_tier : " + ", ".join(basket["routing_tiers"])
 
 
 def _effective_budget(budget_constraint: str, routing_type: str) -> str:
@@ -309,27 +322,36 @@ def _catalog_models_for_budget(effective_budget: str) -> list:
     ordonnés par cascade_priority (le plus prioritaire d'abord), dédupliqués.
 
     Source unique partagée par `get_routing_recommendation` et `delegate_to_gateway`.
+    [#T246] Le panier "free" filtre sur la colonne `tier` (économie), les paniers
+    "cheap"/"best" sur `routing_tier` (capacité) — voir `_BUDGET_BASKETS`.
     """
-    from core.models_db import get_models_for_tier, get_model_cost
-    tiers = _BUDGET_TIERS.get(effective_budget, _BUDGET_TIERS["cheap"])
+    from core.models_db import get_model_cost, get_models_for_catalog_tiers, get_models_for_tier
+    basket = _BUDGET_BASKETS.get(effective_budget, _BUDGET_BASKETS["cheap"])
+    if "catalog_tiers" in basket:
+        modeles = get_models_for_catalog_tiers(basket["catalog_tiers"])
+    else:
+        modeles = []
+        for tier in basket["routing_tiers"]:
+            modeles.extend(get_models_for_tier(tier))
+    # get_models_for_tier trie déjà par cascade_priority ; en concaténant plusieurs
+    # tiers (ou en cas de doublon), on réordonne et déduplique par sécurité.
+    modeles.sort(key=lambda m: m.get("cascade_priority") or 999)
     picked, seen = [], set()
-    for tier in tiers:
-        # get_models_for_tier trie déjà par cascade_priority (le plus prioritaire d'abord).
-        for m in get_models_for_tier(tier):
-            mid = m.get("id")
-            if not mid or mid in seen:
-                continue
-            seen.add(mid)
-            cost = get_model_cost(mid) or {}
-            ci, co = cost.get("cost_input_per_m"), cost.get("cost_output_per_m")
-            cur = cost.get("currency", "USD")
-            cost_str = "0$ (local/gratuit)" if (ci is None and co is None) else f"{ci or 0:.2f}/{co or 0:.2f} {cur}/M"
-            picked.append({
-                "id": mid, "tier": m.get("tier"), "cost": cost_str,
-                "is_free": (ci is None and co is None) or (not ci and not co),
-                "speciality": m.get("speciality") or "",
-                "use": m.get("recommended_use") or "",
-            })
+    for m in modeles:
+        mid = m.get("id")
+        if not mid or mid in seen:
+            continue
+        seen.add(mid)
+        cost = get_model_cost(mid) or {}
+        ci, co = cost.get("cost_input_per_m"), cost.get("cost_output_per_m")
+        cur = cost.get("currency", "USD")
+        cost_str = "0$ (local/gratuit)" if (ci is None and co is None) else f"{ci or 0:.2f}/{co or 0:.2f} {cur}/M"
+        picked.append({
+            "id": mid, "tier": m.get("tier"), "cost": cost_str,
+            "is_free": (ci is None and co is None) or (not ci and not co),
+            "speciality": m.get("speciality") or "",
+            "use": m.get("recommended_use") or "",
+        })
     return picked
 
 
@@ -339,15 +361,23 @@ def _resolve_gateway_provider(gateway, model_id: str):
     puis recherche partielle (ex: 'deepseek' → 'deepseek-chat'). Partagé par
     query_llm_direct et delegate_to_gateway.
 
+    [#T212] Le provider retourné vient de gateway.get_provider() (cascade d'un
+    seul élément) : l'appel passe par le wrapping Circuit Breaker commun au
+    lieu de le contourner via un accès brut à gateway.providers.
+
     Retourne (clé_résolue, provider) ou (model_id, None) si introuvable.
     """
-    provider = gateway.providers.get(model_id)
-    if provider:
-        return model_id, provider
-    for key in gateway.providers:
-        if model_id.lower() in key.lower():
-            return key, gateway.providers[key]
-    return model_id, None
+    resolved_key = None
+    if model_id in gateway.providers:
+        resolved_key = model_id
+    else:
+        for key in gateway.providers:
+            if model_id.lower() in key.lower():
+                resolved_key = key
+                break
+    if resolved_key is None:
+        return model_id, None
+    return resolved_key, gateway.get_provider(resolved_key)
 
 
 
@@ -370,40 +400,39 @@ async def get_routing_recommendation(
 
     Args:
         task_description: Description de la tâche à accomplir.
-        budget_constraint: Contrainte budgétaire (défaut: "auto"). Options: "free" (tiers local/free), "cheap" (tiers leger/moyen), "best" (tiers pro/fort), "auto" (choix selon le type de tâche).
+        budget_constraint: Contrainte budgétaire (défaut: "auto"). Options: "free" (tier catalogue local/free), "cheap" (routing_tier leger/moyen), "best" (routing_tier fort), "auto" (choix selon le type de tâche).
     """
     try:
         router = get_router()
 
         # Analyser la requête
         payload, agent_name = await router.analyze_request(task_description)
-        
+
         metadata = payload.metadata or {}
         routing_type = metadata.get("routing_type", "standard")
-        
+
         # Construire la recommandation
         lines = [f"🎯 **Recommandation de routage** pour :\n> \"{task_description[:100]}...\"\n"]
-        
-        lines.append(f"### Analyse")
+
+        lines.append("### Analyse")
         lines.append(f"  - **Type de tâche** : {routing_type}")
         lines.append(f"  - **Agent recommandé** : {agent_name}")
-        
+
         if metadata.get("multi_intent"):
             lines.append(f"  - **Multi-intent** : {len(metadata.get('sub_intents', []))} sous-tâches détectées")
-        
+
         # Sélection des modèles dans le catalogue dynamique selon le budget → tiers
         # (logique partagée avec delegate_to_gateway, #T40).
         import asyncio
 
         effective_budget = _effective_budget(budget_constraint, routing_type)
-        tiers = _BUDGET_TIERS.get(effective_budget, _BUDGET_TIERS["cheap"])
 
         picked = await asyncio.to_thread(_catalog_models_for_budget, effective_budget)
 
         header = f"\n### Modèles recommandés (budget: {budget_constraint}"
         if budget_constraint == "auto":
             header += f" → {effective_budget}"
-        header += f", tiers: {', '.join(tiers)})"
+        header += f", {_describe_basket(effective_budget)})"
         lines.append(header)
 
         if not picked:
@@ -444,7 +473,7 @@ async def get_routing_matrix(
     import asyncio
 
     def _run() -> str:
-        from core.models_db import get_routing_rules, get_model_cost
+        from core.models_db import get_model_cost, get_routing_rules
 
         rules = get_routing_rules()
         if not rules:
@@ -521,13 +550,13 @@ async def delegate_complex_reasoning(
         )
 
         result_parts = [f"🏆 **Résolution de la tâche déléguée terminée** (planificateur: {model_tier})\n"]
-        
+
         if final_state.history:
             last_result = final_state.history[-1].result_data
             result_parts.append(str(last_result))
         else:
             result_parts.append("Aucun résultat n'a été produit par le moteur.")
-            
+
         return "\n".join(result_parts)
     except Exception as e:
         return f"❌ Erreur lors de la délégation au moteur : {e}"
@@ -629,8 +658,8 @@ async def delegate_to_gateway(
 
     Args:
         prompt: Le prompt / la tâche à déléguer.
-        budget_constraint: "auto" (choix selon le type de tâche, défaut), "free" (local/free
-            uniquement), "cheap" (léger/moyen), "best" (pro/fort).
+        budget_constraint: "auto" (choix selon le type de tâche, défaut), "free" (tier catalogue
+            local/free uniquement), "cheap" (routing_tier léger/moyen), "best" (routing_tier fort).
         system_prompt: Prompt système optionnel.
         temperature: Température de génération (0.0 = déterministe).
         max_tokens: Nombre max de tokens en sortie.

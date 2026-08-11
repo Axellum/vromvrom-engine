@@ -17,7 +17,6 @@ import logging
 import sqlite3
 import statistics
 from datetime import datetime, timedelta
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -39,13 +38,13 @@ class HAAnomalyDetector:
             db_path: Chemin vers home-assistant_v2.db (HAOS: /homeassistant/)
         """
         self.db_path = db_path
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
 
     # ──────────────────────────────────────────────────────────────────
     # Connexion SQLite
     # ──────────────────────────────────────────────────────────────────
 
-    async def _get_conn(self) -> Optional[sqlite3.Connection]:
+    async def _get_conn(self) -> sqlite3.Connection | None:
         """Retourne la connexion SQLite (lazy, read-only)."""
         if self._conn is None:
             try:
@@ -63,7 +62,7 @@ class HAAnomalyDetector:
                 return None
         return self._conn
 
-    async def _query_states(self, entity_id: str, days: int = 7) -> List[dict]:
+    async def _query_states(self, entity_id: str, days: int = 7) -> list[dict]:
         """
         Récupère les états d'une entité depuis SQLite.
 
@@ -93,7 +92,7 @@ class HAAnomalyDetector:
             logger.warning(f"[HA ANOMALY] Erreur requête {entity_id} : {e}")
             return []
 
-    async def _get_top_entities(self, limit: int = 20, days: int = 7) -> List[str]:
+    async def _get_top_entities(self, limit: int = 20, days: int = 7) -> list[str]:
         """Retourne les TOP N entités les plus actives (par nb de changements)."""
         conn = await self._get_conn()
         if not conn:
@@ -142,7 +141,7 @@ class HAAnomalyDetector:
         return {"entity_id": entity_id, "anomaly": False, "severity": "low",
                 "details": f"Type non analysable : {entity_type}"}
 
-    async def _analyze_numeric(self, entity_id: str, states: List[dict]) -> dict:
+    async def _analyze_numeric(self, entity_id: str, states: list[dict]) -> dict:
         """
         Détecte les dérives sur capteurs numériques.
         Anomalie si mean 24h > mean 7j ± 2σ.
@@ -209,7 +208,7 @@ class HAAnomalyDetector:
 
         return {"entity_id": entity_id, "anomaly": anomaly, "severity": severity, "details": details}
 
-    async def _analyze_binary(self, entity_id: str, states: List[dict]) -> dict:
+    async def _analyze_binary(self, entity_id: str, states: list[dict]) -> dict:
         """
         Détecte les basculements anormaux sur entités binaires.
         Anomalie si transitions 24h > 2x la moyenne quotidienne 7j.
@@ -260,9 +259,9 @@ class HAAnomalyDetector:
 
     async def analyze_all(
         self,
-        entity_ids: Optional[List[str]] = None,
+        entity_ids: list[str] | None = None,
         days: int = 7,
-    ) -> List[dict]:
+    ) -> list[dict]:
         """
         Analyse toutes les entités spécifiées ou les TOP 20 les plus actives.
 
@@ -296,7 +295,7 @@ class HAAnomalyDetector:
         )
         return anomalies
 
-    async def format_suggestions(self, anomalies: List[dict]) -> str:
+    async def format_suggestions(self, anomalies: list[dict]) -> str:
         """
         Formate les anomalies en texte lisible (TTS-friendly + Tab5).
 

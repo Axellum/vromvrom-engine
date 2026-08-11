@@ -8,6 +8,7 @@ CircuitBreaker (appels HA directs via requests, ou linter YAML local).
 import logging
 import os
 
+from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
 from core.mcp_app import mcp
 
 logger = logging.getLogger("mcp_server.homeassistant")
@@ -39,10 +40,10 @@ async def search_ha_entities(
 
         # Récupérer les entités HA via l'API
         ha_url = os.environ.get("HA_URL", "http://${HA_HOST:-192.168.1.x}:8123")
-        ha_token = os.environ.get("HA_TOKEN", "")
+        ha_token = get_ha_token()
 
         if not ha_token:
-            return "❌ Variable HA_TOKEN non configurée dans .env. Impossible de contacter Home Assistant."
+            return "❌ Token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN) dans .env. Impossible de contacter Home Assistant."
 
         # [P0-1.5] passer par la session TLS centralisée, sinon HA en HTTPS échoue.
         from core.ha_tls import ha_requests_session
@@ -160,13 +161,13 @@ async def execute_ha_action(
     Idéal pour allumer/éteindre une lumière, régler un thermostat, déclencher une scène.
 
     Exemples d'appel :
-        execute_ha_action("light.salon", "light.turn_on", '{"brightness": 200}')
+        execute_ha_action("light.living_room", "light.turn_on", '{"brightness": 200}')
         execute_ha_action("climate.chambre", "climate.set_temperature", '{"temperature": 21}')
         execute_ha_action("scene.cinema", "scene.turn_on")
         execute_ha_action("switch.prise_bureau", "switch.toggle")
 
     Args:
-        entity_id: Identifiant complet de l'entité HA (ex: "light.salon_principal").
+        entity_id: Identifiant complet de l'entité HA (ex: "light.living_room_principal").
         service: Service HA à appeler (ex: "light.turn_on", "climate.set_temperature").
         service_data: JSON string des données du service (optionnel). Défaut: "{}".
     """
@@ -176,10 +177,10 @@ async def execute_ha_action(
     import requests
 
     ha_url = os.environ.get("HA_URL", os.environ.get("HASS_URL", "http://${HA_HOST:-192.168.1.x}:8123"))
-    ha_token = os.environ.get("HA_TOKEN", os.environ.get("HASS_TOKEN", ""))
+    ha_token = get_ha_token()
 
     if not ha_token:
-        return "❌ Variable HA_TOKEN (ou HASS_TOKEN) non configurée dans .env."
+        return "❌ Token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN) dans .env."
 
     # Parser le domaine depuis le service (ex: "light.turn_on" → domain="light", svc="turn_on")
     if "." in service:
@@ -198,7 +199,7 @@ async def execute_ha_action(
         validate_service_data,
     )
     if not is_valid_ha_entity_id(entity_id):
-        return f"❌ entity_id invalide : {entity_id!r} (attendu : domaine.objet, ex: light.salon)."
+        return f"❌ entity_id invalide : {entity_id!r} (attendu : domaine.objet, ex: light.living_room)."
     if not is_valid_ha_domain(domain):
         return f"❌ domaine HA invalide : {domain!r}."
     if not is_valid_ha_service_name(svc_name):

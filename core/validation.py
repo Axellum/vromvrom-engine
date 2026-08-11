@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core/validation.py — Validateurs d'entrées externes (P0-1.6).
 
@@ -15,7 +14,7 @@ import re
 # aussi juste avant un saut de ligne terminal).
 _HA_DOMAIN_RE = re.compile(r"^[a-z][a-z0-9_]*\Z")          # ex: light, climate, binary_sensor
 _HA_OBJECT_RE = re.compile(r"^[a-z0-9_]+\Z")               # ex: turn_on, set_temperature
-_HA_ENTITY_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_]+\Z")  # ex: light.salon_principal
+_HA_ENTITY_RE = re.compile(r"^[a-z][a-z0-9_]*\.[a-z0-9_]+\Z")  # ex: light.living_room_principal
 
 # Google Sheets : l'ID ne contient que [A-Za-z0-9_-].
 _GSHEET_ID_RE = re.compile(r"^[A-Za-z0-9_-]+\Z")
@@ -69,7 +68,7 @@ def validate_service_data(data: dict) -> None:
     # \Z (et non $) : cohérence avec le reste du module — $ matcherait avant un
     # éventuel \n final, laissant passer une clé du type "evil_key\n".
     key_regex = re.compile(r"^[a-zA-Z0-9_]+\Z")
-    
+
     def _scan_value(value, ctx: str) -> None:
         """Inspecte récursivement une valeur (str/dict/list, y compris listes imbriquées)."""
         if isinstance(value, str):

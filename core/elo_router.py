@@ -27,9 +27,8 @@ import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
 
-from core.elo_core import expected_score, updated_elo, reviewer_score_to_outcome
+from core.elo_core import expected_score, reviewer_score_to_outcome, updated_elo
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class EloRouter:
     Thread-safe : connexion SQLite thread-local + threading.Lock pour les écritures.
     """
 
-    def __init__(self, db_path: Optional[str] = None, k_factor: int = K_FACTOR):
+    def __init__(self, db_path: str | None = None, k_factor: int = K_FACTOR):
         """
         Args:
             db_path:  Chemin vers moteur_runtime.db
@@ -122,7 +121,7 @@ class EloRouter:
 
     async def update_score(
         self, routing_type: str, reviewer_score: float
-    ) -> Dict:
+    ) -> dict:
         """
         Met à jour le score Elo depuis l'évaluation ReviewerAgent.
 
@@ -191,7 +190,7 @@ class EloRouter:
     # Lecture
     # ──────────────────────────────────────────────────────────────
 
-    def get_best_routing(self, candidates: Optional[List[str]] = None) -> str:
+    def get_best_routing(self, candidates: list[str] | None = None) -> str:
         """
         Retourne le routing_type avec le meilleur Elo parmi les candidats.
 
@@ -217,7 +216,7 @@ class EloRouter:
         logger.debug(f"[ELO ROUTER] Meilleur routing : {best}")
         return best
 
-    def get_all_scores(self) -> Dict[str, Dict]:
+    def get_all_scores(self) -> dict[str, dict]:
         """
         Retourne tous les scores Elo avec statistiques.
 
@@ -244,9 +243,9 @@ class EloRouter:
     async def get_recommendation(
         self,
         dominant_category: str,
-        ml_prediction: Optional[str] = None,
+        ml_prediction: str | None = None,
         ml_confidence: float = 0.0,
-    ) -> Dict:
+    ) -> dict:
         """
         Recommandation combinée Elo + MLRouter.
 
@@ -304,7 +303,7 @@ class EloRouter:
 # Singleton thread-safe
 # ──────────────────────────────────────────────────────────────────
 
-_elo_instance: Optional[EloRouter] = None
+_elo_instance: EloRouter | None = None
 _elo_lock = threading.Lock()
 
 

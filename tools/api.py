@@ -1,6 +1,13 @@
-import requests
+"""
+tools/api.py — Outil "call_api" exposé aux agents via le ToolRegistry.
+
+Exécute des requêtes HTTP vers des APIs distantes (REST générique, Home
+Assistant, ESPHome) à partir d'un payload/headers JSON fournis par le LLM.
+"""
 import json
 import logging
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +22,7 @@ def call_api(url: str, method: str = "GET", payload_json: str = None, headers_js
         headers = {}
         if headers_json:
             headers = json.loads(headers_json)
-            
+
         data = None
         if payload_json:
             data = json.loads(payload_json)
@@ -30,26 +37,26 @@ def call_api(url: str, method: str = "GET", payload_json: str = None, headers_js
             json=data,
             timeout=15
         )
-        
+
         # Formatage lisible pour l'agent
         try:
             result = response.json()
             output = json.dumps(result, indent=2)
         except json.JSONDecodeError:
             output = response.text
-            
+
         status = response.status_code
         if status >= 400:
             full_response = f"Erreur (HTTP {status}): {output}"
         else:
             full_response = f"Status Code: {status}\nResponse:\n{output}"
-        
+
         MAX_CHARS = 4000
         if len(full_response) > MAX_CHARS:
             return full_response[:MAX_CHARS] + "\n...[SORTIE TRONQUÉE]..."
-            
+
         return full_response
-        
+
     except requests.exceptions.Timeout:
         return "Erreur: Délai d'attente dépassé (Timeout > 15s)."
     except requests.exceptions.RequestException as e:

@@ -14,10 +14,11 @@ Modèles disponibles (testés le 26/05/2026) :
 L'API utilise le endpoint `predict` de Vertex AI via clé API (pas OAuth).
 """
 
-import os
 import base64
-import time
 import logging
+import os
+import time
+
 import requests
 
 logger = logging.getLogger("tools.imagen")
@@ -65,21 +66,21 @@ def generate_image(
     api_key = os.environ.get("GEMINI_PAYANT_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return "Erreur: Aucune clé API Gemini configurée (GEMINI_API_KEY ou GEMINI_PAYANT_API_KEY)"
-    
+
     # Résolution du modèle
     variant = model_variant.lower().strip()
     model_info = IMAGEN_MODELS.get(variant)
     if not model_info:
         return f"Erreur: Variante '{variant}' inconnue. Choisir parmi : {', '.join(IMAGEN_MODELS.keys())}"
-    
+
     model_name = model_info["model"]
-    
+
     # Validation du nombre d'images
     try:
         num_images = min(4, max(1, int(number_of_images)))
     except (ValueError, TypeError):
         num_images = 1
-    
+
     # Chemin de sortie par défaut
     if not output_path:
         images_dir = os.path.join(
@@ -92,10 +93,10 @@ def generate_image(
     else:
         # Créer le dossier parent si nécessaire
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    
+
     # Construction du payload API
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:predict?key={api_key}"
-    
+
     payload = {
         "instances": [
             {"prompt": prompt}
@@ -105,12 +106,12 @@ def generate_image(
             "aspectRatio": aspect_ratio,
         }
     }
-    
+
     logger.info(
         f"[Imagen] Génération d'image : modèle={model_name}, "
         f"ratio={aspect_ratio}, n={num_images}"
     )
-    
+
     try:
         resp = requests.post(
             url,
@@ -118,43 +119,43 @@ def generate_image(
             json=payload,
             timeout=(5.0, 120.0)  # 5s connect, 120s read (génération longue)
         )
-        
+
         if resp.status_code != 200:
             error_text = resp.text[:500]
             logger.error(f"[Imagen] Erreur HTTP {resp.status_code} : {error_text}")
             return f"Erreur API Imagen (HTTP {resp.status_code}) : {error_text}"
-        
+
         data = resp.json()
         predictions = data.get("predictions", [])
-        
+
         if not predictions:
             return "Erreur: L'API n'a retourné aucune image. Le prompt est peut-être bloqué par les filtres de sécurité."
-        
+
         # Sauvegarder les images générées
         saved_paths = []
         for i, pred in enumerate(predictions):
             image_b64 = pred.get("bytesBase64Encoded")
             if not image_b64:
                 continue
-            
+
             # Déterminer le chemin pour cette image
             if i == 0:
                 save_path = output_path
             else:
                 base, ext = os.path.splitext(output_path)
                 save_path = f"{base}_{i+1}{ext}"
-            
+
             # Décoder et sauvegarder
             image_bytes = base64.b64decode(image_b64)
             with open(save_path, "wb") as f:
                 f.write(image_bytes)
-            
+
             saved_paths.append(save_path)
             logger.info(f"[Imagen] Image sauvegardée : {save_path} ({len(image_bytes)} bytes)")
-        
+
         if not saved_paths:
             return "Erreur: Aucune image n'a pu être décodée depuis la réponse API."
-        
+
         # Enregistrer le coût dans le token tracker
         try:
             from core.token_tracker import record_usage
@@ -162,7 +163,7 @@ def generate_image(
             record_usage(model_name, 0, 0, cost_usd=cost)
         except Exception:
             pass
-        
+
         cost_total = model_info["cost_usd"] * len(saved_paths)
         paths_str = ", ".join(saved_paths)
         return (
@@ -170,7 +171,7 @@ def generate_image(
             f"Fichier(s) : {paths_str}\n"
             f"Coût estimé : ${cost_total:.3f}"
         )
-        
+
     except requests.exceptions.Timeout:
         return "Erreur: Timeout lors de la génération d'image (>120s). Réessayez avec le modèle 'fast'."
     except Exception as e:
@@ -196,15 +197,15 @@ def generate_image_base64(
     api_key = os.environ.get("GEMINI_PAYANT_API_KEY") or os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return {"success": False, "error": "Aucune clé API Gemini configurée"}
-    
+
     variant = model_variant.lower().strip()
     model_info = IMAGEN_MODELS.get(variant)
     if not model_info:
         return {"success": False, "error": f"Variante '{variant}' inconnue"}
-    
+
     model_name = model_info["model"]
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:predict?key={api_key}"
-    
+
     payload = {
         "instances": [{"prompt": prompt}],
         "parameters": {
@@ -212,7 +213,7 @@ def generate_image_base64(
             "aspectRatio": aspect_ratio,
         }
     }
-    
+
     try:
         resp = requests.post(
             url,
@@ -220,35 +221,35 @@ def generate_image_base64(
             json=payload,
             timeout=(5.0, 120.0)
         )
-        
+
         if resp.status_code != 200:
             return {"success": False, "error": f"HTTP {resp.status_code}: {resp.text[:300]}"}
-        
+
         data = resp.json()
         predictions = data.get("predictions", [])
-        
+
         images_b64 = []
         for pred in predictions:
             b64 = pred.get("bytesBase64Encoded")
             if b64:
                 images_b64.append(b64)
-        
+
         if not images_b64:
             return {"success": False, "error": "Aucune image retournée (filtres de sécurité ?)"}
-        
+
         # Enregistrer le coût
         try:
             from core.token_tracker import record_usage
             record_usage(model_name, 0, 0, cost_usd=model_info["cost_usd"])
         except Exception:
             pass
-        
+
         return {
             "success": True,
             "images": images_b64,
             "model": model_name,
             "cost_usd": model_info["cost_usd"],
         }
-        
+
     except Exception as e:
         return {"success": False, "error": str(e)}

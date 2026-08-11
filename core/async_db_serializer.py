@@ -4,7 +4,8 @@ Garantit une exécution FIFO sans blocage du thread principal de FastAPI.
 """
 import asyncio
 import logging
-from typing import Callable, TypeVar
+from collections.abc import Callable
+from typing import TypeVar
 
 T = TypeVar("T")
 logger = logging.getLogger(__name__)

@@ -13,7 +13,15 @@ python_files = ["test_*.py"]
 # DEV optionnelle). Pour lancer avec couverture :
 #   pip install -r requirements-dev.txt
 #   pytest --cov=core --cov=agents --cov=tools --cov=memory --cov-report=term-missing --cov-fail-under=35
-addopts = "--tb=short -q"
+# [T261] Les tests marqués `live` (vraies API réseau) sont désélectionnés par défaut :
+# la suite unitaire doit rester verte sans clé d'API, quota ni réseau.
+# Pour les relancer : `python -m pytest -m live` (voir tests/unit/conftest.py).
+addopts = '--tb=short -q -m "not live"'
+# [T261] Marqueur des tests qui appellent de vraies API réseau (Cerebras, DashScope…).
+# Exclus de la suite par défaut via `addopts -m "not live"` ; relançables à la demande.
+markers = [
+    "live: test qui appelle une vraie API réseau — exclu de la suite par défaut, relançable avec -m live",
+]
 
 [tool.coverage.run]
 source = ["core", "agents", "tools", "memory"]

@@ -1,9 +1,19 @@
-import os
-import re
-import math
+"""
+memory/rag.py — Moteur RAG local sur les fichiers de contexte_ia/.
+
+Indexe les Markdown par sections, calcule la similarité par TF-IDF/BM25
+(synchrone, rapide) avec fallback vectoriel optionnel (ChromaDB ou embeddings
+Gemini via memory/embeddings.py). Interface query_similar() compatible avec
+l'usage ChromaDB direct. Inclut automatiquement le dernier résumé de session
+pour bénéficier des leçons apprises récentes. Consommé par core/factory.py,
+memory/aqa.py et api/routes/context.py.
+"""
 import asyncio
 import logging
-from typing import Dict, List, Tuple, Any, Optional
+import math
+import os
+import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +32,13 @@ class RAGEngine:
             self.doc_dir = os.path.join(base_dir, "contexte_ia")
         else:
             self.doc_dir = doc_dir
-            
-        self.sections: List[Dict[str, Any]] = []
-        self.vocab: Dict[str, int] = {}
-        self.idf: Dict[str, float] = {}
-        self.query_cache: Dict[str, str] = {}
+
+        self.sections: list[dict[str, Any]] = []
+        self.vocab: dict[str, int] = {}
+        self.idf: dict[str, float] = {}
+        self.query_cache: dict[str, str] = {}
         self.max_cache_size = 50
-        
+
         # Module d'embeddings vectoriels (ChromaDB)
         self._embedding_store = None
         try:
@@ -40,7 +50,7 @@ class RAGEngine:
                 self._embedding_store = None
         except Exception as emb_err:
             logger.warning(f"[RAG] Embeddings ChromaDB non disponibles : {emb_err}")
-        
+
         # Fallback : Recherche vectorielle via memory.db + Gemini Embeddings.
         # [P2-3.3] Même espace que EmbeddingStore (Gemini gemini-embedding-2) → les
         # deux backends sont cohérents, aucun mélange d'espaces vectoriels.
@@ -74,23 +84,23 @@ class RAGEngine:
                     self._memory_db = None
             except Exception as db_err:
                 logger.warning(f"[RAG] memory.db non disponible : {db_err}")
-        
+
         # Liste simplifiée de mots vides (stopwords) français
         self.stopwords = {
             "le", "la", "les", "un", "une", "des", "ce", "cet", "cette", "ces",
-            "de", "du", "des", "d", "l", "s", "se", "en", "et", "ou", "mais", "donc", "or", "ni", "car",
+            "de", "du", "d", "l", "s", "se", "en", "et", "ou", "mais", "donc", "or", "ni", "car",
             "a", "à", "aux", "dans", "par", "pour", "sur", "avec", "sans", "sous", "parmi",
             "qui", "que", "quoi", "dont", "où", "comment", "pourquoi", "quand",
             "je", "tu", "il", "elle", "nous", "vous", "ils", "elles", "mon", "ton", "son",
             "est", "es", "suis", "sont", "était", "étaient", "avoir", "être", "faire", "plus",
-            "pourriez", "pouvez", "faire", "creer", "créer", "fichier", "code", "mettre"
+            "pourriez", "pouvez", "creer", "créer", "fichier", "code", "mettre"
         }
-        
+
         # Indexation des documents au démarrage
         self.load_documents()
         self._build_tfidf()
 
-    def _tokenize(self, text: str) -> List[str]:
+    def _tokenize(self, text: str) -> list[str]:
         """Découpe un texte en mots, passe en minuscules et filtre les stopwords."""
         # Garder uniquement les caractères alphanumériques et les tirets/underscores
         words = re.findall(r'[a-zA-Z0-9_\-]+', text.lower())
@@ -102,7 +112,7 @@ class RAGEngine:
         if not os.path.exists(self.doc_dir):
             logger.warning(f"[RAG] Dossier de contexte introuvable : {self.doc_dir}")
             return
-            
+
         md_files = []
         # Rechercher uniquement dans 01_Core, 02_Hardware, 03_Software
         subdirs = ["01_Core", "02_Hardware", "03_Software"]
@@ -114,7 +124,7 @@ class RAGEngine:
                 for f in files:
                     if f.endswith(('.md', '.markdown')):
                         md_files.append(os.path.join(root, f))
-                        
+
         # Ajouter également le résumé_session de l'historique le plus récent
         # pour bénéficier des leçons apprises à chaud
         hist_dir = os.path.join(self.doc_dir, "historique")
@@ -133,24 +143,24 @@ class RAGEngine:
 
         for filepath in md_files:
             try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                with open(filepath, encoding="utf-8", errors="ignore") as f:
                     content = f.read()
                 self._chunk_document(filepath, content)
             except Exception as e:
                 logger.error(f"[RAG] Erreur lors de la lecture de {filepath} : {e}")
-                
+
         logger.info(f"[RAG] Indexation terminée. {len(self.sections)} sections indexées.")
 
     def _chunk_document(self, filepath: str, content: str):
         """Découpe un document en sections basées sur les headers Markdown (## ou ###)."""
         filename = os.path.basename(filepath)
         category = os.path.basename(os.path.dirname(filepath))
-        
+
         # Séparer les sections par en-têtes ## ou ### ou #
         # regex capturant l'en-tête et le contenu qui suit
         pattern = r'(^|\n)(#{1,4}\s+[^\n]+)'
         parts = re.split(pattern, content)
-        
+
         # Le premier élément peut être l'introduction (avant tout header)
         intro = parts[0].strip()
         if intro and len(intro) > 50:
@@ -162,7 +172,7 @@ class RAGEngine:
                     "content": intro,
                     "tokens": tokens
                 })
-                
+
         # Les éléments suivants viennent par triplets : (delimiters, header, content)
         # re.split renvoie les groupes capturés comme éléments séparés de la liste
         i = 1
@@ -172,13 +182,13 @@ class RAGEngine:
             # parts[i+2] est le contenu de la section jusqu'au prochain header
             header = parts[i+1].strip()
             section_content = parts[i+2].strip() if i+2 < len(parts) else ""
-            
+
             # Nettoyer le header pour avoir le titre propre
             title = re.sub(r'^#+\s+', '', header)
-            
+
             full_section_text = f"{title}\n{section_content}"
             tokens = self._tokenize(full_section_text)
-            
+
             if tokens and len(section_content) > 20:
                 self.sections.append({
                     "source": f"{category}/{filename}",
@@ -193,9 +203,9 @@ class RAGEngine:
         num_docs = len(self.sections)
         if num_docs == 0:
             return
-            
+
         # 1. Compter dans combien de documents chaque mot apparaît (DF)
-        doc_counts: Dict[str, int] = {}
+        doc_counts: dict[str, int] = {}
         for sec in self.sections:
             unique_tokens = set(sec["tokens"])
             for t in unique_tokens:
@@ -214,7 +224,7 @@ class RAGEngine:
         # 3. Pré-calculer la norme TF-IDF de chaque section (pour normalisation cosinus)
         for sec in self.sections:
             # Calcul des fréquences de termes (TF)
-            tf_map: Dict[str, int] = {}
+            tf_map: dict[str, int] = {}
             for t in sec["tokens"]:
                 tf_map[t] = tf_map.get(t, 0) + 1
 
@@ -223,7 +233,7 @@ class RAGEngine:
 
             # Calcul du vecteur TF-IDF et de sa norme
             vector_sum_sq = 0.0
-            sec_tfidf: Dict[str, float] = {}
+            sec_tfidf: dict[str, float] = {}
             for t, tf in tf_map.items():
                 tfidf_val = tf * self.idf.get(t, 0.0)
                 sec_tfidf[t] = tfidf_val
@@ -232,7 +242,7 @@ class RAGEngine:
             sec["tfidf"] = sec_tfidf
             sec["norm"] = math.sqrt(vector_sum_sq)
 
-    def _bm25_score(self, query_tokens: List[str], section: Dict[str, Any]) -> float:
+    def _bm25_score(self, query_tokens: list[str], section: dict[str, Any]) -> float:
         """
         Scoring BM25 (k1=1.5, b=0.75) pour une section donnée.
         Complémentaire au TF-IDF : meilleur pour les correspondances exactes.
@@ -271,7 +281,7 @@ class RAGEngine:
         return score
 
     async def query_async(self, user_query: str, top_n: int = 3,
-                          allowed_categories: Optional[List[str]] = None) -> str:
+                          allowed_categories: list[str] | None = None) -> str:
         """[#T61] Variante asynchrone de `query`.
 
         `query` est synchrone et déclenche, via le scoring vectoriel, l'embedding
@@ -285,7 +295,7 @@ class RAGEngine:
         )
 
     def query(self, user_query: str, top_n: int = 3,
-              allowed_categories: Optional[List[str]] = None) -> str:
+              allowed_categories: list[str] | None = None) -> str:
         """
         Recherche hybride TF-IDF + BM25 avec fusion RRF (Reciprocal Rank Fusion).
         Gère un cache LRU simple pour accélérer les requêtes récurrentes.
@@ -296,17 +306,17 @@ class RAGEngine:
         """
         if not user_query:
             return ""
-            
+
         # Normaliser la requête pour la clé de cache
         cache_key = user_query.strip().lower()
         if cache_key in self.query_cache:
             logger.debug(f"[RAG] Query cache hit pour : {user_query[:50]}...")
             return self.query_cache[cache_key]
-            
+
         query_tokens = self._tokenize(user_query)
         if not query_tokens or not self.sections:
             return ""
-        
+
         # Filtrage par catégories : restreindre les sections candidates
         # aux fichiers correspondant aux catégories détectées par le Router.
         active_sections = self.sections
@@ -321,7 +331,7 @@ class RAGEngine:
                         # Les sources dans self.sections sont au format "catégorie/fichier.md"
                         # ex: "02_Hardware/rules_esphome.md"
                         allowed_files.add(rel_path)
-                
+
                 if allowed_files:
                     active_sections = [
                         sec for sec in self.sections
@@ -334,28 +344,28 @@ class RAGEngine:
                     )
             except ImportError:
                 logger.warning("[RAG] Import CATEGORY_FILES_MAP échoué, filtrage désactivé")
-            
+
         # 1. Calculer le vecteur TF-IDF de la requête
-        query_tf: Dict[str, int] = {}
+        query_tf: dict[str, int] = {}
         for t in query_tokens:
             query_tf[t] = query_tf.get(t, 0) + 1
-            
-        query_tfidf: Dict[str, float] = {}
+
+        query_tfidf: dict[str, float] = {}
         query_sum_sq = 0.0
         for t, tf in query_tf.items():
             tfidf_val = tf * self.idf.get(t, 0.0)
             query_tfidf[t] = tfidf_val
             query_sum_sq += tfidf_val ** 2
-            
+
         query_norm = math.sqrt(query_sum_sq)
         if query_norm == 0.0:
             return ""
-            
+
         # 2. Scoring TF-IDF (cosinus) pour chaque section (filtrée si catégories spécifiées)
         # Construire un set d'indices valides pour le filtrage par catégories
         active_indices = set(self.sections.index(s) for s in active_sections) if allowed_categories else None
-        
-        tfidf_scores: List[Tuple[float, int]] = []  # (score, index)
+
+        tfidf_scores: list[tuple[float, int]] = []  # (score, index)
         for idx, sec in enumerate(self.sections):
             if active_indices is not None and idx not in active_indices:
                 continue
@@ -370,33 +380,33 @@ class RAGEngine:
             similarity = dot_product / (query_norm * sec_norm)
             if similarity > 0.01:
                 tfidf_scores.append((similarity, idx))
-        
+
         # 3. Scoring BM25 pour chaque section
-        bm25_scores: List[Tuple[float, int]] = []  # (score, index)
+        bm25_scores: list[tuple[float, int]] = []  # (score, index)
         for idx, sec in enumerate(self.sections):
             if active_indices is not None and idx not in active_indices:
                 continue
             bm25 = self._bm25_score(query_tokens, sec)
             if bm25 > 0.01:
                 bm25_scores.append((bm25, idx))
-        
+
         # 4. Fusion par Reciprocal Rank Fusion (RRF) — k=60 (standard)
         k_rrf = 60
-        rrf_scores: Dict[int, float] = {}
-        
+        rrf_scores: dict[int, float] = {}
+
         # Classement TF-IDF
         tfidf_scores.sort(key=lambda x: x[0], reverse=True)
         for rank, (score, idx) in enumerate(tfidf_scores):
             rrf_scores[idx] = rrf_scores.get(idx, 0.0) + 1.0 / (k_rrf + rank + 1)
-        
+
         # Classement BM25
         bm25_scores.sort(key=lambda x: x[0], reverse=True)
         for rank, (score, idx) in enumerate(bm25_scores):
             rrf_scores[idx] = rrf_scores.get(idx, 0.0) + 1.0 / (k_rrf + rank + 1)
-        
+
         # 5. Trier par score RRF fusionne et prendre le top-N
         sorted_rrf = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
-        
+
         # Scoring vectoriel via ChromaDB (3ème source de fusion)
         embedding_matches = []
         if self._embedding_store:
@@ -409,28 +419,28 @@ class RAGEngine:
                         if sec["source"] == emb_res["source"] and sec["title"] == emb_res.get("title", ""):
                             matched_idx = idx
                             break
-                    
+
                     if matched_idx is not None:
                         # Ajouter au score RRF existant
                         rrf_scores[matched_idx] = rrf_scores.get(matched_idx, 0.0) + 1.0 / (k_rrf + emb_rank + 1)
                     else:
                         # Résultat trouvé uniquement par embeddings (synonymes, paraphrases)
                         embedding_matches.append(emb_res)
-                
+
                 # Re-trier après fusion des 3 sources
                 sorted_rrf = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
                 logger.info(f"[RAG] Fusion triple TF-IDF+BM25+Embeddings : {len(emb_results)} résultats vectoriels intégrés")
             except Exception as emb_err:
                 logger.warning(f"[RAG] Erreur de recherche vectorielle ChromaDB : {emb_err}")
-        
+
         # Fallback : Recherche vectorielle via memory.db + Gemini Embeddings
         elif self._memory_db and self._embed_fn:
             try:
                 import struct
-                
+
                 # Calculer l'embedding de la requête
                 query_embedding = self._embed_fn.embed_query(user_query)
-                
+
                 if query_embedding:
                     # Récupérer tous les embeddings stockés (fichiers de contexte) avec leur titre s'il s'agit d'un fait
                     conn = self._memory_db._get_conn()
@@ -440,7 +450,7 @@ class RAGEngine:
                         LEFT JOIN facts f ON e.source_type = 'fact' AND CAST(f.id AS TEXT) = e.source_id
                     """).fetchall()
                     conn.close()
-                    
+
                     # Calculer la similarité cosinus avec chaque chunk (optimisé avec numpy)
                     vector_scores = []
                     try:
@@ -455,19 +465,19 @@ class RAGEngine:
                             stored_emb = struct.unpack(f'{n}f', emb_bytes)
                             embeddings_list.append(stored_emb)
                             valid_rows.append(row)
-                            
+
                         if embeddings_list:
                             q_arr = np.array(query_embedding)
                             matrix = np.array(embeddings_list)
-                            
+
                             # Calcul vectorisé global
                             dot_products = np.dot(matrix, q_arr)
                             norm_q = np.linalg.norm(q_arr)
                             norm_matrices = np.linalg.norm(matrix, axis=1)
-                            
+
                             norm_product = norm_q * norm_matrices
                             cosims = np.where(norm_product > 0, dot_products / norm_product, 0.0)
-                            
+
                             for idx, row in enumerate(valid_rows):
                                 title = row["fact_title"] if row["fact_title"] else ""
                                 vector_scores.append({
@@ -485,13 +495,13 @@ class RAGEngine:
                                 continue
                             n = len(emb_bytes) // 4
                             stored_emb = list(struct.unpack(f'{n}f', emb_bytes))
-                            
+
                             dot = sum(a * b for a, b in zip(query_embedding, stored_emb))
                             norm_q = math.sqrt(sum(a * a for a in query_embedding))
                             norm_s = math.sqrt(sum(a * a for a in stored_emb))
-                            
+
                             cosim = dot / (norm_q * norm_s) if norm_q > 0 and norm_s > 0 else 0.0
-                            
+
                             title = row["fact_title"] if row["fact_title"] else ""
                             vector_scores.append({
                                 "source": f"Database/Fact #{row['source_id']}" if row["source_type"] == "fact" else row["source_id"],
@@ -500,16 +510,16 @@ class RAGEngine:
                                 "score": cosim,
                                 "source_type": row["source_type"],
                             })
-                    
+
                     # Trier par similarité et prendre les top résultats
                     vector_scores.sort(key=lambda x: x["score"], reverse=True)
                     top_vector = vector_scores[:top_n * 2]
-                    
+
                     for emb_rank, vr in enumerate(top_vector):
                         # [P2-3.3] Seuil sur cosinus Gemini (espace unique) — cohérent.
                         if vr["score"] < 0.3:  # Seuil de pertinence minimal
                             continue
-                        
+
                         # Chercher correspondance dans les sections TF-IDF
                         matched_idx = None
                         for idx, sec in enumerate(self.sections):
@@ -520,12 +530,12 @@ class RAGEngine:
                                 if overlap > 5:
                                     matched_idx = idx
                                     break
-                        
+
                         if matched_idx is not None:
                             rrf_scores[matched_idx] = rrf_scores.get(matched_idx, 0.0) + 1.0 / (k_rrf + emb_rank + 1)
                         else:
                             embedding_matches.append(vr)
-                    
+
                     # Re-trier après fusion des 3 sources
                     sorted_rrf = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
                     logger.info(
@@ -534,12 +544,12 @@ class RAGEngine:
                     )
             except Exception as emb_err:
                 logger.warning(f"[RAG] Erreur de recherche vectorielle memory.db : {emb_err}")
-        
+
         top_sections = sorted_rrf[:top_n]
-        
+
         if not top_sections:
             return ""
-            
+
         output_parts = ["\n=== CONTEXTE TECHNIQUE CIBLÉ (RAG HYBRIDE TF-IDF+BM25+EMBEDDINGS) ==="]
         for idx, rrf_score in top_sections:
             sec = self.sections[idx]
@@ -548,7 +558,7 @@ class RAGEngine:
                 f"\nSource : {sec['source']} > {sec['title']} (Score RRF : {rrf_score:.4f})\n"
                 f"{sec['content']}"
             )
-        
+
         # Ajouter les résultats uniquement trouvés par embeddings
         for emb_match in embedding_matches[:2]:
             output_parts.append(
@@ -556,13 +566,13 @@ class RAGEngine:
                 f"(Similarité : {emb_match['score']:.4f})\n"
                 f"{emb_match['content'][:500]}"
             )
-            
+
         result_text = "\n".join(output_parts)
-        
+
         # Enregistrement dans le cache avec éviction simple
         if len(self.query_cache) >= self.max_cache_size:
             first_key = next(iter(self.query_cache))
             del self.query_cache[first_key]
-            
+
         self.query_cache[cache_key] = result_text
         return result_text

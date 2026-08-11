@@ -8,26 +8,27 @@ Vérifie :
 - L'intégration avec le HealingManager (mock)
 """
 
-import sys
-import os
-import pytest
 import asyncio
+import os
+import sys
 from unittest.mock import patch
+
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.state import TaskPayload, StateUpdate, GlobalState
 from core.dag_runner import DAGRunner
+from core.state import GlobalState, StateUpdate, TaskPayload
 
 
 class MockAgent:
     """Agent mocké qui retourne un StateUpdate de succès."""
-    
+
     def __init__(self, name: str, succeed: bool = True, delay: float = 0.0):
         self.name = name
         self._succeed = succeed
         self._delay = delay
-    
+
     async def invoke(self, payload: TaskPayload) -> StateUpdate:
         if self._delay > 0:
             await asyncio.sleep(self._delay)
@@ -50,7 +51,7 @@ class MockAgent:
 
 class MockEngine:
     """Engine minimal pour instancier le DAGRunner dans les tests."""
-    
+
     def __init__(self):
         self.state = GlobalState(session_id="test_dag_session")
         self._history_lock = asyncio.Lock()
@@ -60,7 +61,7 @@ class MockEngine:
             "executor": MockAgent("executor"),
             "planner": MockAgent("planner"),
         }
-    
+
     async def _validate_modified_yamls(self):
         return None
 
@@ -89,11 +90,11 @@ class TestDAGRunnerSimple:
                 metadata={"target_agent": "executor", "session_id": "test", "stage_id": 1}
             )
         ]
-        
+
         tasks_status, has_error = await dag_runner.execute_dag(
             tasks=tasks, max_session_tokens=500_000
         )
-        
+
         assert has_error is False
         assert tasks_status["t1"] == "success"
 
@@ -114,11 +115,11 @@ class TestDAGRunnerSimple:
                 metadata={"target_agent": "executor", "session_id": "test", "stage_id": 1}
             ),
         ]
-        
+
         tasks_status, has_error = await dag_runner.execute_dag(
             tasks=tasks, max_session_tokens=500_000
         )
-        
+
         assert has_error is False
         assert tasks_status["t1"] == "success"
         assert tasks_status["t2"] == "success"
@@ -140,11 +141,11 @@ class TestDAGRunnerSimple:
                 metadata={"target_agent": "executor", "session_id": "test", "stage_id": 2}
             ),
         ]
-        
+
         tasks_status, has_error = await dag_runner.execute_dag(
             tasks=tasks, max_session_tokens=500_000
         )
-        
+
         assert has_error is False
         assert tasks_status["t1"] == "success"
         assert tasks_status["t2"] == "success"
@@ -164,11 +165,11 @@ class TestDAGRunnerBudget:
                 metadata={"target_agent": "executor", "session_id": "test", "stage_id": 1}
             ),
         ]
-        
+
         # Mock du token tracker pour simuler un dépassement
         with patch("core.token_tracker.get_session_total_tokens", return_value=999_999):
             tasks_status, has_error = await dag_runner.execute_dag(
                 tasks=tasks, max_session_tokens=500_000
             )
-        
+
         assert has_error is True

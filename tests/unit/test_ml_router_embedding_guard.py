@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """[#T12] Garde-fou de l'espace d'embedding du ML Router.
 
 Le provider d'embedding est re-détecté à l'inférence et peut différer de celui

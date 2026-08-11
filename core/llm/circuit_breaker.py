@@ -9,11 +9,12 @@ Auteur : Antigravity IDE
 Date : 2026-06-16
 """
 
+import logging
 import threading
 import time
-import logging
-from typing import Callable, Any, Dict
+from collections.abc import Callable
 from enum import Enum
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class CircuitBreaker:
     # _registry_lock) sont ceux attendus par core/llm_gateway.get_circuit_breakers_status().
     # _registry_lock est un verrou SYNCHRONE (threading.Lock) car il est utilisé dans des
     # contextes `with` synchrones (et get_or_create est appelé depuis du code synchrone).
-    _registry: Dict[str, "CircuitBreaker"] = {}
+    _registry: dict[str, "CircuitBreaker"] = {}
     _registry_lock = threading.Lock()
     # Alias rétro-compatibles (anciens noms internes V12).
     _instances = _registry
@@ -171,7 +172,7 @@ class CircuitBreaker:
             self.record_failure(e)
             raise e
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Retourne les métriques de santé du disjoncteur."""
         return {
             "name": self.name,
@@ -188,6 +189,6 @@ class CircuitBreaker:
             "last_latency_ms": round(self.last_latency_ms, 1) if self.last_latency_ms is not None else None,
         }
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Alias attendu par llm_gateway.get_circuit_breakers_status()."""
         return self.get_stats()

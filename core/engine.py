@@ -22,18 +22,22 @@ L'interface publique (Engine, __init__, register_agent, run) reste inchangée
 pour garantir la rétrocompatibilité avec factory.py, gui_server.py, main.py, etc.
 """
 
-import logging
 import asyncio
+import logging
 import os
 import subprocess
 import time
-from typing import Dict, Optional
 
-from core.state import GlobalState, TaskPayload, StateUpdate, ExecutionPhase
 from agents.base_agent import BaseAgent
 from core.dag_runner import DAGRunner
+from core.hitl import (
+    DECISION_APPROUVE,
+    DECISION_EN_ATTENTE,
+    DECISION_REJETE,
+    HITLManager,
+)
 from core.review_loop import ReviewLoop
-from core.hitl import HITLManager
+from core.state import ExecutionPhase, GlobalState, StateUpdate, TaskPayload
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +73,14 @@ class Engine:
     Responsable de l'orchestration, du dépilage des tâches et de la parallélisation.
     """
 
-    def __init__(self, session_id: str, context_manager=None):
+    def __init__(self, session_id: str, context_manager=None, repo_root: str | None = None):
         self.state = GlobalState(session_id=session_id)
-        self.agents: Dict[str, BaseAgent] = {}
+        self.agents: dict[str, BaseAgent] = {}
         self.context_manager = context_manager
+        # [#T202] Racine du dépôt de travail explicite (ex: clone dédié
+        # DreamCoder). None = comportement historique (workspace découvert via
+        # __file__ / CWD). Utilisée par les hooks Git/YAML/doc ci-dessous.
+        self.repo_root = repo_root
         self.on_event = None  # Callback asynchrone pour diffuser les évènements
         # Verrou asyncio pour self.state.history — protège les écritures
         # concurrentes quand plusieurs branches du DAG s'exécutent en parallèle.
@@ -89,6 +97,11 @@ class Engine:
         self._review_loop = ReviewLoop(self)
         # Human-In-The-Loop Manager (pause/resume réel)
         self.hitl = HITLManager()
+        # [#T267] Session suspendue en attente d'approbation : porte le request_id.
+        # Tant qu'il est renseigné, la session ne doit ni fusionner ni annuler sa
+        # branche éphémère — le travail approuvé y attend sa décision.
+        self._suspension_request_id: str | None = None
+        self._git_branch_courante: str | None = None
         # Workflow-as-Code : transitions dynamiques depuis le graphe JSON
         from core.workflow_executor import WorkflowExecutor
         self._workflow_executor = WorkflowExecutor()
@@ -97,7 +110,7 @@ class Engine:
         self.agents[agent.name] = agent
         logger.debug(f"Agent '{agent.name}' enregistré.")
 
-    async def _validate_modified_yamls(self) -> Optional[str]:
+    async def _validate_modified_yamls(self) -> str | None:
         """
         Détecte via Git les fichiers YAML modifiés dans le workspace,
         et les valide à l'aide de l'outil validate_config_yaml de tools.system.
@@ -105,23 +118,28 @@ class Engine:
         """
         from tools.system import validate_config_yaml
         try:
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-            git_dirs = []
-            if os.path.exists(os.path.join(project_root, ".git")):
-                git_dirs.append(project_root)
+            # [#T202] Racine explicite (clone DreamCoder) : ne scanner QUE ce
+            # dépôt, pas tout le workspace découvert via __file__.
+            if self.repo_root and os.path.exists(os.path.join(self.repo_root, ".git")):
+                git_dirs = [self.repo_root]
             else:
-                try:
-                    for item in os.listdir(project_root):
-                        item_path = os.path.join(project_root, item)
-                        if os.path.isdir(item_path) and os.path.exists(os.path.join(item_path, ".git")):
-                            git_dirs.append(item_path)
-                except Exception:
-                    pass
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-            moteur_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            if moteur_dir not in git_dirs and os.path.exists(os.path.join(moteur_dir, ".git")):
-                git_dirs.append(moteur_dir)
+                git_dirs = []
+                if os.path.exists(os.path.join(project_root, ".git")):
+                    git_dirs.append(project_root)
+                else:
+                    try:
+                        for item in os.listdir(project_root):
+                            item_path = os.path.join(project_root, item)
+                            if os.path.isdir(item_path) and os.path.exists(os.path.join(item_path, ".git")):
+                                git_dirs.append(item_path)
+                    except Exception:
+                        pass
+
+                moteur_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if moteur_dir not in git_dirs and os.path.exists(os.path.join(moteur_dir, ".git")):
+                    git_dirs.append(moteur_dir)
 
             modified_files = []
             for git_dir in git_dirs:
@@ -149,7 +167,7 @@ class Engine:
             logger.info(f"[ENGINE] Validation de {len(modified_files)} fichier(s) YAML modifiés...")
             for yaml_file in modified_files:
                 try:
-                    with open(yaml_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    with open(yaml_file, encoding='utf-8', errors='ignore') as f:
                         content = f.read()
                     if "esphome:" not in content:
                         logger.info(f"[ENGINE] Fichier inclus détecté (pas de section 'esphome:'), validation ignorée pour: {yaml_file}")
@@ -217,6 +235,11 @@ class Engine:
 
         # 1. Préparation de la branche Git éphémère
         git_branch = self._prepare_git_branch()
+        # [#T267] Mémorisée sur l'instance : le point d'approbation en a besoin
+        # pour la stocker avec la demande (la reprise doit retrouver la branche
+        # sur laquelle le travail attend).
+        self._git_branch_courante = git_branch
+        self._suspension_request_id = None
 
         # Démarrer la trace Langfuse
         if _lf:
@@ -233,10 +256,26 @@ class Engine:
             # ── Hooks post-exécution ──
             self._run_doc_hook(has_error)
 
-            if git_branch:
+            # [#T267] ⚠️ POINT DANGEREUX — la finalisation Git est dans un `finally`,
+            # donc une session SUSPENDUE en sortirait aussi par ici. Or _finalize_git
+            # ne connaît que deux issues : merge (succès) ou rollback (échec). Sans
+            # cette garde, une session en attente d'approbation verrait sa branche
+            # éphémère détruite — donc le travail à approuver perdu — ou pire,
+            # fusionnée alors que personne n'a rien approuvé. Une session suspendue
+            # laisse sa branche EN PLACE : c'est la reprise qui la finalisera.
+            if git_branch and not self.est_suspendue():
                 self._finalize_git(git_branch, has_error, tasks_status, git_finalize_agent_branch)
+            elif git_branch:
+                logger.info(
+                    f"[ENGINE] [T267] Session suspendue : branche '{git_branch}' laissée "
+                    f"en place jusqu'à la décision ({self._suspension_request_id})."
+                )
 
         return await self._finalize_session(initial_payload, has_error, _lf)
+
+    def est_suspendue(self) -> bool:
+        """[#T267] La session attend-elle une approbation humaine ?"""
+        return self._suspension_request_id is not None
 
     async def _run_sequential_agents(
         self,
@@ -253,7 +292,7 @@ class Engine:
         Returns:
             (has_error, tasks_status)
         """
-        current_agent_name: Optional[str] = starting_agent
+        current_agent_name: str | None = starting_agent
         has_error = False
         tasks_status: dict = {}
         agent_handoffs = 0
@@ -370,7 +409,57 @@ class Engine:
 
             if update.status == "error":
                 logger.error(f"Erreur depuis {current_agent_name}: {update.error_message}")
-                has_error = True
+                # [#T219] Branche d'échec du Workflow-as-Code. La résolution des
+                # nœuds condition sait router un status="error" (out-false), mais
+                # aucun appelant ne l'atteignait : ce `break` sortait de la boucle
+                # AVANT le bloc de transitions ci-dessous, rendant toute branche
+                # d'erreur dessinée dans l'éditeur HMI inatteignable en prod.
+                # On ne dévie du fail-fast que si l'auteur du graphe a réellement
+                # câblé une sortie conditionnée par l'échec (require_explicit_
+                # condition) : une arête « toujours active » ne suffit pas, sinon
+                # le moteur enchaînerait sur l'agent suivant à chaque erreur.
+                # Contexte transmis à la branche de récupération : sur un échec,
+                # l'information utile est dans error_message (result_data est le
+                # plus souvent None) — sans quoi l'agent cible corrigerait à
+                # l'aveugle.
+                contexte_echec = "\n".join(
+                    part for part in (
+                        (update.error_message or "").strip(),
+                        str(update.result_data).strip() if update.result_data else "",
+                    ) if part
+                )
+                wf_error_tasks = self._workflow_executor.resolve_next_tasks(
+                    current_agent=current_agent_name,
+                    status="error",
+                    result_data=contexte_echec,
+                    session_id=self.state.session_id,
+                    require_explicit_condition=True,
+                )
+                if not wf_error_tasks:
+                    has_error = True
+                    break
+
+                logger.info(
+                    f"[ENGINE] [#T219] Branche d'échec du workflow : "
+                    f"{len(wf_error_tasks)} transition(s) injectée(s) depuis le "
+                    f"graphe pour '{current_agent_name}' (statut error)."
+                )
+                if self.on_event:
+                    await self.on_event("workflow_error_branch", {
+                        "source_agent": current_agent_name,
+                        "targets": [
+                            t.metadata.get("target_agent") for t in wf_error_tasks
+                        ],
+                    })
+
+                self.state.task_queue.extend(wf_error_tasks)
+                dag_tasks = list(self.state.task_queue)
+                self.state.task_queue.clear()
+                new_tasks_status, has_error = await self._handle_dag_execution(
+                    dag_tasks, initial_payload, max_session_tokens, budget,
+                )
+                if new_tasks_status is not None:
+                    tasks_status = new_tasks_status
                 break
 
             # ── Détermination du prochain agent ──
@@ -444,10 +533,28 @@ class Engine:
         """
         # Point d'approbation HITL avant le DAG. Les plans contenant des tâches à
         # risque (write_file, run_terminal, delete) déclenchent une approbation humaine.
-        hitl_approved = await self._check_hitl_before_dag(
+        decision = await self._check_hitl_before_dag(
             dag_tasks, initial_payload.task_objective
         )
-        if not hitl_approved:
+
+        if decision == DECISION_EN_ATTENTE:
+            # [#T267] Ni approuvé ni rejeté : le plan attend une décision humaine
+            # HORS de la fenêtre de session. On ne bloque pas, on ne joue pas le
+            # DAG, et surtout on ne remonte PAS d'erreur — une session suspendue
+            # n'est pas une session en échec. `execute_dag` sera appelé plus tard,
+            # à la reprise, avec le DAG stocké tel quel.
+            logger.info(
+                f"[ENGINE] [T267] Plan mis en attente d'approbation "
+                f"({self._suspension_request_id}) — la session se termine sans exécuter le DAG."
+            )
+            if self.on_event:
+                await self.on_event("plan_waiting_approval", {
+                    "request_id": self._suspension_request_id,
+                    "task_count": len(dag_tasks),
+                })
+            return None, False
+
+        if decision == DECISION_REJETE:
             logger.warning("[ENGINE] Plan rejeté par l'utilisateur (HITL).")
             if self.on_event:
                 await self.on_event("plan_rejected", {
@@ -455,6 +562,33 @@ class Engine:
                 })
             return None, True
 
+        return await self.executer_dag_et_controles(
+            dag_tasks, initial_payload.task_objective, max_session_tokens, budget,
+        )
+
+    async def executer_dag_et_controles(
+        self,
+        dag_tasks: list,
+        objectif: str,
+        max_session_tokens: int,
+        budget=None,
+    ) -> tuple:
+        """
+        [#T253] Exécute le DAG **et tout ce qui doit le suivre** : revue post-DAG,
+        contrat d'acceptation, enregistrement des skills.
+
+        Extraite de `_handle_dag_execution` parce que la reprise après approbation
+        humaine (#T267) appelait `execute_dag()` directement et **sautait donc tous
+        ces contrôles**. Mesuré en production le 11/08 sur la première chaîne
+        complète (`bg_6148ea67`) : le Planner avait bien émis un contrat de
+        2 critères (`[PLANNER] [T253] Contrat d'acceptation : 2 critère(s)`), le DAG
+        a réussi et fusionné — mais **aucune ligne de revue**, donc le contrat n'a
+        jamais été évalué. Un plan approuvé par un humain est précisément celui qui
+        mérite le plus d'être vérifié : c'est le seul qui touche à des fichiers.
+
+        Returns:
+            (tasks_status, has_error), comme `execute_dag`, mais après contrôles.
+        """
         tasks_status, has_error = await self._dag_runner.execute_dag(
             tasks=dag_tasks,
             max_session_tokens=max_session_tokens,
@@ -467,17 +601,36 @@ class Engine:
             review_enabled = self._is_review_enabled()
             if review_enabled and self.agents.get("reviewer"):
                 approved = await self._review_loop.run_review(
-                    initial_objective=initial_payload.task_objective,
+                    initial_objective=objectif,
                     on_event=self.on_event,
                 )
                 if not approved:
                     has_error = True
+        elif has_error and tasks_status:
+            # [#T253] DAG en échec : la revue LLM est sautée (payer un avis de
+            # complaisance après un échec n'a pas de sens), mais le contrat
+            # d'acceptation, lui, doit être évalué — c'est le seul mécanisme
+            # capable de PROUVER que l'objectif est atteint malgré l'échec d'une
+            # branche, ou de confirmer qu'il ne l'est pas. Mesuré le 10/08 :
+            # sans cette branche, une seule tâche en erreur suffisait à sauter
+            # toute vérification du plan.
+            verdict = await self._review_loop.contrat_seul(on_event=self.on_event)
+            if verdict is True:
+                has_error = False
+                # Absoudre aussi les statuts d'erreur pour la finalisation Git :
+                # `_finalize_git` exige que TOUTES les tâches soient « success »,
+                # sinon rollback même quand le contrat a prouvé l'objectif atteint.
+                for tid, statut in list(tasks_status.items()):
+                    if statut in ("error", "blocked"):
+                        tasks_status[tid] = "success"
+                logger.info(
+                    "[ENGINE] [T253] Contrat satisfait malgré DAG en erreur — "
+                    "session et branche Git traitées comme succès."
+                )
 
         # Enregistrement des skills après un DAG réussi
         if not has_error:
-            self._record_skills_from_dag(
-                dag_tasks, initial_payload.task_objective
-            )
+            self._record_skills_from_dag(dag_tasks, objectif)
 
         return tasks_status, has_error
 
@@ -489,14 +642,28 @@ class Engine:
         consolidation mémoire, checkpoint final, fermeture trace Langfuse, event.
         Extraite de run().
         """
+        # [#T267] Une session suspendue n'est ni réussie ni échouée : elle attend.
+        # Sa phase reste WAITING_APPROVAL — c'est ce que le checkpoint doit porter,
+        # et ce que l'IHM doit afficher au lieu d'un « échec » trompeur.
+        suspendue = self.est_suspendue()
+
         # Phase finale
-        self.state.current_phase = ExecutionPhase.FAILED if has_error else ExecutionPhase.COMPLETED
+        if not suspendue:
+            self.state.current_phase = ExecutionPhase.FAILED if has_error else ExecutionPhase.COMPLETED
 
-        # Sauvegarde mémoire épisodique
-        self._save_episode(initial_payload)
+        if suspendue:
+            # Ni épisode ni consolidation : la session n'a pas produit son résultat,
+            # l'écrire en mémoire épisodique apprendrait une conclusion fausse.
+            logger.info(
+                f"[ENGINE] [T267] Session {self.state.session_id} suspendue en attente "
+                f"d'approbation — mémoire épisodique et consolidation reportées à la reprise."
+            )
+        else:
+            # Sauvegarde mémoire épisodique
+            self._save_episode(initial_payload)
 
-        # Hook de consolidation mémoire (decay, GC graphe, sync memory.db)
-        await self._consolidate_memory(initial_payload, has_error)
+            # Hook de consolidation mémoire (decay, GC graphe, sync memory.db)
+            await self._consolidate_memory(initial_payload, has_error)
 
         # Checkpoint final
         try:
@@ -508,17 +675,28 @@ class Engine:
         # Langfuse : fermer la trace
         if _lf:
             try:
-                _lf.end_trace(self.state.session_id, status="error" if has_error else "success")
+                _lf.end_trace(
+                    self.state.session_id,
+                    status=(
+                        "waiting_approval" if suspendue else ("error" if has_error else "success")
+                    ),
+                )
                 _lf.flush()
             except Exception as _e:
                 from core.error_reporter import report_swallowed
                 report_swallowed("engine.langfuse_end_trace", _e, level="debug")
 
-        print(f"\n[ENGINE] Orchestration terminée (Session: {self.state.session_id})")
+        if suspendue:
+            print(f"\n[ENGINE] Orchestration SUSPENDUE (Session: {self.state.session_id})")
+        else:
+            print(f"\n[ENGINE] Orchestration terminée (Session: {self.state.session_id})")
         if self.on_event:
             await self.on_event("orchestration_completed", {
                 "session_id": self.state.session_id,
-                "status": "error" if has_error else "success",
+                "status": (
+                    "waiting_approval" if suspendue else ("error" if has_error else "success")
+                ),
+                "request_id": self._suspension_request_id,
             })
         return self.state
 
@@ -542,11 +720,14 @@ class Engine:
         except Exception:
             return 500_000
 
-    def _prepare_git_branch(self) -> Optional[str]:
+    def _prepare_git_branch(self) -> str | None:
         """Prépare la branche Git éphémère pour l'isolation du workspace."""
         try:
             from tools.git_safety import git_prepare_agent_branch
-            branch = git_prepare_agent_branch(self.state.session_id)
+            # [#T202] Cibler le dépôt de travail explicite s'il est fourni.
+            branch = git_prepare_agent_branch(
+                self.state.session_id, repo_path=self.repo_root or "."
+            )
             if branch.startswith("Erreur"):
                 logger.warning(f"[ENGINE] Impossible de préparer la branche Git : {branch}")
                 return None
@@ -571,7 +752,8 @@ class Engine:
                 from tools.doc_generator import DocGenerator
                 doc_gen = DocGenerator()
                 doc_gen.update_docs(
-                    repo_path=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    # [#T202] Racine de travail explicite si fournie (clone DreamCoder)
+                    repo_path=self.repo_root or os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                     session_id=self.state.session_id,
                 )
             except Exception as doc_err:
@@ -585,7 +767,11 @@ class Engine:
                 execution_success = execution_success and all(
                     s == "success" for s in tasks_status.values()
                 )
-            merge_msg = git_finalize_fn(git_branch, execution_success, self.state.session_id)
+            # [#T202] Finaliser dans le dépôt de travail explicite s'il est fourni.
+            merge_msg = git_finalize_fn(
+                git_branch, execution_success, self.state.session_id,
+                repo_path=self.repo_root or ".",
+            )
             logger.info(f"[ENGINE] Finalisation Git : {merge_msg}")
         except Exception as gfe:
             logger.error(f"[ENGINE] Exception lors de la finalisation de la branche Git : {gfe}")
@@ -632,12 +818,12 @@ class Engine:
         try:
             from memory.memory_db import MemoryDB
             db = MemoryDB.get_instance()
-            
+
             # 1. Decay des scores de pertinence (faits non consultés > 7 jours)
             decayed = await db.decay_relevance_async(decay_rate=0.03)
             if decayed > 0:
                 logger.info(f"[CONSOLIDATION] {decayed} faits ont subi un decay de pertinence.")
-            
+
             # 2. GC du graphe (observations > 15, entités temporaires > 30 jours)
             gc_result = await db.gc_graph_entities_async(max_observations=15, max_age_days=30)
             if gc_result["summarized"] > 0 or gc_result["archived"] > 0:
@@ -645,7 +831,7 @@ class Engine:
                      f"[CONSOLIDATION] GC graphe : {gc_result['summarized']} résumées, "
                      f"{gc_result['archived']} archivées"
                 )
-            
+
             # 2bis. Self-Healing du contexte : vérifier la cohérence
             # entre la documentation Markdown et le code réel
             try:
@@ -663,19 +849,19 @@ class Engine:
                     logger.info("[CONSOLIDATION] [SELF-HEALING] Contexte validé — aucune incohérence.")
             except Exception as sh_err:
                 logger.debug(f"[CONSOLIDATION] Self-healing du contexte ignoré : {sh_err}")
-            
+
             # 3. Enregistrer les leçons apprises (corrections/self-healing)
             for update in self.state.history:
                 is_healing = update.metadata.get("is_healing", False)
                 is_correction = update.metadata.get("is_correction", False)
-                
+
                 if (is_healing or is_correction) and update.result_data:
                     # Déterminer la catégorie depuis le contexte
                     category = self._infer_lesson_category(
                         str(update.result_data), update.agent_name
                     )
                     severity = "major" if is_healing else "minor"
-                    
+
                     await db.record_learned_lesson_async(
                         category=category,
                         title=f"Auto-correction {update.agent_name}",
@@ -684,14 +870,14 @@ class Engine:
                         tags=f"{update.agent_name},auto,{severity}",
                         severity=severity,
                     )
-            
+
             # 4. Synchroniser l'épisode dans memory.db
             result_summary = ""
             for u in reversed(self.state.history):
                 if u.status == "success" and u.result_data:
                     result_summary = str(u.result_data)[:300]
                     break
-            
+
             await db.upsert_episode_async(
                 session_date=time.strftime("%Y-%m-%d"),
                 session_folder=f"session_{self.state.session_id[:8]}",
@@ -703,19 +889,19 @@ class Engine:
                 tags="auto,engine",
                 source_file="engine.py",
             )
-            
+
             logger.info("[CONSOLIDATION] Mémoire consolidée avec succès.")
-            
+
         except Exception as mem_err:
             logger.warning(f"[ENGINE] Consolidation mémoire échouée (non bloquant) : {mem_err}")
-    
+
     def _infer_lesson_category(self, text: str, agent_name: str) -> str:
         """
         Infère la catégorie d'une leçon apprise depuis le texte et l'agent.
         Retourne : esphome, moteur, gcp, hmi, infra, ou 'moteur' par défaut.
         """
         text_lower = (text + " " + agent_name).lower()
-        
+
         if any(kw in text_lower for kw in ["esphome", "lvgl", "tab5", "esp32", "gpio", "ota"]):
             return "esphome"
         elif any(kw in text_lower for kw in ["dashboard", "ihm", "hmi", "ui", "css", "frontend"]):
@@ -812,7 +998,7 @@ class Engine:
 
         return max_risk, risky_tasks
 
-    def _hitl_bypass_reason(self, session_id: str, max_risk: str) -> Optional[str]:
+    def _hitl_bypass_reason(self, session_id: str, max_risk: str) -> str | None:
         """
         [PHASE 1 - M5] Décide si l'approbation HITL peut être contournée.
 
@@ -837,16 +1023,24 @@ class Engine:
 
     async def _check_hitl_before_dag(
         self, dag_tasks: list, objective: str
-    ) -> bool:
+    ) -> str:
         """
         Vérifie si le DAG nécessite une approbation humaine.
 
-        Le niveau de risque est désormais calculé par `_assess_dag_risk` (outil ciblé +
+        Le niveau de risque est calculé par `_assess_dag_risk` (outil ciblé +
         mots-clés), et la politique de bypass par `_hitl_bypass_reason`. Les plans
-        interactifs à risque ne sont PLUS contournés d'office (correctif M5 de l'audit).
+        interactifs à risque ne sont PAS contournés d'office (correctif M5 de l'audit).
 
-        Returns:
-            True si approuvé (ou bypass), False si rejeté.
+        [#T267] Retourne désormais TROIS états et non plus un booléen :
+            DECISION_APPROUVE   — exécuter le DAG maintenant (approuvé ou bypass)
+            DECISION_REJETE     — abandonner le plan
+            DECISION_EN_ATTENTE — plan mis en attente, session suspendue sans erreur
+
+        Le mode non bloquant est le défaut. Le comportement d'avant (attente
+        bloquante de 300 s) reste accessible via `MOTEUR_HITL_NON_BLOQUANT=0`,
+        mais il faut savoir ce qu'on réactive : il est incompatible avec le
+        `wait_for` de 120 s de `services/pipeline_service.py`, ce qui rendait
+        tout plan à risque inexécutable en production.
         """
         # Analyser le niveau de risque du plan (outil ciblé + libellé).
         max_risk, risky_tasks = self._assess_dag_risk(dag_tasks)
@@ -856,7 +1050,7 @@ class Engine:
         if bypass_reason:
             if max_risk != "low":
                 logger.info(f"[ENGINE] ⚡ HITL contourné ({bypass_reason}) malgré risque '{max_risk}'.")
-            return True
+            return DECISION_APPROUVE
 
         # Construire le résumé du plan pour l'IHM
         plan_summary = f"Plan : {objective[:120]}\n"
@@ -874,9 +1068,35 @@ class Engine:
                 "phase": "waiting_approval",
             })
 
+        request_id = f"dag_{self.state.session_id}_{len(dag_tasks)}"
+        description = (
+            f"Le plan contient {len(risky_tasks)} tâche(s) à risque ({max_risk}). "
+            f"Approuvez-vous l'exécution ?"
+        )
+
+        # [#T267] Chemin non bloquant (défaut) : on persiste la demande AVEC le DAG
+        # à rejouer, on notifie l'IHM, et on rend la main immédiatement. La phase
+        # reste WAITING_APPROVAL — c'est elle qui sera lue au checkpoint.
+        if self._hitl_non_bloquant():
+            await self.hitl.demander_sans_bloquer(
+                request_id=request_id,
+                session_id=self.state.session_id,
+                dag_tasks=self._serialiser_dag(dag_tasks),
+                description=description,
+                objective=objective,
+                plan_summary=plan_summary,
+                risk_level=max_risk,
+                git_branch=self._git_branch_courante,
+                criteres=self._criteres_acceptation_courants(),
+                on_event=self.on_event,
+            )
+            self._suspension_request_id = request_id
+            return DECISION_EN_ATTENTE
+
+        # Chemin historique (bloquant), conservé derrière le kill-switch.
         decision = await self.hitl.request_approval(
-            request_id=f"dag_{self.state.session_id}_{len(dag_tasks)}",
-            description=f"Le plan contient {len(risky_tasks)} tâche(s) à risque ({max_risk}). Approuvez-vous l'exécution ?",
+            request_id=request_id,
+            description=description,
             plan_summary=plan_summary,
             risk_level=max_risk,
             on_event=self.on_event,
@@ -892,4 +1112,55 @@ class Engine:
                 "feedback": decision.feedback,
             })
 
-        return decision.approved
+        return DECISION_APPROUVE if decision.approved else DECISION_REJETE
+
+    def _criteres_acceptation_courants(self) -> list:
+        """
+        [#T253] Contrat d'acceptation posé par le Planner, lu dans l'historique.
+
+        Il doit être persisté AVEC la demande d'approbation : à la reprise, le
+        moteur est neuf et son `state.history` est vide — le contrat mourrait
+        donc avec la session suspendue, et ne serait jamais évalué. Mesuré en
+        prod le 11/08 : un plan approuvé fusionnait sans qu'aucun de ses
+        2 critères ne soit vérifié.
+
+        Même règle de lecture que `ReviewLoop._criteres_du_plan` : le plus
+        récent gagne, un plan correctif ayant pu en reposer un.
+        """
+        from core.acceptance_contract import CLE_CONTRAT
+        for update in reversed(self.state.history):
+            criteres = (update.metadata or {}).get(CLE_CONTRAT)
+            if criteres:
+                return criteres
+        return []
+
+    @staticmethod
+    def _hitl_non_bloquant() -> bool:
+        """
+        [#T267] Le point d'approbation suspend-il la session au lieu de bloquer ?
+
+        Non bloquant par défaut. `MOTEUR_HITL_NON_BLOQUANT=0` restaure l'attente
+        bloquante d'avant #T267 — utile pour un test ou un usage hors pipeline,
+        jamais en production derrière le `wait_for` de 120 s.
+        """
+        return os.environ.get("MOTEUR_HITL_NON_BLOQUANT", "1").strip().lower() not in ("0", "false", "off")
+
+    @staticmethod
+    def _serialiser_dag(dag_tasks: list) -> list[dict]:
+        """
+        [#T267] Sérialise le DAG pour qu'il soit rejoué À L'IDENTIQUE à la reprise.
+
+        `model_dump(mode="json")` et non `core.serializers.task_payload_to_dict` :
+        ce dernier est volontairement partiel (il perd `status`, `assigned_agent`,
+        `result_summary`) parce qu'il sert l'affichage. Ici la fidélité prime —
+        ce qui est approuvé doit être exactement ce qui s'exécute.
+        """
+        sortie = []
+        for t in dag_tasks:
+            if hasattr(t, "model_dump"):
+                sortie.append(t.model_dump(mode="json"))
+            elif isinstance(t, dict):
+                sortie.append(t)
+            else:
+                logger.warning(f"[ENGINE] [T267] Tâche non sérialisable ignorée : {type(t)}")
+        return sortie

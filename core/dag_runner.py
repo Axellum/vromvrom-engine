@@ -19,13 +19,14 @@ import inspect
 import json
 import logging
 import time
-from typing import Dict, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from core.state import TaskPayload, StateUpdate
-from core.healing import HealingManager
 from core.dag.context_compressor import ContextCompressor
-from core.dag.swarm_dispatcher import try_swarm_dispatch
+from core.dag.node_tier_policy import appliquer_tier_role
 from core.dag.priority_queue import get_initial_ready_tasks, get_task_priority
+from core.dag.swarm_dispatcher import try_swarm_dispatch
+from core.healing import HealingManager
+from core.state import StateUpdate, TaskPayload
 
 if TYPE_CHECKING:
     from core.engine import Engine
@@ -46,6 +47,10 @@ DEFAULT_MAX_PARALLEL_DAG_TASKS = 8
 # absent de config.json.
 DEFAULT_AVG_TOKENS_PER_DAG_TASK = 3000
 
+# [#T295] Plafond GLOBAL sur la TAILLE TOTALE de relevant_context après toute agrégation
+# 40 000 caractères ≈ 10 000 tokens — garantit que le contexte d'une tâche ne sature jamais le prompt LLM
+TOTAL_CONTEXT_MAX_CHARS = 40_000
+
 
 class DAGRunner:
     """
@@ -63,7 +68,7 @@ class DAGRunner:
         self._engine = engine
         self._healer = HealingManager(engine)
         self._compressor = ContextCompressor(None)
-        
+
         # Contexte de session courant pour le spawning dynamique (Phase 2)
         self._current_session_id = None
         self._current_queue = None
@@ -125,16 +130,16 @@ class DAGRunner:
         requête. Si absent, un budget tokens-seul est construit depuis
         `max_session_tokens` (rétro-compat, ex. appels internes subgraph).
         """
-        from core.runtime_db import get_connection, get_async_connection
+        from core.runtime_db import get_async_connection
 
         if budget is None:
             from core.execution_budget import ExecutionBudget
             budget = ExecutionBudget(self._engine.state.session_id, max_tokens=max_session_tokens)
 
         session_id = self._engine.state.session_id
-        tasks_by_id: Dict[str, TaskPayload] = {t.task_id: t for t in tasks if t.task_id}
-        tasks_status: Dict[str, str] = {t_id: "pending" for t_id in tasks_by_id}
-        tasks_retries: Dict[str, int] = {t_id: 0 for t_id in tasks_by_id}
+        tasks_by_id: dict[str, TaskPayload] = {t.task_id: t for t in tasks if t.task_id}
+        tasks_status: dict[str, str] = {t_id: "pending" for t_id in tasks_by_id}
+        tasks_retries: dict[str, int] = {t_id: 0 for t_id in tasks_by_id}
         has_error = False
 
         # Sauvegarder le contexte précédent (pour le support des subgraphs récursifs)
@@ -165,7 +170,7 @@ class DAGRunner:
                     "DELETE FROM dag_edges WHERE session_id = ? AND (parent_task_id = ? OR child_task_id = ?)",
                     (session_id, t_id, t_id)
                 )
-            
+
             # Insérer les nouvelles tâches et dépendances
             for t in tasks:
                 depends_on_str = json.dumps(t.depends_on or [])
@@ -182,7 +187,7 @@ class DAGRunner:
                     """,
                     (t.task_id, session_id, 'pending', inputs_str, depends_on_str)
                 )
-                
+
                 # Insérer les arcs (edges) de dépendances dans la table dag_edges
                 for parent in (t.depends_on or []):
                     if parent in tasks_by_id: # On ne crée d'arcs que vers des tâches de ce DAG
@@ -194,7 +199,7 @@ class DAGRunner:
                             """,
                             (session_id, parent, t.task_id)
                         )
-            
+
             # Migrer les variables de la mémoire de travail globale existantes (Phase 3)
             if self._engine.state.working_memory:
                 for key, val in self._engine.state.working_memory.items():
@@ -241,7 +246,7 @@ class DAGRunner:
             priority = get_task_priority(payload)
             await queue.put((priority, t_id))
 
-        running_jobs: Dict[str, asyncio.Task] = {}
+        running_jobs: dict[str, asyncio.Task] = {}
         self._current_running_jobs = running_jobs
 
         # Fonctions d'aide locales pour gérer la BDD et le déverrouillage réactif
@@ -378,7 +383,7 @@ class DAGRunner:
             for completed_job in done_jobs:
                 try:
                     finished_id, finished_update = completed_job.result()
-                    
+
                     # Sécurité : vérifier que finished_id est bien dans running_jobs
                     if finished_id in running_jobs:
                         del running_jobs[finished_id]
@@ -395,7 +400,7 @@ class DAGRunner:
 
                     if finished_update.status == "success":
                         tasks_status[finished_id] = "success"
-                        
+
                         # Mettre à jour en BDD
                         outputs_str = json.dumps(finished_update.result_data)
                         await _update_task_status_db(
@@ -442,7 +447,7 @@ class DAGRunner:
                             # Le healing a fonctionné : on réinitialise l'état et on la réinsère dans la queue
                             tasks_status[finished_id] = "pending"
                             await _update_task_status_db(finished_id, 'pending')
-                            
+
                             pr = tasks_by_id[finished_id].metadata.get("stage_id", 1)
                             await queue.put((pr, finished_id))
                             self._new_task_event.set()
@@ -513,6 +518,13 @@ class DAGRunner:
         if not target_agent:
             raise ValueError(f"Agent cible inconnu: '{target_name}'")
 
+        # [#T295] Préservation et réinitialisation du contexte d'origine au rejeu (Self-Healing)
+        # Garantit qu'un rejeu de Self-Healing repart du contexte d'origine sans ré-accumuler les tentatives précédentes.
+        if "_original_relevant_context" not in task_payload.metadata:
+            task_payload.metadata["_original_relevant_context"] = task_payload.relevant_context or ""
+        else:
+            task_payload.relevant_context = task_payload.metadata["_original_relevant_context"]
+
         # Agrégation du contexte des dépendances directes résolues
         # Compression intelligente : les résultats volumineux (ex: 695K chars
         # de code lu) sont compressés AVANT d'être injectés comme contexte,
@@ -561,7 +573,7 @@ class DAGRunner:
                         scoped_vars[key] = json.loads(val_json) if val_json else None
                     except Exception:
                         scoped_vars[key] = val_json
-                        
+
             # Récupérer et compacter le scope global
             global_vars = {}
             with get_connection() as conn:
@@ -575,7 +587,7 @@ class DAGRunner:
                         global_vars[key] = json.loads(val_json) if val_json else None
                     except Exception:
                         global_vars[key] = val_json
-            
+
             compacted_global = {}
             for k, v in global_vars.items():
                 compacted_global[k] = f"[{type(v).__name__} (longueur: {len(str(v))})]"
@@ -610,6 +622,18 @@ class DAGRunner:
                     (task_payload.relevant_context or "") + global_context
                 ).strip()
 
+        # [#T295] Plafond GLOBAL sur la TAILLE TOTALE du contexte agrégé (40 000 chars ≈ 10K tokens)
+        if task_payload.relevant_context and len(task_payload.relevant_context) > TOTAL_CONTEXT_MAX_CHARS:
+            original_len = len(task_payload.relevant_context)
+            logger.warning(
+                f"[DAG] ⚠️ Plafond global de contexte dépassé pour la tâche '{task_id}' "
+                f"({original_len:,} chars > {TOTAL_CONTEXT_MAX_CHARS:,} chars max). Troncature appliquée."
+            )
+            task_payload.relevant_context = (
+                task_payload.relevant_context[:TOTAL_CONTEXT_MAX_CHARS]
+                + "\n\n[... Troncature appliquée par le plafond global de contexte du DAG (40k chars max) ...]"
+            )
+
         print(f"\n[DAG] -> Exécution de la tâche : {task_id} (Agent: {target_name.upper()})")
         print(f"[DAG] Objectif : {task_payload.task_objective}")
 
@@ -618,7 +642,7 @@ class DAGRunner:
             identical_past_task = next(
                 (
                     h for h in reversed(self._engine.state.history)
-                    if h.metadata 
+                    if h.metadata
                     and h.metadata.get("task_objective") == task_payload.task_objective
                     and h.metadata.get("target_agent") == target_name
                     and h.status == "success"
@@ -661,7 +685,7 @@ class DAGRunner:
                 ),
                 timeout=120.0
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(f"[DAG] ⏱️ Watchdog déclenché : Timeout de 120s dépassé pour la tâche '{task_id}' (Agent: '{target_name}')")
             t_upd = StateUpdate(
                 agent_name=target_name,
@@ -731,6 +755,67 @@ class DAGRunner:
     # MapReduce Node — Fan-out / Fan-in pour tâches parallèles
     # ──────────────────────────────────────────────────────────────────
 
+    def _construire_payloads_mapreduce(
+        self,
+        task_payload: TaskPayload,
+        chunks: list[str],
+        reduce_prompt: str,
+        map_task_id_prefix: str,
+        parent_id: str,
+    ) -> tuple[list[TaskPayload], TaskPayload]:
+        """
+        Construit les payloads Map (un par chunk) et le payload Reduce du DAG.
+
+        [#T245] Le tier de modèle n'est plus hérité tel quel du parent : chaque
+        moitié reçoit le tier de son rôle (maps en léger/gratuit, reduce sur le
+        tier fort) via `core/dag/node_tier_policy.py`.
+        """
+        scope_level = task_payload.metadata.get("scope_level", 1)
+        meta_map = appliquer_tier_role("map", task_payload.metadata)
+        meta_reduce = appliquer_tier_role("reduce", task_payload.metadata)
+
+        map_payloads = []
+        for i, chunk in enumerate(chunks):
+            map_id = f"{map_task_id_prefix}_map_{i}"
+            map_payloads.append(TaskPayload(
+                task_objective=(
+                    f"[MAP {i+1}/{len(chunks)}] {task_payload.task_objective}\n\n"
+                    f"--- CHUNK {i+1} ---\n{chunk}"
+                ),
+                relevant_context=task_payload.relevant_context,
+                metadata={
+                    **meta_map,
+                    "map_index": i,
+                    "map_total": len(chunks),
+                    "is_map_chunk": True,
+                    "scope_id": map_id,
+                    "parent_scope_id": parent_id,
+                    "scope_level": scope_level,
+                },
+                task_id=map_id,
+            ))
+
+        reduce_id = f"{map_task_id_prefix}_reduce"
+        reduce_payload = TaskPayload(
+            task_objective=(
+                f"[REDUCE] {reduce_prompt or 'Fusionner les résultats précédents'}\n\n"
+                f"Attente de {len(chunks)} tâches Map."
+            ),
+            relevant_context=task_payload.relevant_context,
+            metadata={
+                **meta_reduce,
+                "is_reduce": True,
+                "map_count": len(chunks),
+                "scope_id": reduce_id,
+                "parent_scope_id": parent_id,
+                "scope_level": scope_level,
+            },
+            task_id=reduce_id,
+            depends_on=[p.task_id for p in map_payloads],
+        )
+
+        return map_payloads, reduce_payload
+
     async def execute_map_reduce(
         self,
         task_payload: TaskPayload,
@@ -742,8 +827,8 @@ class DAGRunner:
         Exécute un pattern MapReduce réactif sur une liste de chunks de données.
         Les tâches Map et Reduce sont injectées dynamiquement dans le DAGRunner courant.
         """
-        from core.state import TaskPayload, StateUpdate
         from core.runtime_db import get_connection
+        from core.state import StateUpdate
 
         parent_id = task_payload.task_id or "mapreduce"
         target_name = task_payload.metadata.get("target_agent", "executor")
@@ -758,8 +843,18 @@ class DAGRunner:
             )
             return await self._execute_map_reduce_fallback(task_payload, chunks, reduce_prompt, on_event)
 
+        # 1. Générer les TaskPayload pour les tâches Map et la tâche Reduce
+        map_payloads, reduce_payload = self._construire_payloads_mapreduce(
+            task_payload, chunks, reduce_prompt, map_task_id_prefix, parent_id
+        )
+        map_ids = [p.task_id for p in map_payloads]
+        reduce_id = reduce_payload.task_id
+        tier_map = map_payloads[0].metadata.get("model_tier") if map_payloads else None
+        tier_reduce = reduce_payload.metadata.get("model_tier")
+
         logger.info(
-            f"[DAG] 🗺️ MapReduce dynamique démarré pour {parent_id} : {len(chunks)} chunks → agent '{target_name}'"
+            f"[DAG] 🗺️ MapReduce dynamique démarré pour {parent_id} : {len(chunks)} chunks → agent '{target_name}' "
+            f"(tier maps '{tier_map}' → tier reduce '{tier_reduce}')"
         )
 
         if on_event:
@@ -767,53 +862,9 @@ class DAGRunner:
                 "task_id": parent_id,
                 "chunks_count": len(chunks),
                 "target_agent": target_name,
+                "map_tier": tier_map,
+                "reduce_tier": tier_reduce,
             })
-
-        # 1. Générer les TaskPayload pour les tâches Map et la tâche Reduce
-        map_payloads = []
-        map_ids = []
-        for i, chunk in enumerate(chunks):
-            map_id = f"{map_task_id_prefix}_map_{i}"
-            map_ids.append(map_id)
-            
-            chunk_payload = TaskPayload(
-                task_objective=(
-                    f"[MAP {i+1}/{len(chunks)}] {task_payload.task_objective}\n\n"
-                    f"--- CHUNK {i+1} ---\n{chunk}"
-                ),
-                relevant_context=task_payload.relevant_context,
-                metadata={
-                    **task_payload.metadata,
-                    "map_index": i,
-                    "map_total": len(chunks),
-                    "is_map_chunk": True,
-                    "scope_id": map_id,
-                    "parent_scope_id": parent_id,
-                    "scope_level": task_payload.metadata.get("scope_level", 1),
-                },
-                task_id=map_id,
-            )
-            map_payloads.append(chunk_payload)
-
-        # Créer la tâche Reduce
-        reduce_id = f"{map_task_id_prefix}_reduce"
-        reduce_payload = TaskPayload(
-            task_objective=(
-                f"[REDUCE] {reduce_prompt or 'Fusionner les résultats précédents'}\n\n"
-                f"Attente de {len(chunks)} tâches Map."
-            ),
-            relevant_context=task_payload.relevant_context,
-            metadata={
-                **task_payload.metadata,
-                "is_reduce": True,
-                "map_count": len(chunks),
-                "scope_id": reduce_id,
-                "parent_scope_id": parent_id,
-                "scope_level": task_payload.metadata.get("scope_level", 1),
-            },
-            task_id=reduce_id,
-            depends_on=map_ids,
-        )
 
         # 2. Enregistrer toutes les tâches et les dépendances en BDD unifiée
         with get_connection() as conn:
@@ -894,7 +945,7 @@ class DAGRunner:
         for map_id in map_ids:
             await self._current_queue.put((priority, map_id))
             logger.info(f"[DAG] [MAPREDUCE] Tâche Map éphémère poussée dans la PriorityQueue : {map_id}")
-            
+
         if self._new_task_event:
             self._new_task_event.set()
 
@@ -915,7 +966,7 @@ class DAGRunner:
                     "SELECT outputs_json, worker_id FROM dag_tasks WHERE session_id = ? AND task_id = ?",
                     (session_id, reduce_id)
                 ).fetchone()
-            
+
             outputs_str, worker_id = row if row else (None, None)
             result_data = json.loads(outputs_str) if outputs_str else f"MapReduce {parent_id} complété."
 
@@ -984,6 +1035,10 @@ class DAGRunner:
             })
 
         # ── Phase MAP ──
+        # [#T245] Même politique de tier par rôle que le chemin DAG : les deux
+        # chemins doivent produire les mêmes payloads, sinon le fallback
+        # ré-introduit silencieusement l'héritage qu'on vient de retirer.
+        meta_map = appliquer_tier_role("map", task_payload.metadata)
         map_tasks = []
         for i, chunk in enumerate(chunks):
             chunk_payload = TaskPayload(
@@ -993,7 +1048,7 @@ class DAGRunner:
                 ),
                 relevant_context=task_payload.relevant_context,
                 metadata={
-                    **task_payload.metadata,
+                    **meta_map,
                     "map_index": i,
                     "map_total": len(chunks),
                     "is_map_chunk": True,
@@ -1055,7 +1110,7 @@ class DAGRunner:
                 ),
                 relevant_context=task_payload.relevant_context,
                 metadata={
-                    **task_payload.metadata,
+                    **appliquer_tier_role("reduce", task_payload.metadata),
                     "is_reduce": True,
                     "map_count": len(map_outputs),
                 },

@@ -13,9 +13,10 @@ est gérée par `require_auth` lui-même (qui accepte `?ticket=`).
 """
 
 import logging
+
 from fastapi import APIRouter
 
-from core.auth import issue_ticket, _TICKET_TTL_SECONDS
+from core.auth import _TICKET_TTL_SECONDS, issue_ticket
 
 logger = logging.getLogger(__name__)
 

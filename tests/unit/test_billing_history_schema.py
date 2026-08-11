@@ -10,10 +10,7 @@ On vérifie :
 import asyncio
 import sqlite3
 
-import pytest
-
 from core import runtime_db
-
 
 _FULL_COLUMNS = {
     "id", "timestamp", "provider", "metric", "value", "currency",

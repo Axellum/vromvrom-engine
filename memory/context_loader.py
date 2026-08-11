@@ -9,9 +9,8 @@ Auteur : Antigravity IDE + Axel
 Dernière mise à jour : 2026-05-25
 """
 
-import os
 import logging
-from typing import Dict, List, Optional
+import os
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -19,7 +18,7 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────
 # Mapping : catégorie de tâche → fichiers de contexte à charger
 # ──────────────────────────────────────────────────────────────────
-CATEGORY_FILES_MAP: Dict[str, List[str]] = {
+CATEGORY_FILES_MAP: dict[str, list[str]] = {
     "home_assistant": [
         "03_Software/rules_home_assistant.md",
         "03_Software/03_LOGIQUE_ET_APIS.md",
@@ -72,7 +71,7 @@ class LoadedDocument:
     content: str
     size_bytes: int
     last_modified: float  # timestamp
-    category_tags: List[str] = field(default_factory=list)
+    category_tags: list[str] = field(default_factory=list)
 
 
 class ContextLoader:
@@ -82,7 +81,7 @@ class ContextLoader:
     pertinent pour une liste de catégories de tâches.
     """
 
-    def __init__(self, contexte_ia_path: Optional[str] = None):
+    def __init__(self, contexte_ia_path: str | None = None):
         """
         Initialise le ContextLoader.
         
@@ -100,7 +99,7 @@ class ContextLoader:
             self.contexte_ia_path = os.path.abspath(contexte_ia_path)
 
         # Cache en mémoire : relative_path → LoadedDocument
-        self._documents: Dict[str, LoadedDocument] = {}
+        self._documents: dict[str, LoadedDocument] = {}
         self._loaded = False
 
     def load_all(self) -> int:
@@ -114,7 +113,7 @@ class ContextLoader:
         loaded_count = 0
 
         # Collecter tous les fichiers uniques depuis le mapping
-        all_files: Dict[str, List[str]] = {}  # relative_path → [categories]
+        all_files: dict[str, list[str]] = {}  # relative_path → [categories]
         for category, files in CATEGORY_FILES_MAP.items():
             for rel_path in files:
                 if rel_path not in all_files:
@@ -124,13 +123,13 @@ class ContextLoader:
         # Charger chaque fichier unique
         for rel_path, categories in all_files.items():
             full_path = os.path.join(self.contexte_ia_path, rel_path)
-            
+
             if not os.path.exists(full_path):
                 logger.warning(f"[CONTEXT LOADER] Fichier introuvable : {full_path}")
                 continue
 
             try:
-                with open(full_path, "r", encoding="utf-8") as f:
+                with open(full_path, encoding="utf-8") as f:
                     content = f.read()
 
                 stat = os.stat(full_path)
@@ -160,7 +159,7 @@ class ContextLoader:
         return loaded_count
 
     def get_context_for_categories(
-        self, categories: List[str], max_chars: int = MAX_CONTEXT_CHARS
+        self, categories: list[str], max_chars: int = MAX_CONTEXT_CHARS
     ) -> str:
         """
         Retourne le contenu concaténé des fichiers pertinents pour les catégories données.
@@ -183,7 +182,7 @@ class ContextLoader:
         all_categories = set(categories) | {"core"}
 
         # Collecter les fichiers pertinents (sans doublons)
-        relevant_files: Dict[str, LoadedDocument] = {}
+        relevant_files: dict[str, LoadedDocument] = {}
         for cat in all_categories:
             file_list = CATEGORY_FILES_MAP.get(cat, [])
             for rel_path in file_list:
@@ -199,7 +198,7 @@ class ContextLoader:
         for rel_path, doc in relevant_files.items():
             header = f"\n--- 📄 {rel_path} ---\n"
             section = header + doc.content
-            
+
             if total_chars + len(section) > max_chars:
                 # Tronquer ce fichier pour rentrer dans la limite
                 remaining = max_chars - total_chars
@@ -207,13 +206,13 @@ class ContextLoader:
                     section = section[:remaining] + "\n[... tronqué ...]\n"
                     sections.append(section)
                 break
-            
+
             sections.append(section)
             total_chars += len(section)
 
         return "\n".join(sections)
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         """
         Retourne un résumé enrichi de l'état du ContextLoader pour l'API /api/context-status.
         Inclut le mapping des catégories, les previews et la limite de contexte.
@@ -255,7 +254,7 @@ class ContextLoader:
                 break
         return "\n".join(lines)
 
-    def force_reload(self) -> Dict:
+    def force_reload(self) -> dict:
         """
         Force un rechargement complet de tous les fichiers de contexte.
         Retourne le statut mis à jour.

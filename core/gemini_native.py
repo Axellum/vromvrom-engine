@@ -12,16 +12,53 @@ Auteur : Antigravity IDE + Axel
 Date : 2026-05-26
 """
 
-import os
 import json
-import time
 import logging
+import os
+import time
+from typing import Any
+
 import requests
-from typing import Dict, Any, Optional
 
 from core.llm_timeouts import get_timeout
 
 logger = logging.getLogger(__name__)
+
+# ──────────────────────────────────────────────────────────────────
+# Signature d'appel d'outil (thoughtSignature) — round-trip #T263
+# ──────────────────────────────────────────────────────────────────
+# L'API REST Gemini renvoie la signature au NIVEAU de la part functionCall
+# (sœur de "functionCall", jamais dans "functionCall" lui-même) :
+#   {"functionCall": {"name", "args", "id"}, "thoughtSignature": "..."}
+# Casse observée en conditions réelles le 10/08/2026 : camelCase
+# "thoughtSignature" dans le JSON, alors que le message d'erreur de l'API
+# parle de "thought_signature". L'API répond 400 si la signature n'est pas
+# ré-émise à l'identique au tour suivant (round-trip d'outil).
+THOUGHT_SIGNATURE_API_FIELD = "thoughtSignature"
+
+# Clé PRIVÉE interne portée par nos tool_calls (format OpenAI) pour faire
+# voyager la signature entre les tours. Préfixée "_" : c'est la convention
+# des champs internes du moteur, filtrés par OpenAICompatibleProvider avant
+# envoi — elle ne part donc JAMAIS dans le payload des providers
+# OpenAI-compatibles (Mistral, DeepSeek, Cerebras...), qui peuvent rejeter
+# un champ inconnu. Seul gemini_native la produit et la consomme.
+THOUGHT_SIGNATURE_INTERNAL_KEY = "_thought_signature"
+
+
+class GeminiStructuredError(RuntimeError):
+    """Réponse structurée Gemini inexploitable — #T265.
+
+    Levée là où le code renvoyait un dict vide (JSON invalide, aucun candidat,
+    parts vides). Un `{}` est une VALEUR DE RETOUR : `FallbackProvider` en
+    conclut que le modèle a réussi, enregistre un succès au circuit breaker
+    (le modèle reste « sain » et sera re-choisi) et **ne bascule pas** sur le
+    modèle suivant. Mesuré en prod le 10/08/2026 : un 403 sur
+    `gemini-3.5-flash-free` a tué un plan complet en 2 ms alors que 6 clés
+    Gemini et toute la cascade attendaient derrière.
+
+    Seule une exception fait travailler la cascade et le circuit breaker.
+    """
+
 
 # Import de la classe de base LLMProvider
 try:
@@ -33,7 +70,7 @@ except ImportError:
         @abstractmethod
         def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any: pass
         @abstractmethod
-        def generate_structured(self, system_prompt: str, user_prompt: str, schema: Dict[str, Any], **kwargs) -> Dict[str, Any]: pass
+        def generate_structured(self, system_prompt: str, user_prompt: str, schema: dict[str, Any], **kwargs) -> dict[str, Any]: pass
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -58,24 +95,24 @@ class GeminiCacheManager:
         self.api_key = api_key
         self.model = model
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-        
+
         # État du cache actif
-        self._active_cache_name: Optional[str] = None
-        self._cache_expire_time: Optional[float] = None  # timestamp UNIX
-        self._cache_content_hash: Optional[str] = None    # hash du contenu caché
-        
+        self._active_cache_name: str | None = None
+        self._cache_expire_time: float | None = None  # timestamp UNIX
+        self._cache_content_hash: str | None = None    # hash du contenu caché
+
         # Marge de renouvellement : renouveler 5 min avant l'expiration
         self._refresh_margin_seconds = 300
-        
+
     def _headers(self) -> dict:
         """Headers standard pour les appels API."""
         return {"Content-Type": "application/json"}
-    
+
     def _url(self, path: str) -> str:
         """Construit l'URL complète avec la clé API."""
         return f"{self.base_url}/{path}?key={self.api_key}"
 
-    def create(self, system_content: str, ttl_seconds: int = 3600) -> Optional[str]:
+    def create(self, system_content: str, ttl_seconds: int = 3600) -> str | None:
         """
         Crée un cache explicite avec le contenu système fourni.
         
@@ -88,19 +125,19 @@ class GeminiCacheManager:
         """
         import hashlib
         content_hash = hashlib.md5(system_content.encode()).hexdigest()
-        
+
         # Si le même contenu est déjà caché et encore valide, ne rien faire
-        if (self._active_cache_name 
-            and self._cache_content_hash == content_hash 
-            and self._cache_expire_time 
+        if (self._active_cache_name
+            and self._cache_content_hash == content_hash
+            and self._cache_expire_time
             and time.time() < self._cache_expire_time - self._refresh_margin_seconds):
             logger.debug(f"[GEMINI CACHE] Cache actif encore valide : {self._active_cache_name}")
             return self._active_cache_name
-        
+
         # Supprimer l'ancien cache s'il existe
         if self._active_cache_name:
             self.delete()
-        
+
         payload = {
             "model": f"models/{self.model}",
             "systemInstruction": {
@@ -118,7 +155,7 @@ class GeminiCacheManager:
             ],
             "ttl": f"{ttl_seconds}s"
         }
-        
+
         try:
             resp = requests.post(
                 self._url("cachedContents"),
@@ -128,17 +165,17 @@ class GeminiCacheManager:
             )
             resp.raise_for_status()
             data = resp.json()
-            
+
             cache_name = data.get("name")
             if cache_name:
                 self._active_cache_name = cache_name
                 self._cache_expire_time = time.time() + ttl_seconds
                 self._cache_content_hash = content_hash
-                
+
                 # Extraire les infos de tokens du cache
                 usage_metadata = data.get("usageMetadata", {})
                 total_tokens = usage_metadata.get("totalTokenCount", 0)
-                
+
                 logger.info(
                     f"[GEMINI CACHE] ✅ Cache créé : {cache_name} | "
                     f"{total_tokens} tokens | TTL={ttl_seconds}s | "
@@ -148,7 +185,7 @@ class GeminiCacheManager:
             else:
                 logger.warning(f"[GEMINI CACHE] Réponse sans nom de cache : {data}")
                 return None
-                
+
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response else "?"
             body = e.response.text[:500] if e.response else ""
@@ -161,7 +198,7 @@ class GeminiCacheManager:
             logger.warning(f"[GEMINI CACHE] ❌ Erreur de création du cache : {e}")
             return None
 
-    def get_active_cache_name(self) -> Optional[str]:
+    def get_active_cache_name(self) -> str | None:
         """Retourne le nom du cache actif s'il est encore valide, None sinon."""
         if not self._active_cache_name:
             return None
@@ -173,22 +210,22 @@ class GeminiCacheManager:
             return None
         return self._active_cache_name
 
-    def refresh_if_needed(self, system_content: str, ttl_seconds: int = 3600) -> Optional[str]:
+    def refresh_if_needed(self, system_content: str, ttl_seconds: int = 3600) -> str | None:
         """Renouvelle le cache si proche de l'expiration ou si le contenu a changé."""
         import hashlib
         content_hash = hashlib.md5(system_content.encode()).hexdigest()
-        
+
         # Si le contenu a changé, recréer le cache
         if self._cache_content_hash != content_hash:
             logger.info("[GEMINI CACHE] Contenu modifié, recréation du cache.")
             return self.create(system_content, ttl_seconds)
-        
+
         # Si le cache est proche de l'expiration, recréer
-        if (self._cache_expire_time 
+        if (self._cache_expire_time
             and time.time() >= self._cache_expire_time - self._refresh_margin_seconds):
             logger.info("[GEMINI CACHE] Cache proche de l'expiration, renouvellement.")
             return self.create(system_content, ttl_seconds)
-        
+
         return self.get_active_cache_name()
 
     def delete(self):
@@ -245,7 +282,7 @@ class GeminiNativeProvider(LLMProvider):
     L'interface LLMProvider est respectée : generate(), generate_structured(), 
     generate_stream() — le reste du moteur ne voit aucune différence.
     """
-    
+
     def __init__(self, api_key: str, model: str = "gemini-3.5-flash",
                  search_grounding_available: bool = False,
                  enable_explicit_cache: bool = True,
@@ -275,11 +312,11 @@ class GeminiNativeProvider(LLMProvider):
             "gemini-3.1-pro-preview-customtools": "gemini-3.1-pro-preview-customtools",
             "gemini-3-pro-preview": "gemini-3-pro-preview",
             "gemini-3.1-flash": "gemini-3.5-flash",  # Fallback logique
-            
+
             # Versions intermédiaires (2.5) — Accès Direct
             "gemini-2.5-flash": "gemini-2.5-flash",
             "gemini-2.5-pro": "gemini-2.5-pro",
-            
+
             # Redirections de secours pour modèles bloqués ou obsolètes (2.0 / 1.5)
             "gemini-2.0-flash": "gemini-3.5-flash",  # Rediriger le 2.0 bloqué vers le 3.5 Flash ouvert !
             "gemini-2.0-flash-lite-001": "gemini-3.1-flash-lite",
@@ -291,7 +328,7 @@ class GeminiNativeProvider(LLMProvider):
         self.enable_explicit_cache = enable_explicit_cache
         self.cache_ttl_seconds = cache_ttl_seconds
         self.use_key_pool = use_key_pool
-        
+
         # Pool de clés pour la rotation automatique Free Tier
         self._key_pool = None
         if use_key_pool:
@@ -300,29 +337,29 @@ class GeminiNativeProvider(LLMProvider):
                 self._key_pool = get_key_pool()
             except Exception:
                 pass
-        
+
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-        
+
         # Gestionnaire de cache explicite
         self._cache_manager = GeminiCacheManager(api_key, model) if enable_explicit_cache else None
-        
+
         # Seuil minimum de tokens pour le caching explicite
         # Gemini 3.x : 4096 tokens (~16K chars en FR)
         # Gemini 2.x : 2048 tokens (~8K chars en FR)
         self._min_cache_chars = 16000 if "3." in model or "3-" in model else 8000
-    
+
     def _get_active_key(self) -> str:
         """Retourne la clé API active (pool ou fixe)."""
         if self._key_pool:
             key = self._key_pool.get_free_key()
             return key if key else self.api_key
         return self.api_key
-    
+
     def _api_url(self, method: str = "generateContent", key: str = None) -> str:
         """Construit l'URL d'appel API avec la clé."""
         active_key = key or self._get_active_key()
         return f"{self.base_url}/models/{self.model}:{method}?key={active_key}"
-    
+
     def _build_contents(self, user_prompt: str, **kwargs) -> list:
         """
         Construit la liste des messages au format natif Gemini.
@@ -339,12 +376,12 @@ class GeminiNativeProvider(LLMProvider):
                 content = msg.get("content", "")
                 if role == "system":
                     continue  # Les system messages sont gérés via systemInstruction
-                
+
                 # Éviter les contenus vides (causes d'erreur 400 de l'API Google)
                 if content is None:
                     content = ""
                 content_str = str(content).strip()
-                
+
                 if role == "assistant":
                     parts = []
                     if content_str:
@@ -356,12 +393,20 @@ class GeminiNativeProvider(LLMProvider):
                                 args = json.loads(fn.get("arguments", "{}"))
                             except Exception:
                                 args = {}
-                            parts.append({
+                            part = {
                                 "functionCall": {
                                     "name": fn.get("name", ""),
                                     "args": args
                                 }
-                            })
+                            }
+                            # Ré-émission de la thought_signature à l'identique :
+                            # elle est requise au niveau de la part functionCall,
+                            # sinon l'API répond 400 (cf. #T263). Absente sur les
+                            # modèles anciens → simplement ignorée, aucun crash.
+                            signature = tc.get(THOUGHT_SIGNATURE_INTERNAL_KEY)
+                            if signature:
+                                part[THOUGHT_SIGNATURE_API_FIELD] = signature
+                            parts.append(part)
                     if not parts:
                         parts.append({"text": "[Message vide]"})
                     contents.append({
@@ -405,15 +450,15 @@ class GeminiNativeProvider(LLMProvider):
                         "parts": [{"text": content_str}]
                     })
             return contents
-        
+
         return [{"role": "user", "parts": [{"text": user_prompt}]}]
-    
-    def _build_system_instruction(self, system_prompt: str) -> Optional[dict]:
+
+    def _build_system_instruction(self, system_prompt: str) -> dict | None:
         """Construit l'objet systemInstruction natif pour le caching implicite."""
         if not system_prompt or not system_prompt.strip():
             return None
         return {"parts": [{"text": system_prompt}]}
-    
+
     def _extract_system_from_messages(self, kwargs: dict) -> str:
         """Extrait le system prompt des messages OpenAI-style si présent."""
         messages = kwargs.get("messages", [])
@@ -421,7 +466,7 @@ class GeminiNativeProvider(LLMProvider):
             if msg.get("role") == "system":
                 return msg.get("content", "")
         return ""
-    
+
     def _convert_schema_to_gemini(self, schema: Any) -> Any:
         """Convertit récursivement les types d'un schéma OpenAPI/OpenAI en majuscules pour Gemini et exclut les clés non supportées comme $schema ou $id."""
         if isinstance(schema, dict):
@@ -443,7 +488,7 @@ class GeminiNativeProvider(LLMProvider):
             return [self._convert_schema_to_gemini(item) for item in schema]
         return schema
 
-    def _build_tools(self, use_search_grounding: bool = False, tools: list = None) -> Optional[list]:
+    def _build_tools(self, use_search_grounding: bool = False, tools: list = None) -> list | None:
         """
         Construit la liste des outils au format natif Gemini.
         
@@ -451,11 +496,11 @@ class GeminiNativeProvider(LLMProvider):
         et le Google Search Grounding.
         """
         result_tools = []
-        
+
         # Google Search Grounding
         if use_search_grounding and self.search_grounding_available:
             result_tools.append({"google_search": {}})
-        
+
         # Function declarations (traduction OpenAI → Gemini natif)
         if tools:
             functions = []
@@ -474,10 +519,10 @@ class GeminiNativeProvider(LLMProvider):
                     })
             if functions:
                 result_tools.append({"function_declarations": functions})
-        
+
         return result_tools if result_tools else None
 
-    def _translate_tool_calls(self, response_parts: list) -> Optional[list]:
+    def _translate_tool_calls(self, response_parts: list) -> list | None:
         """
         Traduit les function_calls du format natif Gemini vers le format
         OpenAI attendu par le reste du moteur (ExecutorAgent, DAGRunner, etc.).
@@ -493,32 +538,40 @@ class GeminiNativeProvider(LLMProvider):
         for i, part in enumerate(response_parts):
             if "functionCall" in part:
                 fc = part["functionCall"]
-                tool_calls.append({
+                tc = {
                     "id": f"call_gemini_{i}_{int(time.time())}",
                     "type": "function",
                     "function": {
                         "name": fc.get("name", ""),
                         "arguments": json.dumps(fc.get("args", {}))
                     }
-                })
+                }
+                # Capture de la thought_signature (au niveau de la part) pour la
+                # ré-émettre au tour suivant. Champ privé "_..." : filtré avant
+                # envoi chez les providers OpenAI-compatibles. Un functionCall
+                # sans signature (modèle ancien) est toléré sans exception.
+                signature = part.get(THOUGHT_SIGNATURE_API_FIELD)
+                if signature:
+                    tc[THOUGHT_SIGNATURE_INTERNAL_KEY] = signature
+                tool_calls.append(tc)
         return tool_calls if tool_calls else None
 
     def _record_tokens(self, usage_metadata: dict, model_name: str = None, **kwargs):
         """Enregistre la consommation de tokens dans le tracker."""
         try:
             from core.token_tracker import record_usage
-            
+
             prompt_tokens = usage_metadata.get("promptTokenCount", 0)
             completion_tokens = usage_metadata.get("candidatesTokenCount", 0)
             cached_tokens = usage_metadata.get("cachedContentTokenCount", 0)
-            
+
             # Log spécial si des tokens cachés sont détectés (preuve que le caching fonctionne)
             if cached_tokens > 0:
                 logger.info(
                     f"[GEMINI NATIF] 💰 Cache hit ! {cached_tokens} tokens cachés "
                     f"(économie ~{cached_tokens * 0.9:.0f} tokens facturés)"
                 )
-            
+
             record_usage(
                 model_name or self.model,
                 prompt_tokens,
@@ -531,7 +584,7 @@ class GeminiNativeProvider(LLMProvider):
     # ──────────────────────────────────────────────────────────
     # Méthode principale : generate()
     # ──────────────────────────────────────────────────────────
-    
+
     def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
         """
         Appelle l'API native Gemini generateContent.
@@ -545,27 +598,27 @@ class GeminiNativeProvider(LLMProvider):
         # Extraire le system prompt des messages si fourni en format OpenAI
         if not system_prompt and kwargs.get("messages"):
             system_prompt = self._extract_system_from_messages(kwargs)
-        
+
         # Construire le payload de base
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "contents": self._build_contents(user_prompt, **kwargs),
             "generationConfig": {
                 "temperature": kwargs.get("temperature", 0.0),
             }
         }
-        
+
         # Stratégie de caching :
         # 1. Si le system prompt est assez long ET le cache explicite est activé → utiliser le cache
         # 2. Sinon → utiliser systemInstruction (caching implicite automatique)
         cache_name = None
-        if (self._cache_manager 
-            and system_prompt 
+        if (self._cache_manager
+            and system_prompt
             and len(system_prompt) >= self._min_cache_chars):
             # Tenter le cache explicite
             cache_name = self._cache_manager.refresh_if_needed(
                 system_prompt, self.cache_ttl_seconds
             )
-        
+
         if cache_name:
             # Cache explicite actif → référencer le cache, pas de systemInstruction
             payload["cachedContent"] = cache_name
@@ -574,7 +627,7 @@ class GeminiNativeProvider(LLMProvider):
             sys_instr = self._build_system_instruction(system_prompt)
             if sys_instr:
                 payload["systemInstruction"] = sys_instr
-        
+
         # Outils (Search Grounding + function declarations)
         use_grounding = kwargs.get("use_search_grounding", False)
         tools = self._build_tools(
@@ -583,17 +636,17 @@ class GeminiNativeProvider(LLMProvider):
         )
         if tools:
             payload["tools"] = tools
-        
+
         logger.debug(
             f"[GEMINI NATIF] Appel {self.model} | "
             f"cache={'explicite' if cache_name else 'implicite'} | "
             f"grounding={use_grounding}"
         )
-        
+
         # Déterminer la clé active pour cet appel
         active_key = self._get_active_key()
         api_url = self._api_url("generateContent", key=active_key)
-        
+
         try:
             response = requests.post(
                 api_url,
@@ -601,7 +654,7 @@ class GeminiNativeProvider(LLMProvider):
                 json=payload,
                 timeout=get_timeout("gemini")
             )
-            
+
             # Gestion 429 (rate-limit) → rotation de clé via le KeyPool
             if response.status_code == 429 and self._key_pool:
                 self._key_pool.report_rate_limit(active_key)
@@ -612,7 +665,7 @@ class GeminiNativeProvider(LLMProvider):
                 next_key = self._key_pool.get_free_key(allow_cooldown=False)
                 if next_key and next_key != active_key:
                     logger.info(
-                        f"[GEMINI NATIF] 🔄 429 → rotation de clé (KeyPool)"
+                        "[GEMINI NATIF] 🔄 429 → rotation de clé (KeyPool)"
                     )
                     retry_url = self._api_url("generateContent", key=next_key)
                     response = requests.post(
@@ -629,21 +682,21 @@ class GeminiNativeProvider(LLMProvider):
                         f"[GEMINI NATIF] ⚠️ 429 et toutes les clés en cooldown "
                         f"(dispo dans {wait:.0f}s) → pas de retry, escalade cascade."
                     )
-            
+
             if response.status_code != 200:
                 logger.error(f"[GEMINI NATIF] Échec de la requête ({response.status_code}) : {response.text}")
             response.raise_for_status()
             data = response.json()
-            
+
             # Signaler le succès au pool
             if self._key_pool:
                 self._key_pool.report_success(active_key)
-            
+
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response else "?"
             body = e.response.text[:500] if e.response else ""
             logger.error(f"[GEMINI NATIF] Erreur HTTP {status} : {body}")
-            
+
             # Si c'est une erreur de cache (404 = cache expiré), retenter sans cache
             if status == 404 and cache_name:
                 logger.warning("[GEMINI NATIF] Cache expiré côté serveur, retry sans cache.")
@@ -664,22 +717,22 @@ class GeminiNativeProvider(LLMProvider):
                 data = response.json()
             else:
                 raise
-        
+
         # Extraction de la réponse
         usage_metadata = data.get("usageMetadata", {})
         self._record_tokens(usage_metadata, **kwargs)
-        
+
         candidates = data.get("candidates", [])
         if not candidates:
             logger.warning(f"[GEMINI NATIF] Aucun candidat retourné : {data}")
             return ""
-        
+
         content = candidates[0].get("content", {})
         parts = content.get("parts", [])
-        
+
         if not parts:
             return ""
-        
+
         # Vérifier si c'est un appel d'outil (function_call)
         tool_calls = self._translate_tool_calls(parts)
         if tool_calls:
@@ -689,17 +742,17 @@ class GeminiNativeProvider(LLMProvider):
                 "content": None,
                 "tool_calls": tool_calls
             }
-        
+
         # Extraire le texte de la réponse
         text_parts = [p.get("text", "") for p in parts if "text" in p]
         return "\n".join(text_parts)
-    
+
     # ──────────────────────────────────────────────────────────
     # Méthode structurée : generate_structured()
     # ──────────────────────────────────────────────────────────
-    
+
     def generate_structured(self, system_prompt: str, user_prompt: str,
-                           schema: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+                           schema: dict[str, Any], **kwargs) -> dict[str, Any]:
         """
         Appelle l'API Gemini avec le JSON mode natif (response_mime_type).
         
@@ -707,36 +760,36 @@ class GeminiNativeProvider(LLMProvider):
         à produire du JSON valide (pas juste un hint dans le system prompt).
         """
         sys_prompt = system_prompt + "\nTu DOIS répondre UNIQUEMENT au format JSON strict."
-        
+
         # Forcer le JSON mode natif dans les kwargs
         kwargs["_force_json_mode"] = True
-        
+
         # Sauvegarder les kwargs originaux et ajouter la config JSON
         original_generate = self.generate
-        
+
         # Construire l'appel manuellement pour injecter response_mime_type
         if not sys_prompt and kwargs.get("messages"):
             sys_prompt = self._extract_system_from_messages(kwargs)
-        
-        payload: Dict[str, Any] = {
+
+        payload: dict[str, Any] = {
             "contents": self._build_contents(user_prompt, **kwargs),
             "generationConfig": {
                 "temperature": kwargs.get("temperature", 0.0),
                 "responseMimeType": "application/json",
             }
         }
-        
+
         # Ajouter le schéma de réponse si fourni et non vide
         if schema:
             payload["generationConfig"]["responseSchema"] = schema
-        
+
         # System instruction (pas de cache explicite pour les appels structurés courts)
         sys_instr = self._build_system_instruction(sys_prompt)
         if sys_instr:
             payload["systemInstruction"] = sys_instr
-        
+
         logger.debug(f"[GEMINI NATIF] Appel structuré {self.model} (JSON mode natif)")
-        
+
         try:
             response = requests.post(
                 self._api_url("generateContent"),
@@ -746,20 +799,32 @@ class GeminiNativeProvider(LLMProvider):
             )
             response.raise_for_status()
             data = response.json()
-            
+
             # Token tracking
             usage_metadata = data.get("usageMetadata", {})
             self._record_tokens(usage_metadata, **kwargs)
-            
+
             # Extraction du JSON
+            # ⚠️ #T265 : chaque sortie en échec LÈVE au lieu de renvoyer {}.
+            # Un dict vide serait compté comme un succès par la cascade.
             candidates = data.get("candidates", [])
             if not candidates:
-                return {}
-            
+                # Cas typique : prompt bloqué (promptFeedback.blockReason).
+                # Le motif voyage dans le message : c'est la cascade qui le
+                # journalise ensuite, avec le nom du modèle fautif.
+                raise GeminiStructuredError(
+                    f"Aucun candidat retourné par {self.model} "
+                    f"(blockReason={data.get('promptFeedback', {}).get('blockReason')})"
+                )
+
             parts = candidates[0].get("content", {}).get("parts", [])
             if not parts:
-                return {}
-            
+                # Cas typique : finishReason=MAX_TOKENS ou SAFETY, contenu vide.
+                raise GeminiStructuredError(
+                    f"Réponse sans contenu de {self.model} "
+                    f"(finishReason={candidates[0].get('finishReason')})"
+                )
+
             text = parts[0].get("text", "{}")
             try:
                 return json.loads(text)
@@ -774,18 +839,28 @@ class GeminiNativeProvider(LLMProvider):
                     cleaned = cleaned[:-3]
                 try:
                     return json.loads(cleaned.strip())
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as e_json:
                     logger.error(f"[GEMINI NATIF] JSON invalide : {text[:200]}")
-                    return {}
-                    
+                    raise GeminiStructuredError(
+                        f"JSON invalide renvoyé par {self.model} : {text[:200]}"
+                    ) from e_json
+
+        except GeminiStructuredError:
+            # Déjà qualifiée et journalisée au point de levée : on la laisse
+            # remonter telle quelle, sans la ré-emballer.
+            raise
         except Exception as e:
             logger.error(f"[GEMINI NATIF] Erreur appel structuré : {e}")
-            return {}
-    
+            # Re-levée À L'IDENTIQUE (et non enveloppée) : la cascade inspecte
+            # le message pour détecter les 429 / rate limits et décider de
+            # retenter le même modèle avant de basculer
+            # (llm/providers/deepseek.py, generate_structured[_async]).
+            raise
+
     # ──────────────────────────────────────────────────────────
     # Streaming : generate_stream()
     # ──────────────────────────────────────────────────────────
-    
+
     def generate_stream(self, system_prompt: str, user_prompt: str, **kwargs):
         """
         Streaming natif Gemini via streamGenerateContent (SSE).
@@ -799,20 +874,20 @@ class GeminiNativeProvider(LLMProvider):
         """
         if not system_prompt and kwargs.get("messages"):
             system_prompt = self._extract_system_from_messages(kwargs)
-            
-        payload: Dict[str, Any] = {
+
+        payload: dict[str, Any] = {
             "contents": self._build_contents(user_prompt, **kwargs),
             "generationConfig": {
                 "temperature": kwargs.get("temperature", 0.0),
             }
         }
-        
+
         sys_instr = self._build_system_instruction(system_prompt)
         if sys_instr:
             payload["systemInstruction"] = sys_instr
-        
+
         logger.debug(f"[GEMINI NATIF] Appel streaming {self.model}")
-        
+
         try:
             # streamGenerateContent retourne un flux de JSON objects séparés par des newlines
             url = f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse&key={self.api_key}"
@@ -824,7 +899,7 @@ class GeminiNativeProvider(LLMProvider):
                 stream=True
             )
             response.raise_for_status()
-            
+
             total_text = ""
             for line in response.iter_lines(decode_unicode=True):
                 if not line or not line.startswith("data: "):
@@ -832,20 +907,20 @@ class GeminiNativeProvider(LLMProvider):
                 data_str = line[6:].strip()
                 if not data_str:
                     continue
-                    
+
                 try:
                     chunk = json.loads(data_str)
                     candidates = chunk.get("candidates", [])
                     if not candidates:
                         continue
-                    
+
                     parts = candidates[0].get("content", {}).get("parts", [])
                     for part in parts:
                         text = part.get("text", "")
                         if text:
                             total_text += text
                             yield {"token": text, "done": False, "usage": None}
-                    
+
                     # Vérifier si c'est le dernier chunk (finishReason présent)
                     finish_reason = candidates[0].get("finishReason")
                     if finish_reason:
@@ -854,10 +929,10 @@ class GeminiNativeProvider(LLMProvider):
                         self._record_tokens(usage_metadata, **kwargs)
                         yield {"token": "", "done": True, "usage": usage_metadata}
                         return
-                        
+
                 except json.JSONDecodeError:
                     continue
-            
+
             # Si on arrive ici sans finishReason, le stream s'est terminé normalement
             # Estimer les tokens
             from core.token_tracker import record_usage
@@ -869,15 +944,15 @@ class GeminiNativeProvider(LLMProvider):
                 session_id=kwargs.get("session_id")
             )
             yield {"token": "", "done": True, "usage": None}
-            
+
         except Exception as e:
             logger.error(f"[GEMINI NATIF] Erreur streaming : {e}")
             yield {"token": f"[Erreur streaming: {e}]", "done": True, "usage": None}
-    
+
     # ──────────────────────────────────────────────────────────
     # TTS : generate_audio() [P8]
     # ──────────────────────────────────────────────────────────
-    
+
     def generate_audio(
         self, text: str, voice_name: str = "Kore", output_path: str = None, **kwargs
     ) -> dict:
@@ -913,9 +988,9 @@ class GeminiNativeProvider(LLMProvider):
                 }
             }
         }
-        
+
         logger.info(f"[GEMINI TTS] Synthèse audio : voix={voice_name}, texte={len(text)} chars")
-        
+
         try:
             response = requests.post(
                 self._api_url("generateContent"),
@@ -925,38 +1000,38 @@ class GeminiNativeProvider(LLMProvider):
             )
             response.raise_for_status()
             data = response.json()
-            
+
             # Token tracking
             usage_metadata = data.get("usageMetadata", {})
             self._record_tokens(usage_metadata, **kwargs)
-            
+
             candidates = data.get("candidates", [])
             if not candidates:
                 return {"success": False, "error": "Aucun candidat retourné"}
-            
+
             parts = candidates[0].get("content", {}).get("parts", [])
-            
+
             # Chercher la partie audio dans les parts
             for part in parts:
                 inline_data = part.get("inlineData")
                 if inline_data and "audio" in inline_data.get("mimeType", ""):
                     audio_b64 = inline_data.get("data", "")
                     mime_type = inline_data.get("mimeType", "audio/pcm")
-                    
+
                     if output_path:
                         # Sauvegarder en fichier WAV
                         import base64
                         audio_bytes = base64.b64decode(audio_b64)
-                        
+
                         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-                        
+
                         # Wrapper PCM brut en WAV (16-bit, 24kHz, mono)
                         import struct
                         sample_rate = 24000
                         bits_per_sample = 16
                         num_channels = 1
                         data_size = len(audio_bytes)
-                        
+
                         with open(output_path, "wb") as f:
                             # En-tête WAV
                             f.write(b"RIFF")
@@ -973,10 +1048,10 @@ class GeminiNativeProvider(LLMProvider):
                             f.write(b"data")
                             f.write(struct.pack("<I", data_size))
                             f.write(audio_bytes)
-                        
+
                         duration_s = data_size / (sample_rate * num_channels * bits_per_sample // 8)
                         logger.info(f"[GEMINI TTS] Audio sauvegardé : {output_path} ({duration_s:.1f}s)")
-                        
+
                         return {
                             "success": True,
                             "output_path": output_path,
@@ -989,16 +1064,16 @@ class GeminiNativeProvider(LLMProvider):
                         import base64
                         audio_bytes = base64.b64decode(audio_b64)
                         duration_s = len(audio_bytes) / (24000 * 2)  # 24kHz, 16-bit
-                        
+
                         return {
                             "success": True,
                             "audio_b64": audio_b64,
                             "duration_estimate_s": round(duration_s, 1),
                             "mime_type": mime_type,
                         }
-            
+
             return {"success": False, "error": "Aucune partie audio trouvée dans la réponse"}
-            
+
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response else "?"
             body = e.response.text[:300] if e.response else ""
@@ -1007,17 +1082,17 @@ class GeminiNativeProvider(LLMProvider):
         except Exception as e:
             logger.error(f"[GEMINI TTS] Erreur : {e}")
             return {"success": False, "error": str(e)}
-    
+
     # ──────────────────────────────────────────────────────────
     # Méthodes utilitaires
     # ──────────────────────────────────────────────────────────
-    
+
     def get_cache_status(self) -> dict:
         """Retourne l'état du cache pour le monitoring."""
         if self._cache_manager:
             return self._cache_manager.get_status()
         return {"active": False, "cache_name": None, "model": self.model}
-    
+
     def cleanup(self):
         """Nettoyage : supprimer les caches actifs (à appeler à l'arrêt du moteur)."""
         if self._cache_manager:

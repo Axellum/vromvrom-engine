@@ -1,11 +1,26 @@
-import subprocess
-import os
+"""
+tools/git_safety.py — Garde-fou : vérifie que le dépôt Git courant pointe bien
+vers le remote canonique (Axellum/moteur_agents) avant toute opération Git.
+
+Empêche de committer/merger silencieusement dans un dépôt orphelin (ex: un
+`.git` créé par erreur, sans remote, dans un dossier de travail en prod).
+Utilisé par core/router.py, core/engine.py, api/routes/backlog.py.
+"""
 import logging
-from typing import Tuple
+import os
+import subprocess
 
 logger = logging.getLogger(__name__)
 
-def _run_git(args: list, cwd: str = ".") -> Tuple[int, str, str]:
+# Remote GitHub canonique du projet. Sert de garde-fou : si un `.git` traîne
+# dans le dossier de travail (ex: `git init` fait par erreur en prod, sans
+# remote) sans pointer vers ce dépôt, on refuse d'opérer dessus plutôt que de
+# committer/merger silencieusement dans un dépôt orphelin non lié à l'historique
+# réel (cf. incident Steam Deck du 2026-06-27 : ~400 fichiers absorbés dans un
+# dépôt sans remote créé par erreur dans /home/deck/dev_station/moteur_agents).
+EXPECTED_REMOTE_SUBSTR = "Axellum/moteur_agents"
+
+def _run_git(args: list, cwd: str = ".") -> tuple[int, str, str]:
     """
     Fonction utilitaire pour exécuter une commande Git de façon robuste.
     Retourne le code de retour, stdout et stderr.
@@ -29,14 +44,44 @@ def is_git_repo(path: str = ".") -> bool:
     code, out, _ = _run_git(["rev-parse", "--is-inside-work-tree"], cwd=path)
     return code == 0 and out == "true"
 
+def is_canonical_repo(repo_path: str = ".") -> bool:
+    """
+    Vérifie que le dépôt Git à repo_path est bien le dépôt canonique du projet
+    (remote 'origin' pointant vers EXPECTED_REMOTE_SUBSTR), et non un dépôt
+    orphelin (ex: `git init` accidentel sans remote) qui se trouverait par
+    hasard au même emplacement.
+    """
+    code, remote_url, _ = _run_git(["remote", "get-url", "origin"], cwd=repo_path)
+    return code == 0 and EXPECTED_REMOTE_SUBSTR in remote_url
+
+def _require_canonical_repo(repo_path: str) -> str:
+    """
+    Retourne une chaîne d'erreur (préfixée "Erreur") si repo_path n'est pas un
+    dépôt Git canonique du projet, sinon une chaîne vide.
+    """
+    if not is_git_repo(repo_path):
+        return "Erreur : Le dossier de travail n'est pas un dépôt Git."
+    if not is_canonical_repo(repo_path):
+        logger.error(
+            f"[GIT SAFETY] Dépôt non canonique détecté dans '{repo_path}' "
+            f"(remote 'origin' absent ou différent de '{EXPECTED_REMOTE_SUBSTR}'). "
+            "Opération refusée pour éviter d'agir sur un dépôt orphelin."
+        )
+        return (
+            "Erreur : Le dépôt Git à cet emplacement n'est pas le dépôt canonique "
+            f"du projet (remote 'origin' manquant ou ≠ {EXPECTED_REMOTE_SUBSTR})."
+        )
+    return ""
+
 def git_create_checkpoint(repo_path: str = ".") -> str:
     """
     Crée un checkpoint Git en sauvegardant l'état actuel de l'espace de travail.
     Si des modifications non validées (tracked ou untracked) existent,
     elles sont stockées dans un stash temporaire.
     """
-    if not is_git_repo(repo_path):
-        return "Erreur : Le dossier de travail n'est pas un dépôt Git."
+    guard_err = _require_canonical_repo(repo_path)
+    if guard_err:
+        return guard_err
 
     # Vérifier s'il y a des modifications en cours (fichiers modifiés ou non suivis)
     code, status_out, _ = _run_git(["status", "--porcelain"], cwd=repo_path)
@@ -49,16 +94,16 @@ def git_create_checkpoint(repo_path: str = ".") -> str:
     # Création d'un message unique pour notre stash
     import time
     checkpoint_id = f"agent_checkpoint_{int(time.time())}"
-    
+
     # stash push --include-untracked pour tout sauvegarder
     code, stdout, stderr = _run_git(
         ["stash", "push", "--include-untracked", "-m", checkpoint_id],
         cwd=repo_path
     )
-    
+
     if code != 0:
         return f"Erreur lors de la création du stash Git : {stderr or stdout}"
-        
+
     return f"Succès : Checkpoint Git créé avec succès. ID : {checkpoint_id}. Modifications stashed."
 
 def git_rollback_checkpoint(repo_path: str = ".") -> str:
@@ -67,8 +112,9 @@ def git_rollback_checkpoint(repo_path: str = ".") -> str:
     Supprime toutes les modifications apportées depuis le checkpoint (git reset + git clean)
     puis applique le dernier stash s'il s'agissait de notre checkpoint d'agent.
     """
-    if not is_git_repo(repo_path):
-        return "Erreur : Le dossier de travail n'est pas un dépôt Git."
+    guard_err = _require_canonical_repo(repo_path)
+    if guard_err:
+        return guard_err
 
     # 1. Annuler toutes les modifications locales (fichiers suivis)
     code, stdout, stderr = _run_git(["reset", "--hard", "HEAD"], cwd=repo_path)
@@ -98,8 +144,9 @@ def git_apply_checkpoint(repo_path: str = ".") -> str:
     Valide le checkpoint. Si des modifications existaient avant l'exécution de l'agent,
     elles sont fusionnées à nouveau avec le travail accompli par l'agent.
     """
-    if not is_git_repo(repo_path):
-        return "Erreur : Le dossier de travail n'est pas un dépôt Git."
+    guard_err = _require_canonical_repo(repo_path)
+    if guard_err:
+        return guard_err
 
     # Récupérer la liste des stashes pour voir si le dernier vient de l'agent
     code, stdout, _ = _run_git(["stash", "list"], cwd=repo_path)
@@ -120,8 +167,9 @@ def git_prepare_agent_branch(session_id: str, repo_path: str = ".", prefix: str 
     Si des modifications non validées existent dans le workspace de l'utilisateur,
     elles sont d'abord stashed pour garder la branche propre.
     """
-    if not is_git_repo(repo_path):
-        return "Erreur : Le dossier de travail n'est pas un dépôt Git."
+    guard_err = _require_canonical_repo(repo_path)
+    if guard_err:
+        return guard_err
 
     # 1. Sauvegarder l'état actuel de l'utilisateur s'il y a des modifications
     code, status_out, _ = _run_git(["status", "--porcelain"], cwd=repo_path)
@@ -147,7 +195,7 @@ def git_prepare_agent_branch(session_id: str, repo_path: str = ".", prefix: str 
         branch_name = f"{prefix}{session_id}_{int(time.time())}"
     else:
         branch_name = f"{prefix}_{session_id}_{int(time.time())}"
-        
+
     logger.info(f"[GIT SAFETY] Création de la branche de travail éphémère : {branch_name} depuis {orig_branch}")
     code, stdout, err = _run_git(["checkout", "-b", branch_name], cwd=repo_path)
     if code != 0:
@@ -164,7 +212,7 @@ def git_generate_semantic_commit_msg(repo_path: str = ".", session_id: str = "")
     Génère un message de commit sémantique basé sur le diff Git courant.
     Analyse les fichiers modifiés et produit un message au format Conventional Commits
     (feat:, fix:, refactor:, docs:, style:, chore:, etc.)
-    
+
     Le message est généré sans appel LLM (analyse heuristique locale) pour éviter
     les coûts en tokens. Le LLM peut enrichir le message ultérieurement.
     """
@@ -173,21 +221,21 @@ def git_generate_semantic_commit_msg(repo_path: str = ".", session_id: str = "")
     if code != 0 or not stat_out:
         # Fallback : fichiers non staged
         code, stat_out, _ = _run_git(["diff", "--stat"], cwd=repo_path)
-    
+
     if not stat_out:
         return f"chore(agent): session {session_id} — aucune modification détectée"
-    
+
     # 2. Récupérer la liste des fichiers modifiés (noms uniquement)
     code, names_out, _ = _run_git(["diff", "--staged", "--name-only"], cwd=repo_path)
     if code != 0 or not names_out:
         code, names_out, _ = _run_git(["diff", "--name-only"], cwd=repo_path)
-    
+
     modified_files = [f.strip() for f in names_out.splitlines() if f.strip()] if names_out else []
-    
+
     # 3. Analyse heuristique du type de commit
     commit_type = "feat"  # Par défaut
     scope = "agent"
-    
+
     # Détection du scope basée sur les chemins de fichiers
     scope_map = {
         "core/": "core",
@@ -198,17 +246,17 @@ def git_generate_semantic_commit_msg(repo_path: str = ".", session_id: str = "")
         "config": "config",
         "test": "test",
     }
-    
+
     detected_scopes = set()
     for mf in modified_files:
         for prefix, s in scope_map.items():
             if prefix in mf.lower():
                 detected_scopes.add(s)
                 break
-    
+
     if detected_scopes:
         scope = ",".join(sorted(detected_scopes))
-    
+
     # Détection du type de commit basée sur les noms de fichiers et le diff
     if any("test" in f.lower() for f in modified_files):
         commit_type = "test"
@@ -223,27 +271,27 @@ def git_generate_semantic_commit_msg(repo_path: str = ".", session_id: str = "")
     elif any("config" in f.lower() for f in modified_files):
         if all("config" in f.lower() or f.endswith(".json") for f in modified_files):
             commit_type = "chore"
-    
+
     # 4. Extraction d'un résumé concis des fichiers principaux
     file_summary = ", ".join(os.path.basename(f) for f in modified_files[:5])
     if len(modified_files) > 5:
         file_summary += f" (+{len(modified_files) - 5} fichiers)"
-    
+
     # 5. Lecture du nombre de lignes ajoutées/supprimées depuis --stat
     stat_lines = stat_out.strip().splitlines()
     stat_summary = stat_lines[-1] if stat_lines else ""
-    
+
     # 6. Construction du message de commit
     commit_msg = f"{commit_type}({scope}): {file_summary}"
-    
+
     # Corps du message (limité à 200 chars)
     body = f"Session: {session_id}\n{stat_summary}"
     if len(body) > 200:
         body = body[:200]
-    
+
     full_msg = f"{commit_msg}\n\n{body}"
     logger.info(f"[GIT SAFETY] Message de commit sémantique généré : {commit_msg}")
-    
+
     return full_msg
 
 def git_finalize_agent_branch(branch_name: str, success: bool, session_id: str, repo_path: str = ".") -> str:
@@ -253,8 +301,9 @@ def git_finalize_agent_branch(branch_name: str, success: bool, session_id: str, 
     - Si ÉCHEC : détruit la branche éphémère (rollback).
     Dans tous les cas, restaure le stash utilisateur s'il existe.
     """
-    if not is_git_repo(repo_path):
-        return "Erreur : Le dossier de travail n'est pas un dépôt Git."
+    guard_err = _require_canonical_repo(repo_path)
+    if guard_err:
+        return guard_err
 
     # 1. Déterminer la branche parente (souvent main ou master, ou lue dans la config)
     # Pour faire simple et robuste, on va tenter de merge dans 'main' ou la branche par défaut
@@ -313,8 +362,50 @@ def git_finalize_agent_branch(branch_name: str, success: bool, session_id: str, 
                 logger.info(f"[GIT SAFETY] Restauration du stash utilisateur (index {idx})...")
                 pop_code, pop_out, pop_err = _run_git(["stash", "pop", f"stash@{{{idx}}}"], cwd=repo_path)
                 if pop_code != 0:
-                    logger.error(f"[GIT SAFETY] Conflit lors du pop du stash utilisateur : {pop_err or pop_out}")
-                    merge_status += " Attention : conflit lors de la restauration de vos modifications locales en cours."
+                    # [#T278] Un `stash pop` en échec laisse le stash INTACT dans la
+                    # pile (git ne le dépile que si l'application réussit). Avant ce
+                    # correctif, une simple phrase ajoutée au message de succès
+                    # (« Fusion effectuée avec succès. Attention : conflit… ») laissait
+                    # croire que tout allait bien — la config de prod pouvait rester
+                    # enfermée dans un stash jamais dépilé (incident du 11/08).
+                    # Le statut retourné porte donc l'échec et nomme l'identifiant
+                    # exact du stash resté intact pour une récupération manuelle.
+                    logger.error(
+                        f"[GIT SAFETY] Échec de la restauration du stash utilisateur "
+                        f"(stash@{{{idx}}}, laissé intact) : {pop_err or pop_out}"
+                    )
+                    merge_status = (
+                        f"ÉCHEC de la restauration de vos modifications locales : le "
+                        f"stash stash@{{{idx}}} est resté intact dans la pile. "
+                        f"Récupération manuelle : git stash apply stash@{{{idx}}}"
+                    )
+                else:
+                    merge_status += " Vos modifications locales ont été restaurées."
                 break
 
     return merge_status
+
+
+def lister_stash_agents(repo_path: str = ".") -> list[dict]:
+    """
+    Diagnostic [#T278] : liste les stash créés par l'agent (préfixe
+    'user_pre_agent_') encore présents dans la pile, avec leur identifiant
+    (stash@{N}), leur message et leur âge. Sert à constater l'accumulation de
+    stash jamais dépilés après des `pop` en échec. Ne supprime RIEN : purger un
+    stash est irréversible et relève d'une décision humaine.
+    """
+    stashes: list[dict] = []
+    code, stdout, _ = _run_git(
+        ["stash", "list", "--format=%gd%x09%gs%x09%cr"],
+        cwd=repo_path,
+    )
+    if code != 0 or not stdout:
+        return stashes
+    for line in stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        stash_id, message, age = parts[0], parts[1], parts[2]
+        if "user_pre_agent_" in message:
+            stashes.append({"id": stash_id, "message": message, "age": age})
+    return stashes

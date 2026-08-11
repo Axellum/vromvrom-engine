@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Garde-fou de régression : tout appel à `Router.analyze_request` doit être `await`-é.
 

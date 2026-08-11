@@ -25,7 +25,6 @@ Conventions de nommage des attributs (GenAI OTel SemConv + custom llm.*) :
 import logging
 import os
 from contextlib import contextmanager
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +97,7 @@ def get_tracer():
 @contextmanager
 def llm_span(
     model_name: str,
-    provider_system: Optional[str] = None,
+    provider_system: str | None = None,
     fallback_index: int = 0,
     cache_hit: bool = False,
     cb_state: str = "CLOSED",
@@ -117,7 +116,6 @@ def llm_span(
         yield _NoOpSpan()
         return
 
-    from opentelemetry import trace as _trace
     from opentelemetry.trace import StatusCode
 
     with tracer.start_as_current_span("llm.call") as span:

@@ -58,41 +58,44 @@ def scan_antigravity_conversations(since_date: str = None) -> list:
         }]
     """
     sessions = []
-    
+
     if not ANTIGRAVITY_BRAIN_DIR.exists():
-        logger.warning(f"[CLICollector] Répertoire Antigravity introuvable : {ANTIGRAVITY_BRAIN_DIR}")
+        # [#T248] L'absence du répertoire est l'état NORMAL sur un hôte sans
+        # Antigravity IDE (le Deck) — le scan tourne toutes les ~10 min, un
+        # WARNING à chaque passage saturait les logs de prod (1440/jour).
+        logger.debug(f"[CLICollector] Répertoire Antigravity absent (hôte sans CLI) : {ANTIGRAVITY_BRAIN_DIR}")
         return sessions
-    
+
     since_dt = None
     if since_date:
         try:
             since_dt = datetime.fromisoformat(since_date)
         except (ValueError, TypeError):
             pass
-    
+
     for conv_dir in ANTIGRAVITY_BRAIN_DIR.iterdir():
         if not conv_dir.is_dir():
             continue
-        
+
         transcript_path = conv_dir / ".system_generated" / "logs" / "transcript.jsonl"
         if not transcript_path.exists():
             continue
-        
+
         conversation_id = conv_dir.name
-        
+
         # Filtrer par date de modification du fichier
         if since_dt:
             file_mtime = datetime.fromtimestamp(transcript_path.stat().st_mtime)
             if file_mtime < since_dt:
                 continue
-        
+
         try:
             session = _parse_antigravity_transcript(transcript_path, conversation_id)
             if session and session["total_tokens"] > 0:
                 sessions.append(session)
         except Exception as e:
             logger.warning(f"[CLICollector] Erreur parsing {conversation_id}: {e}")
-    
+
     # Trier par timestamp
     sessions.sort(key=lambda s: s.get("timestamp", ""))
     logger.info(f"[CLICollector] {len(sessions)} conversations Antigravity IDE scannées")
@@ -111,8 +114,8 @@ def _parse_antigravity_transcript(transcript_path: Path, conversation_id: str) -
     objective = None
     user_messages = 0
     model_responses = 0
-    
-    with open(transcript_path, "r", encoding="utf-8") as f:
+
+    with open(transcript_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -121,18 +124,18 @@ def _parse_antigravity_transcript(transcript_path: Path, conversation_id: str) -
                 step = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            
+
             step_type = step.get("type", "")
             source = step.get("source", "")
             content = step.get("content", "") or ""
-            
+
             # Capturer le timestamp
             ts = step.get("timestamp") or step.get("created_at")
             if ts:
                 if first_timestamp is None:
                     first_timestamp = ts
                 last_timestamp = ts
-            
+
             # Capturer l'objectif (premier message utilisateur)
             if step_type == "USER_INPUT" and source == "USER_EXPLICIT":
                 user_messages += 1
@@ -142,12 +145,12 @@ def _parse_antigravity_transcript(transcript_path: Path, conversation_id: str) -
                     objective = content[:100].replace("\n", " ").strip()
                     if len(content) > 100:
                         objective += "..."
-            
+
             # Réponses du modèle (LLM output)
             elif step_type == "PLANNER_RESPONSE" or source == "MODEL":
                 model_responses += 1
                 total_completion += estimate_tokens(content)
-            
+
             # Tool calls (les arguments sont des tokens prompt envoyés au LLM)
             elif step_type in ("VIEW_FILE", "GREP_SEARCH", "RUN_COMMAND", "WRITE_FILE", "REPLACE_FILE"):
                 # Les résultats d'outils sont renvoyés au LLM comme contexte
@@ -158,16 +161,16 @@ def _parse_antigravity_transcript(transcript_path: Path, conversation_id: str) -
                 # Le output du tool est aussi du contexte prompt
                 output = step.get("output", "") or ""
                 total_prompt += estimate_tokens(output)
-    
+
     if total_prompt == 0 and total_completion == 0:
         return None
-    
+
     total_tokens = total_prompt + total_completion
-    
+
     # Estimation du coût (Gemini CLI via abonnement = gratuit, mais on estime la valeur)
     # Tarif indicatif Gemini 3.5 Flash: $0.075/1M input, $0.30/1M output
     cost = (total_prompt * 0.075 / 1_000_000) + (total_completion * 0.30 / 1_000_000)
-    
+
     return {
         "session_id": f"cli_antigravity_{conversation_id[:8]}",
         "channel": "antigravity_ide",
@@ -260,7 +263,7 @@ def _parse_claude_jsonl(jsonl_path: Path, project_label: str) -> dict:
     models_breakdown = {}
     api_calls = 0
 
-    with open(jsonl_path, "r", encoding="utf-8") as f:
+    with open(jsonl_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
@@ -375,15 +378,15 @@ def collect_all_cli_tokens(since_date: str = None, persist_to_db: bool = True) -
         }
     """
     logger.info(f"[CLICollector] Lancement du scan (since={since_date})")
-    
+
     antigravity = scan_antigravity_conversations(since_date)
     claude = scan_claude_cli_sessions(since_date)
-    
+
     total_tokens = (
         sum(s["total_tokens"] for s in antigravity) +
         sum(s["total_tokens"] for s in claude)
     )
-    
+
     # Persistance automatique en BDD SQLite
     persisted_count = 0
     if persist_to_db:
@@ -393,7 +396,7 @@ def collect_all_cli_tokens(since_date: str = None, persist_to_db: bool = True) -
             persisted_count = bulk_upsert_ide_conversations(all_sessions)
         except Exception as e:
             logger.warning(f"[CLICollector] Erreur persistance BDD : {e}")
-    
+
     result = {
         "antigravity_sessions": antigravity,
         "claude_sessions": claude,
@@ -402,13 +405,13 @@ def collect_all_cli_tokens(since_date: str = None, persist_to_db: bool = True) -
         "persisted_count": persisted_count,
         "scan_timestamp": datetime.now().isoformat()
     }
-    
+
     logger.info(
         f"[CLICollector] Scan terminé : {len(antigravity)} Antigravity + "
         f"{len(claude)} Claude = {total_tokens:,} tokens CLI estimés "
         f"({persisted_count} persistés en BDD)"
     )
-    
+
     return result
 
 
@@ -416,9 +419,9 @@ def collect_all_cli_tokens(since_date: str = None, persist_to_db: bool = True) -
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     result = collect_all_cli_tokens(since_date="2026-05-22")
-    
+
     print(f"\n{'='*60}")
-    print(f"  SCAN CLI TOKEN COLLECTOR")
+    print("  SCAN CLI TOKEN COLLECTOR")
     print(f"{'='*60}")
     print(f"  Antigravity IDE : {len(result['antigravity_sessions'])} sessions")
     for s in result["antigravity_sessions"]:

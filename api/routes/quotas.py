@@ -9,6 +9,7 @@ Auteur : Antigravity IDE + Axel — 2026-06-04
 """
 
 import logging
+
 from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger(__name__)
@@ -117,11 +118,23 @@ def get_access_map_model(model_id: str):
 
 @router.get("/api/gcp-billing")
 async def get_gcp_billing():
-    """Retourne la facturation GCP (Gemini API) de la période courante."""
+    """
+    Retourne l'état de facturation GCP (comptes, projets, APIs IA activées)
+    via OAuth2 (core.gcp_oauth_client, refresh_token permanent — pas de
+    scraping). Cassé depuis son extraction de gui_server.py : importait
+    `core.gcp_oauth.get_gcp_billing_data`, un module qui n'a jamais existé
+    (le vrai code est `core.gcp_oauth_client.GCPOAuthClient.get_full_billing_info`).
+
+    Note : Cloud Billing API renvoie le statut des comptes de facturation et
+    les projets liés, PAS un montant de dépense en direct — pour un vrai
+    chiffre en $, il faut activer l'export de facturation BigQuery côté GCP.
+    """
     try:
-        from core.gcp_oauth import get_gcp_billing_data
-        return await get_gcp_billing_data()
-    except ImportError:
-        return {"error": "Module gcp_oauth non disponible", "billing": {}}
+        import asyncio as _asyncio
+
+        from core.gcp_oauth_client import get_gcp_client
+        client = get_gcp_client()
+        return await _asyncio.to_thread(client.get_full_billing_info)
     except Exception as e:
+        logger.error(f"[GCP BILLING] Erreur : {e}")
         raise HTTPException(status_code=500, detail=str(e))

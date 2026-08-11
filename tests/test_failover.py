@@ -11,7 +11,7 @@ Tests asyncio avec unittest.mock :
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,13 +51,13 @@ async def _simulate_ping(returncode: int) -> bool:
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
         proc = await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-W", "2", "192.168.1.100",
+            "ping", "-c", "1", "-W", "2", "${PC_HOST:-192.168.1.x}",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
         try:
             await asyncio.wait_for(proc.wait(), timeout=3)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return False
         return proc.returncode == 0
 
@@ -186,10 +186,10 @@ async def test_sqlite_sync_queues_on_failure(tmp_antigrav):
             client = paramiko.SSHClient()
             with patch.object(paramiko.SSHClient, "connect",
                               side_effect=paramiko.ssh_exception.NoValidConnectionsError(
-                                  {("192.168.1.100", 22): Exception("Refusé")}
+                                  {("${PC_HOST:-192.168.1.x}", 22): Exception("Refusé")}
                               )):
-                client.connect("192.168.1.100", port=22, username="deck",
-                               password="test-password-placeholder", timeout=5)
+                client.connect("${PC_HOST:-192.168.1.x}", port=22, username="deck",
+                               password="remote-host", timeout=5)
             return True
         except Exception:
             return False
@@ -200,14 +200,14 @@ async def test_sqlite_sync_queues_on_failure(tmp_antigrav):
         if queue_file.exists():
             queue = json.loads(queue_file.read_text())
         queue.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "src_path":  str(src),
             "dst_path":  dst,
         })
         queue_file.write_text(json.dumps(queue, indent=2))
 
     # Simuler un cycle sync qui échoue
-    remote_path = "/opt/moteur_agents/moteur_runtime_deck_backup.db"
+    remote_path = "/e/AuxFilsDesIdees/moteur_agents/moteur_runtime_deck_backup.db"
     success = await mock_scp_upload(fake_db, remote_path)
     if not success:
         enqueue(fake_db, remote_path)
@@ -233,7 +233,7 @@ async def test_failover_manager_processes_mqtt_events():
     from tools.failover_manager import FailoverManager
 
     mgr = FailoverManager(mqtt_host="127.0.0.1", mqtt_port=1883)
-    ts  = datetime.now(timezone.utc).isoformat()
+    ts  = datetime.now(UTC).isoformat()
 
     # ── Simuler ACTIVATED ──
     msg_activated = MagicMock()
@@ -241,7 +241,7 @@ async def test_failover_manager_processes_mqtt_events():
     msg_activated.payload = json.dumps({
         "status":    "ACTIVATED",
         "timestamp": ts,
-        "deck_ip":   "${OLLAMA_HOST:-localhost}",
+        "deck_ip":   "${DECK_HOST:-192.168.1.x}",
     }).encode("utf-8")
 
     mgr._on_message(None, None, msg_activated)

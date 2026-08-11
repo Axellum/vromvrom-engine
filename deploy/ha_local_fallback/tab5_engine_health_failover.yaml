@@ -2,7 +2,7 @@
 # tab5_engine_health_failover.yaml — Auto-bascule du pipeline vocal Tab5.
 #
 # Objectif : garder DEUX agents (local + cloud/moteur) mais basculer tout seul
-# sur l'agent LOCAL quand le moteur (Steam Deck, http://192.168.1.x:8000) est
+# sur l'agent LOCAL quand le moteur (Steam Deck, http://${DECK_HOST:-192.168.1.x}:8000) est
 # injoignable, puis restaurer le pipeline préféré à son retour.
 #
 # Dépend de la sonde publique /healthz du moteur (api/routes/health.py) et des
@@ -23,7 +23,7 @@ binary_sensor:
   - platform: rest
     name: "Moteur Tab5 en ligne"
     unique_id: tab5_engine_online
-    resource: "http://192.168.1.x:8000/healthz"
+    resource: "http://${DECK_HOST:-192.168.1.x}:8000/healthz"
     method: GET
     value_template: "{{ value_json.ok | default(false) }}"
     device_class: connectivity

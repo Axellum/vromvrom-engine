@@ -63,7 +63,7 @@ def test_compressor_empty_inputs():
 
     assert compressor.compress({}) == ""
     assert compressor.compress({"facts": "", "rag": "   "}) == ""
-    
+
     result = compressor.compress({"rag": "Contexte rag"})
     assert "RAG TECHNIQUE" in result
     assert "Contexte rag" in result

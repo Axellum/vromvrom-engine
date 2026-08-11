@@ -1,7 +1,8 @@
 """Package core — expose la version de l'application moteur_agents."""
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from importlib.metadata import version as _pkg_version, PackageNotFoundError
 
 if sys.version_info >= (3, 11):
     import tomllib

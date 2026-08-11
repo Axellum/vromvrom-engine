@@ -23,7 +23,7 @@ def test_only_core_services_exported():
         assert service in {
             "light.turn_on", "light.turn_off",
             "climate.turn_on", "climate.turn_off",
-            "script.tab5_volet_action",
+            "script.blind_action",
         }, f"{name} → service hors noyau : {service}"
     # Les commandes wake-word (switch.*) ne doivent pas fuiter dans le secours.
     assert not any("WakeWord" in n or "Micro" in n for n in intents)
@@ -37,20 +37,20 @@ def test_sentences_and_intents_are_consistent():
 
 
 def test_volet_actions_use_script_with_action_data():
-    """Le volet passe par script.tab5_volet_action avec la bonne action."""
+    """Le volet passe par script.blind_action avec la bonne action."""
     _, intents = build_fallback(_load_commands())
     for action_kind in ("open", "close", "stop"):
         name = f"Tab5CoreVolet{action_kind.title()}"
         assert name in intents, f"intent volet manquant : {name}"
         act = intents[name]["action"][0]
-        assert act["service"] == "script.tab5_volet_action"
+        assert act["service"] == "script.blind_action"
         assert act["data"]["action"] == action_kind
 
 
 def test_light_intent_has_entity_target_and_speech():
     _, intents = build_fallback(_load_commands())
-    salon_on = intents["Tab5CoreLightSalonOn"]
-    assert salon_on["action"][0]["target"]["entity_id"] == "light.salon"
+    salon_on = intents["Tab5CoreLightLivingRoomOn"]
+    assert salon_on["action"][0]["target"]["entity_id"] == "light.living_room"
     assert salon_on["speech"]["text"] == "Lumière allumée."
 
 

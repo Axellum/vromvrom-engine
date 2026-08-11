@@ -18,11 +18,12 @@ Utilisation dans EmbeddingStore :
     store = EmbeddingStore(embedding_fn=GeminiEmbeddingFunction())
 """
 
-import os
-import logging
-import requests
 import hashlib
-from typing import Any, Dict, List, Optional
+import logging
+import os
+from typing import Any
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +72,11 @@ class GeminiEmbeddingFunction(_EF_BASE):
             embedding_function=GeminiEmbeddingFunction(),
         )
     """
-    
+
     def __init__(
         self,
         model: str = "gemini-embedding-2",
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         task_type: str = "RETRIEVAL_DOCUMENT",
     ):
         """
@@ -92,24 +93,24 @@ class GeminiEmbeddingFunction(_EF_BASE):
         self._model = model
         self._task_type = task_type
         self._base_url = "https://generativelanguage.googleapis.com/v1beta"
-        
+
         # Validation
         if not self._api_key:
             logger.warning("[Gemini Embedding] Aucune clé API configurée. Fallback sur embeddings locaux.")
-        
+
         model_info = EMBEDDING_MODELS.get(model, {})
         self._dimension = model_info.get("dimension", 3072)
-        
+
         logger.info(
             f"[Gemini Embedding] Initialisé : modèle={model}, "
             f"dimension={self._dimension}, task_type={task_type}"
         )
-    
+
     @property
     def dimension(self) -> int:
         """Dimension des vecteurs d'embedding produits."""
         return self._dimension
-    
+
     @property
     def available(self) -> bool:
         """Indique si la fonction d'embedding est configurée et prête."""
@@ -130,12 +131,12 @@ class GeminiEmbeddingFunction(_EF_BASE):
         """Identifiant stable de la fonction d'embedding (sérialisation ChromaDB)."""
         return "gemini_embedding_fn"
 
-    def get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> dict[str, Any]:
         """Config sérialisable de la fonction. N'inclut JAMAIS la clé API (secret)."""
         return {"model": self._model, "task_type": self._task_type}
 
     @staticmethod
-    def build_from_config(config: Dict[str, Any]) -> "GeminiEmbeddingFunction":
+    def build_from_config(config: dict[str, Any]) -> "GeminiEmbeddingFunction":
         """Reconstruit la fonction depuis une config sérialisée (clé API relue de l'env)."""
         return GeminiEmbeddingFunction(
             model=config.get("model", "gemini-embedding-2"),
@@ -146,7 +147,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
         """Espace de similarité par défaut : cosinus (collection créée en hnsw:space=cosine)."""
         return "cosine"
 
-    def __call__(self, input: List[str]) -> List[List[float]]:
+    def __call__(self, input: list[str]) -> list[list[float]]:
         """Interface ChromaDB : génère les embeddings pour une liste de textes.
         
         Args:
@@ -157,20 +158,20 @@ class GeminiEmbeddingFunction(_EF_BASE):
         """
         if not input:
             return []
-        
+
         # L'API Gemini Embedding accepte du batch nativement
         # On traite par lots de 100 (limite API)
         all_embeddings = []
         batch_size = 100
-        
+
         for i in range(0, len(input), batch_size):
             batch = input[i:i + batch_size]
             embeddings = self._embed_batch(batch)
             all_embeddings.extend(embeddings)
-        
+
         return all_embeddings
-    
-    def _embed_batch(self, texts: List[str]) -> List[List[float]]:
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Appelle l'API Gemini Embedding pour un lot de textes.
         
         Utilise l'endpoint batchEmbedContents pour optimiser les appels réseau.
@@ -188,7 +189,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
 
         if not current_key:
             current_key = os.environ.get("GEMINI_API_KEY")
-            
+
         if not current_key:
             raise ValueError("Aucune clé API Gemini disponible pour générer des embeddings")
 
@@ -201,12 +202,12 @@ class GeminiEmbeddingFunction(_EF_BASE):
                 "content": {"parts": [{"text": truncated}]},
                 "taskType": self._task_type,
             })
-        
+
         payload = {"requests": requests_payload}
-        
+
         max_attempts = 4
         backoff = 10.0
-        
+
         for attempt in range(1, max_attempts + 1):
             url = f"{self._base_url}/models/{self._model}:batchEmbedContents?key={current_key}"
             try:
@@ -216,7 +217,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
                     json=payload,
                     timeout=(5.0, 60.0),
                 )
-                
+
                 # Gestion automatique de la rotation de clé sur 429
                 if resp.status_code == 429:
                     if pool and not self._api_key:
@@ -227,25 +228,25 @@ class GeminiEmbeddingFunction(_EF_BASE):
                             current_key = next_key
                             # Passer directement à l'essai suivant avec la nouvelle clé sans attendre
                             continue
-                    
+
                     # Pas d'autre clé ou clé fixe, on attend
                     logger.warning(f"[Gemini Embedding] 429 détecté (tentative {attempt}/{max_attempts}). Pause de {backoff}s...")
                     import time
                     time.sleep(backoff)
                     backoff *= 1.5
                     continue
-                
+
                 resp.raise_for_status()
                 if pool and not self._api_key:
                     pool.report_success(current_key)
-                    
+
                 data = resp.json()
-                
+
                 embeddings = []
                 for emb in data.get("embeddings", []):
                     values = emb.get("values", [])
                     embeddings.append(values)
-                
+
                 # Tracking des tokens (estimation : 1 token ≈ 4 chars)
                 try:
                     from core.token_tracker import record_usage
@@ -254,14 +255,14 @@ class GeminiEmbeddingFunction(_EF_BASE):
                     record_usage(self._model, estimated_tokens, 0)
                 except Exception:
                     pass
-                
+
                 logger.debug(
                     f"[Gemini Embedding] Batch de {len(texts)} textes encodé "
                     f"({len(embeddings)} vecteurs × {self._dimension} dims)"
                 )
-                
+
                 return embeddings
-                
+
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code if e.response else "?"
                 if status == 429:
@@ -270,7 +271,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
                     time.sleep(backoff)
                     backoff *= 1.5
                     continue
-                
+
                 body = e.response.text[:300] if e.response else ""
                 logger.error(f"[Gemini Embedding] Erreur HTTP {status} : {body}")
                 if attempt == max_attempts:
@@ -285,9 +286,9 @@ class GeminiEmbeddingFunction(_EF_BASE):
                 import time
                 time.sleep(backoff)
                 backoff *= 1.5
-        
+
         raise RuntimeError(f"Échec de génération d'embeddings après {max_attempts} tentatives.")
-    
+
     def embed_query(self, input):
         """Interface ChromaDB 1.5+ : embed une ou plusieurs requêtes (RETRIEVAL_QUERY).
 
@@ -306,7 +307,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
             return self._embed_query_single(input)
         return [self._embed_query_single(text) for text in input]
 
-    def _embed_query_single(self, text: str) -> List[float]:
+    def _embed_query_single(self, text: str) -> list[float]:
         """Embed un seul texte de requête (task_type=RETRIEVAL_QUERY).
 
         Utilise un cache SQLite local (memory.db) pour éviter les appels réseau redondants.
@@ -314,10 +315,10 @@ class GeminiEmbeddingFunction(_EF_BASE):
         """
         if not text:
             return []
-            
+
         normalized_text = text.strip().lower()
         query_hash = hashlib.md5(normalized_text.encode('utf-8')).hexdigest()
-        
+
         # 1. Tenter d'abord une correspondance par hash exact (ultra-rapide)
         try:
             from memory.memory_db import MemoryDB
@@ -328,39 +329,40 @@ class GeminiEmbeddingFunction(_EF_BASE):
                 return cached_emb
         except Exception as cache_err:
             logger.warning(f"[Gemini Embedding] Échec lecture cache SQLite : {cache_err}")
- 
+
         # 2. Tenter une recherche de similarité sémantique approchée locale (seuil >= 0.97)
         try:
-            import numpy as np
             import chromadb.utils.embedding_functions as ef
+            import numpy as np
+
             from memory.memory_db import MemoryDB
-            
+
             db = MemoryDB.get_instance()
             cached_entries = db.get_all_cached_query_embeddings()
             if cached_entries:
                 if not hasattr(self, "_local_embed_fn") or self._local_embed_fn is None:
                     self._local_embed_fn = ef.DefaultEmbeddingFunction()
-                
+
                 local_emb_query = np.array(self._local_embed_fn([normalized_text])[0], dtype=np.float32)
                 norm_query = np.linalg.norm(local_emb_query)
-                
+
                 if norm_query > 0:
                     best_score = -1.0
                     best_entry = None
-                    
+
                     if not hasattr(self, "_local_emb_cache"):
                         self._local_emb_cache = {}
-                        
+
                     for entry in cached_entries:
                         text_cached = entry["query_text"]
-                        
+
                         if text_cached not in self._local_emb_cache:
                             try:
                                 emb = self._local_embed_fn([text_cached])[0]
                                 self._local_emb_cache[text_cached] = np.array(emb, dtype=np.float32)
                             except Exception:
                                 continue
-                        
+
                         local_emb_cached = self._local_emb_cache[text_cached]
                         norm_cached = np.linalg.norm(local_emb_cached)
                         if norm_cached > 0:
@@ -368,7 +370,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
                             if score > best_score:
                                 best_score = score
                                 best_entry = entry
-                                
+
                     if best_score >= 0.96:
                         logger.info(
                             f"[Gemini Embedding] Query cache hit sémantique (score={best_score:.4f} >= 0.96) pour : "
@@ -377,7 +379,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
                         return best_entry["embedding"]
         except Exception as sem_err:
             logger.debug(f"[Gemini Embedding] Échec recherche sémantique locale : {sem_err}")
-            
+
         # 3. Cache miss : Appel réseau API Gemini
         try:
             from core.key_pool import get_key_pool
@@ -388,10 +390,10 @@ class GeminiEmbeddingFunction(_EF_BASE):
         current_key = self._api_key
         if not current_key and pool:
             current_key = pool.get_free_key()
-            
+
         if not current_key:
             current_key = os.environ.get("GEMINI_API_KEY")
-            
+
         if not current_key:
             raise ValueError("Aucune clé API Gemini disponible pour générer des embeddings")
 
@@ -400,10 +402,10 @@ class GeminiEmbeddingFunction(_EF_BASE):
             "content": {"parts": [{"text": text[:40000]}]},
             "taskType": "RETRIEVAL_QUERY",
         }
-        
+
         max_attempts = 4
         backoff = 10.0
-        
+
         for attempt in range(1, max_attempts + 1):
             url = (
                 f"{self._base_url}/models/{self._model}:embedContent"
@@ -416,7 +418,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
                     json=payload,
                     timeout=(5.0, 30.0),
                 )
-                
+
                 # Rotation automatique de clé sur 429
                 if resp.status_code == 429:
                     if pool and not self._api_key:
@@ -426,20 +428,20 @@ class GeminiEmbeddingFunction(_EF_BASE):
                             logger.warning(f"[Gemini Embedding] 429 détecté pour query. Rotation vers la clé {next_key[:6]}...")
                             current_key = next_key
                             continue
-                    
+
                     logger.warning(f"[Gemini Embedding] 429 détecté pour query (tentative {attempt}/{max_attempts}). Pause de {backoff}s...")
                     import time
                     time.sleep(backoff)
                     backoff *= 1.5
                     continue
-                
+
                 resp.raise_for_status()
                 if pool and not self._api_key:
                     pool.report_success(current_key)
-                    
+
                 data = resp.json()
                 embedding = data.get("embedding", {}).get("values", [])
-                
+
                 # Enregistrer l'embedding dans le cache SQLite
                 if embedding:
                     try:
@@ -447,7 +449,7 @@ class GeminiEmbeddingFunction(_EF_BASE):
                         db = MemoryDB.get_instance()
                         db.store_query_embedding_cache(query_hash, normalized_text, embedding)
                         logger.debug(f"[Gemini Embedding] Enregistré dans le cache SQLite : '{normalized_text[:50]}...'")
-                        
+
                         if hasattr(self, "_local_embed_fn") and self._local_embed_fn is not None:
                             if not hasattr(self, "_local_emb_cache"):
                                 self._local_emb_cache = {}
@@ -455,9 +457,9 @@ class GeminiEmbeddingFunction(_EF_BASE):
                             self._local_emb_cache[normalized_text] = np.array(local_emb, dtype=np.float32)
                     except Exception as save_err:
                         logger.warning(f"[Gemini Embedding] Impossible de sauvegarder l'embedding dans le cache : {save_err}")
-                        
+
                 return embedding
-                
+
             except requests.exceptions.HTTPError as e:
                 status = e.response.status_code if e.response else "?"
                 if status == 429:
@@ -478,6 +480,6 @@ class GeminiEmbeddingFunction(_EF_BASE):
                 import time
                 time.sleep(backoff)
                 backoff *= 1.5
-                
+
         raise RuntimeError(f"Échec de génération de l'embedding de query après {max_attempts} tentatives.")
 

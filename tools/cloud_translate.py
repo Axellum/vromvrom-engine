@@ -14,10 +14,10 @@ Note : Requiert l'activation de translate.googleapis.com sur le projet
 moteur-ia-free via la console GCP.
 """
 
-import os
 import logging
+import os
+
 import requests
-from typing import Optional, List
 
 logger = logging.getLogger("tools.cloud_translate")
 
@@ -30,18 +30,18 @@ class CloudTranslateProvider:
         result = translator.translate("Hello world", target="fr")
         lang = translator.detect("Bonjour le monde")
     """
-    
+
     BASE_URL = "https://translation.googleapis.com/language/translate/v2"
-    
-    def __init__(self, api_key: Optional[str] = None):
+
+    def __init__(self, api_key: str | None = None):
         self.api_key = api_key or os.environ.get("CLOUD_API_KEY", "")
         self.available = bool(self.api_key)
-    
+
     def translate(
         self,
         text: str,
         target: str = "fr",
-        source: Optional[str] = None,
+        source: str | None = None,
         format_type: str = "text",
     ) -> dict:
         """Traduit du texte.
@@ -57,7 +57,7 @@ class CloudTranslateProvider:
         """
         if not self.available:
             return {"error": "Cloud Translate non disponible"}
-        
+
         params = {
             "q": text,
             "target": target,
@@ -66,20 +66,20 @@ class CloudTranslateProvider:
         }
         if source:
             params["source"] = source
-        
+
         try:
             resp = requests.post(self.BASE_URL, data=params, timeout=15)
-            
+
             if resp.status_code != 200:
                 logger.error(f"[Cloud Translate] HTTP {resp.status_code}: {resp.text[:200]}")
                 return {"error": f"HTTP {resp.status_code}"}
-            
+
             data = resp.json()
             translations = data.get("data", {}).get("translations", [])
-            
+
             if not translations:
                 return {"error": "Aucune traduction retournée"}
-            
+
             t = translations[0]
             result = {
                 "translated_text": t.get("translatedText", ""),
@@ -87,17 +87,17 @@ class CloudTranslateProvider:
                 "target": target,
                 "chars_count": len(text),
             }
-            
+
             logger.info(
                 f"[Cloud Translate] ✅ {result['detected_source']}→{target} "
                 f"({len(text)} chars)"
             )
             return result
-            
+
         except Exception as e:
             logger.error(f"[Cloud Translate] Erreur : {e}")
             return {"error": str(e)}
-    
+
     def detect(self, text: str) -> dict:
         """Détecte la langue d'un texte.
         
@@ -106,15 +106,15 @@ class CloudTranslateProvider:
         """
         if not self.available:
             return {"error": "Cloud Translate non disponible"}
-        
+
         url = f"{self.BASE_URL}/detect"
-        
+
         try:
             resp = requests.post(url, data={"q": text, "key": self.api_key}, timeout=10)
-            
+
             if resp.status_code != 200:
                 return {"error": f"HTTP {resp.status_code}"}
-            
+
             detections = resp.json().get("data", {}).get("detections", [[]])
             if detections and detections[0]:
                 d = detections[0][0]
@@ -124,11 +124,11 @@ class CloudTranslateProvider:
                     "is_reliable": d.get("isReliable", False),
                 }
             return {"error": "Aucune détection"}
-            
+
         except Exception as e:
             return {"error": str(e)}
-    
-    def translate_batch(self, texts: List[str], target: str = "fr") -> List[dict]:
+
+    def translate_batch(self, texts: list[str], target: str = "fr") -> list[dict]:
         """Traduit plusieurs textes en un seul appel.
         
         Args:
@@ -140,7 +140,7 @@ class CloudTranslateProvider:
         """
         if not self.available:
             return [{"error": "Non disponible"}]
-        
+
         params = {
             "target": target,
             "format": "text",
@@ -149,13 +149,13 @@ class CloudTranslateProvider:
         # L'API accepte plusieurs q= dans la même requête
         data_pairs = [("q", t) for t in texts]
         data_pairs.extend(params.items())
-        
+
         try:
             resp = requests.post(self.BASE_URL, data=data_pairs, timeout=30)
-            
+
             if resp.status_code != 200:
                 return [{"error": f"HTTP {resp.status_code}"}]
-            
+
             translations = resp.json().get("data", {}).get("translations", [])
             results = []
             for i, t in enumerate(translations):
@@ -164,11 +164,11 @@ class CloudTranslateProvider:
                     "translated_text": t.get("translatedText", ""),
                     "detected_source": t.get("detectedSourceLanguage", "?"),
                 })
-            
+
             total_chars = sum(len(t) for t in texts)
             logger.info(f"[Cloud Translate] ✅ Batch {len(texts)} textes ({total_chars} chars)")
             return results
-            
+
         except Exception as e:
             return [{"error": str(e)}]
 
@@ -189,15 +189,15 @@ def translate_text(text: str, target_lang: str = "fr", source_lang: str = "") ->
         Le texte traduit ou un message d'erreur.
     """
     translator = CloudTranslateProvider()
-    
+
     if not translator.available:
         return "Erreur: Cloud Translate non disponible (clé API manquante)"
-    
+
     result = translator.translate(text, target=target_lang, source=source_lang or None)
-    
+
     if "error" in result:
         return f"❌ Erreur de traduction : {result['error']}"
-    
+
     src = result.get("detected_source", "?")
     return (
         f"🌍 Traduction ({src} → {target_lang}) :\n"

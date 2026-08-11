@@ -4,13 +4,13 @@ Gère à la fois les faits techniques persistants en JSON (FactStore)
 et les fonctions d'insertion et de recherche de faits en base SQLite (MemoryDB).
 """
 
-import os
 import json
 import logging
-import time
+import os
+import re
 import sqlite3
+import time
 from datetime import datetime
-from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class FactStore:
 
     def __init__(self, facts_file: str = _DEFAULT_FACTS_FILE):
         self.facts_file = facts_file
-        self.facts: Dict[str, Dict[str, dict]] = {}  # {category: {key: {value, source, timestamp}}}
+        self.facts: dict[str, dict[str, dict]] = {}  # {category: {key: {value, source, timestamp}}}
         self._load()
 
     def _load(self):
@@ -39,7 +39,7 @@ class FactStore:
             self.facts = {}
             return
         try:
-            with open(self.facts_file, 'r', encoding='utf-8') as f:
+            with open(self.facts_file, encoding='utf-8') as f:
                 self.facts = json.load(f)
             total = sum(len(v) for v in self.facts.values())
             logger.info(f"[FACTS] {total} fait(s) chargé(s) depuis {os.path.basename(self.facts_file)}")
@@ -58,13 +58,13 @@ class FactStore:
     def add_fact(self, category: str, key: str, value: str, source: str = "unknown") -> str:
         """
         Ajoute ou met à jour un fait structuré.
-        
+
         Args:
             category: Catégorie du fait (sensor, config, hardware, network, automation, etc.)
             key: Identifiant unique du fait dans sa catégorie (ex: "dht22_salon")
             value: Valeur du fait (ex: "offset de température = -1.5°C")
             source: Source du fait (ex: session_id ou "utilisateur")
-        
+
         Returns:
             Message de confirmation.
         """
@@ -100,7 +100,7 @@ class FactStore:
             return f"Fait supprimé : [{category}] {key}"
         return f"Fait non trouvé : [{category}] {key}"
 
-    def get_facts_for_context(self, keywords: List[str], max_chars: int = 2000) -> str:
+    def get_facts_for_context(self, keywords: list[str], max_chars: int = 2000) -> str:
         """
         Retourne les faits pertinents formatés pour injection dans le prompt.
         Recherche par correspondance de mots-clés dans les catégories et les clés.
@@ -145,7 +145,7 @@ class FactStore:
 
         return "\n".join(parts)
 
-    def get_all_facts(self) -> Dict[str, Dict[str, dict]]:
+    def get_all_facts(self) -> dict[str, dict[str, dict]]:
         """Retourne tous les faits (pour l'API de monitoring)."""
         return self.facts
 
@@ -193,25 +193,73 @@ def upsert_fact(db, category: str, title: str, content: str,
             conn.close()
 
 
-def search_facts(db, query: str, category: str = None, limit: int = 10) -> List[Dict]:
-    """Recherche des faits via FTS5 (BM25) avec fallback LIKE dans la base SQLite."""
+# ──────────────────────────────────────────────────────────────
+# Préparation des requêtes de recherche (FTS5 et LIKE)
+# ──────────────────────────────────────────────────────────────
+
+# Stopwords français — modèle : la liste du compresseur de contexte
+# (core/router_context_compressor.py), complétée de l'élision "qu'" (très
+# fréquente dans les questions : "qu'est-ce que", "qu'il"...).
+_STOPWORDS_FR = {
+    "le", "la", "les", "un", "une", "des", "ce", "cet", "cette", "ces",
+    "de", "du", "d", "l", "en", "et", "ou", "mais", "donc", "ni", "car",
+    "a", "à", "dans", "par", "pour", "sur", "avec", "sans", "sous",
+    "qui", "que", "quoi", "dont", "où", "est", "sont", "être", "avoir",
+    "je", "tu", "il", "elle", "nous", "vous", "ils", "elles",
+    "qu",
+}
+
+# Même classe de caractères que le compresseur de contexte pour découper les mots.
+_TERM_RE = re.compile(r"[a-zA-Z0-9_\-\.àâéèêëîïôöùûüç]+")
+
+
+def _build_search_terms(query: str) -> list[str]:
+    """
+    Tokenise une requête libre en termes significatifs (minuscules, sans stopwords
+    français ni mots d'un seul caractère). Source de vérité unique pour FTS5 et LIKE.
+    """
+    terms = []
+    for word in _TERM_RE.findall(query.lower()):
+        word = word.rstrip(".")
+        if word not in _STOPWORDS_FR and len(word) > 1:
+            terms.append(word)
+    return terms
+
+
+def _build_fts5_match(terms: list[str]) -> str:
+    """
+    Construit une expression MATCH FTS5 sûre : chaque terme devient une phrase
+    littérale entre guillemets doubles (guillemets internes doublés, comme en SQL),
+    les termes étant joints par OR. Apostrophes, slashes, tirets et deux-points
+    ne cassent plus la syntaxe FTS5.
+    """
+    phrases = ['"' + term.replace('"', '""') + '"' for term in terms]
+    return " OR ".join(phrases)
+
+
+def search_facts(db, query: str, category: str = None, limit: int = 10) -> list[dict]:
+    """Recherche des faits via FTS5 (BM25) avec repli LIKE dans la base SQLite.
+
+    Sémantique : OR entre les termes significatifs de la question (stopwords
+    français retirés), classés par pertinence — un AND sur la question entière
+    exigerait tous ses mots et rendrait presque toujours zéro résultat.
+    """
     conn = db._get_conn()
     try:
-        # Nettoyer la requête pour FTS5 (enlever les guillemets et astérisques bruts)
-        clean_query = " ".join([w.strip('*').strip('"') for w in query.split() if w.strip('*').strip('"')])
-
-        if not clean_query:
+        terms = _build_search_terms(query)
+        if not terms:
             return []
+        match_query = _build_fts5_match(terms)
 
         try:
             # Requête FTS5 avec jointure pour charger toutes les colonnes de facts
             sql = """
-                SELECT f.*, fts.rank 
+                SELECT f.*, fts.rank
                 FROM facts f
                 JOIN fts_facts fts ON f.id = fts.fact_id
                 WHERE fts_facts MATCH ?
             """
-            params = [clean_query]
+            params = [match_query]
             if category:
                 sql += " AND f.category = ?"
                 params.append(category)
@@ -221,16 +269,19 @@ def search_facts(db, query: str, category: str = None, limit: int = 10) -> List[
             rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
         except sqlite3.OperationalError as e:
-            # Fallback sur la recherche LIKE classique en cas d'erreur de syntaxe FTS5 ou d'absence du module
-            logger.warning(f"[MEMORY DB] FTS5 search failed, falling back to LIKE: {e}")
-            words = query.lower().split()
+            # Dernier recours (base sans FTS5) : LIKE sur les mêmes termes significatifs,
+            # même sémantique OR. Le warning porte la requête fautive pour diagnostic.
+            logger.warning(
+                f"[MEMORY DB] FTS5 search failed, falling back to LIKE: {e} — requête fautive : {match_query!r}"
+            )
             conditions = []
             params = []
-            for word in words:
+            for word in terms:
                 conditions.append("(LOWER(f.title) LIKE ? OR LOWER(f.content) LIKE ? OR LOWER(f.tags) LIKE ?)")
-                params.extend([f"%{word}%", f"%{word}%", f"%{word}%"])
+                params.extend([f"%{word}%"] * 3)
 
-            sql = f"SELECT f.* FROM facts f WHERE {' AND '.join(conditions)}"
+            # noqa S608 : noms de colonnes en dur, termes paramétrés '?' — aucune injection
+            sql = "SELECT f.* FROM facts f WHERE " + " OR ".join(conditions)  # noqa: S608
             if category:
                 sql += " AND f.category = ?"
                 params.append(category)
@@ -243,7 +294,7 @@ def search_facts(db, query: str, category: str = None, limit: int = 10) -> List[
         conn.close()
 
 
-def get_facts_by_category(db, category: str) -> List[Dict]:
+def get_facts_by_category(db, category: str) -> list[dict]:
     """Retourne tous les faits d'une catégorie depuis la base SQLite."""
     conn = db._get_conn()
     try:
@@ -256,7 +307,7 @@ def get_facts_by_category(db, category: str) -> List[Dict]:
         conn.close()
 
 
-def get_all_facts_count(db) -> Dict[str, int]:
+def get_all_facts_count(db) -> dict[str, int]:
     """Retourne le nombre de faits par catégorie depuis la base SQLite."""
     conn = db._get_conn()
     try:
@@ -299,7 +350,7 @@ def decay_relevance(db, decay_rate: float = 0.05, min_score: float = 0.1) -> int
             conn.close()
 
 
-def get_stale_facts(db, threshold: float = 0.3) -> List[Dict]:
+def get_stale_facts(db, threshold: float = 0.3) -> list[dict]:
     """Retourne les faits dont le score de pertinence est bas depuis la base SQLite."""
     conn = db._get_conn()
     try:
@@ -353,6 +404,7 @@ def _ensure_facts_columns(db) -> None:
         "last_accessed_at": "REAL DEFAULT NULL",
         "importance_score": "REAL DEFAULT 1.0",
         "access_count": "INTEGER DEFAULT 0",
+        "is_deprecated": "INTEGER DEFAULT 0",  # migration : filtrage ChromaDB (chroma_memory.py:242)
     }
     conn = db._get_conn()
     try:
@@ -383,13 +435,14 @@ def touch_fact(db, fact_id: int) -> bool:
             conn.close()
 
 
-def search_facts_weighted(db, query: str, limit: int = 10) -> List[Dict]:
+def search_facts_weighted(db, query: str, limit: int = 10) -> list[dict]:
     """Recherche FTS5 ordonnée par importance_score * relevance_score décroissant."""
     conn = db._get_conn()
     try:
-        clean_query = " ".join([w.strip('*"') for w in query.split() if w.strip('*"')])
-        if not clean_query:
+        terms = _build_search_terms(query)
+        if not terms:
             return []
+        match_query = _build_fts5_match(terms)
         try:
             sql = """
                 SELECT f.*
@@ -399,9 +452,14 @@ def search_facts_weighted(db, query: str, limit: int = 10) -> List[Dict]:
                 ORDER BY COALESCE(f.importance_score, 1.0) * f.relevance_score DESC
                 LIMIT ?
             """
-            rows = conn.execute(sql, (clean_query, limit)).fetchall()
+            rows = conn.execute(sql, (match_query, limit)).fetchall()
             return [dict(r) for r in rows]
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as e:
+            # Repli visible (et non silencieux) sur search_facts, qui retente FTS5
+            # puis bascule en LIKE si nécessaire. Le warning porte la requête fautive.
+            logger.warning(
+                f"[MEMORY DB] FTS5 weighted search failed, falling back to search_facts: {e} — requête fautive : {match_query!r}"
+            )
             return search_facts(db, query, limit=limit)
     finally:
         conn.close()

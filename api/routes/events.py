@@ -4,7 +4,7 @@ Intégration dans le moteur pour l'audit et la visualisation.
 """
 
 import logging
-from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 
 from core.event_store import get_event_store
@@ -15,7 +15,7 @@ router = APIRouter(tags=["Events & Audit"])
 
 
 @router.get("/api/events")
-async def get_events(limit: int = 100, type: Optional[str] = None):
+async def get_events(limit: int = 100, type: str | None = None):
     """
     Récupère la liste des événements récents de l'EventStore.
     Filtre optionnel par type d'événement.

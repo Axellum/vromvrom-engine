@@ -173,7 +173,9 @@ async def _execute_stream_generator(
 
         # ── Routing (domotique / IDE) ──
         router_instance = state.get_shared_router()
-        initial_payload, starting_agent = await router_instance.analyze_request(user_prompt)
+        initial_payload, starting_agent = await router_instance.analyze_request(
+            user_prompt, session_id=session_id
+        )
         routing_type = initial_payload.metadata.get("routing_type", "default")
 
         initial_payload.metadata["request_source"] = {

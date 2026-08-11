@@ -22,6 +22,7 @@ juste une meilleure organisation qu'un unique fichier de 1500+ lignes.
 """
 import logging
 import os
+
 from dotenv import load_dotenv
 
 # Résolution absolue du fichier .env pour éviter les problèmes de CWD (répertoire de travail) de l'IDE
@@ -34,15 +35,14 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 logger = logging.getLogger("mcp_server")
 
-from core.mcp_app import mcp
+import core.mcp_tools.homeassistant  # noqa: E402,F401
+import core.mcp_tools.memory  # noqa: E402,F401
 
 # Import des 3 modules d'outils — déclenche l'enregistrement de leurs
 # @mcp.tool() sur l'instance `mcp` partagée. Ordre : orchestrator avant
 # memory (memory.list_available_models importe get_gateway depuis orchestrator).
 import core.mcp_tools.orchestrator  # noqa: E402,F401
-import core.mcp_tools.memory  # noqa: E402,F401
-import core.mcp_tools.homeassistant  # noqa: E402,F401
-
+from core.mcp_app import mcp
 
 if __name__ == "__main__":
     # Lancement du serveur MCP

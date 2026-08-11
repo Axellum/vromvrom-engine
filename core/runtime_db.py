@@ -302,6 +302,44 @@ def _init_schema(conn: sqlite3.Connection) -> None:
         )
     """)
 
+    # ─── PARTIE HITL (#T267) ───
+    # Demandes d'approbation humaine SURVIVANT à la session qui les a créées.
+    # Avant #T267, une demande ne vivait que dans HITLManager._pending_requests (en
+    # mémoire, et dépilée dès que request_approval() rendait la main) : elle ne
+    # survivait ni à la fin de session ni à un redémarrage. Comme la session était
+    # bornée à 120 s alors que la fenêtre d'approbation était de 300 s, AUCUNE
+    # demande n'a jamais pu être résolue en production (mesuré : 8 demandes en 24 h,
+    # 0 résolution). Le DAG approuvé est stocké ici pour être rejoué À L'IDENTIQUE
+    # à la reprise — jamais re-planifié : approuver le plan A et exécuter le plan B
+    # viderait le HITL de son sens.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hitl_pending_approvals (
+            request_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            objective TEXT,
+            description TEXT,
+            plan_summary TEXT,
+            risk_level TEXT DEFAULT 'medium',
+            dag_tasks_json TEXT NOT NULL,           -- le DAG approuvé, sérialisé
+            git_branch TEXT,                        -- branche éphémère laissée en place
+            status TEXT NOT NULL DEFAULT 'pending', -- pending, approved, rejected, resumed, failed
+            feedback TEXT,
+            created_at REAL NOT NULL,
+            decided_at REAL,
+            resumed_at REAL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_hitl_status ON hitl_pending_approvals(status, created_at)"
+    )
+    # [#T253] Migration additive : le contrat d'acceptation doit survivre à la
+    # session, au même titre que le DAG. Il voyageait dans `state.history` du
+    # moteur — or la reprise monte un moteur NEUF, dont l'historique est vide :
+    # le contrat était donc structurellement perdu, et jamais évalué.
+    _ensure_columns(conn, "hitl_pending_approvals", {
+        "criteres_json": "TEXT",
+    })
+
     # ─── NOUVELLES TABLES DU DAG RÉACTIF ET SWARM (V8/V9) ───
 
     # dag_tasks : Suivi unitaire de chaque tâche éphémère ou réactive

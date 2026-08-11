@@ -1,4 +1,12 @@
+"""
+agents/ha_agent.py — Agent domotique (Home Assistant), hérite d'ExecutorAgent.
+
+Optimisé pour les commandes HA simples : exécute l'outil MCP HA puis répond
+en une seule phrase courte (l'utilisateur parle souvent par la voix depuis
+une dalle tactile, pas besoin d'explications techniques).
+"""
 import logging
+
 from agents.executor import ExecutorAgent
 from core.llm_gateway import LLMGateway
 from tools.tool_registry import ToolRegistry
@@ -36,5 +44,5 @@ PROCÉDURE POUR COMMANDE DOMOTIQUE :
 3. C'est tout. Pas d'explication supplémentaire.
 
 Pour les tâches SQL complexes uniquement, tu peux être plus détaillé."""
-        
+
         logger.info("HACommandAgent initialisé avec succès.")

@@ -3,19 +3,19 @@
 # Noyau de secours : commandes vitales servies par HA Assist LOCAL quand
 # le moteur (Steam Deck) est injoignable.
 intents:
-  Tab5CoreClimateSalonDaikinap71273ClimOff:
+  Tab5CoreClimateLivingRoomOff:
     data:
     - sentences:
       - arrete la clim salon
       - eteins la clim du salon
       - éteins la clim du salon
-  Tab5CoreClimateSalonDaikinap71273ClimOn:
+  Tab5CoreClimateLivingRoomOn:
     data:
     - sentences:
       - allume la clim du salon
       - allume la climatisation du salon
       - demarre la clim salon
-  Tab5CoreLightH60082Off:
+  Tab5CoreLightBedroomOff:
     data:
     - sentences:
       - eteins la chambre
@@ -24,33 +24,33 @@ intents:
       - éteins la chambre
       - éteins la lumière de la chambre
       - éteins les lumières de la chambre
-  Tab5CoreLightH60082On:
+  Tab5CoreLightBedroomOn:
     data:
     - sentences:
       - allume la chambre
       - allume la lumiere de la chambre
       - mets la chambre
-  Tab5CoreLightH6008Off:
+  Tab5CoreLightBedsideOff:
     data:
     - sentences:
       - eteins le chevet salon
       - éteins le chevet salon
-  Tab5CoreLightH6008On:
+  Tab5CoreLightBedsideOn:
     data:
     - sentences:
       - allume la lumiere chevet salon
       - allume le chevet salon
-  Tab5CoreLightH600cOff:
+  Tab5CoreLightHallwayOff:
     data:
     - sentences:
       - eteins le spot pied
       - éteins le spot pied
-  Tab5CoreLightH600cOn:
+  Tab5CoreLightHallwayOn:
     data:
     - sentences:
       - allume la lumiere pied
       - allume le spot pied
-  Tab5CoreLightSalonOff:
+  Tab5CoreLightLivingRoomOff:
     data:
     - sentences:
       - coupe la lumiere du salon
@@ -65,7 +65,7 @@ intents:
       - éteins la lumière du salon
       - éteins le salon
       - éteins les lumières du salon
-  Tab5CoreLightSalonOn:
+  Tab5CoreLightLivingRoomOn:
     data:
     - sentences:
       - allume la lumiere du salon

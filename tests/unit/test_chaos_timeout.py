@@ -8,11 +8,12 @@ Couvre :
   4. Erreur réseau → comportement circuit breaker
 """
 import asyncio
-import pytest
 from unittest.mock import AsyncMock
 
-from core.llm.circuit_breaker import CircuitBreaker, CircuitBreakerState as CircuitState
+import pytest
 
+from core.llm.circuit_breaker import CircuitBreaker
+from core.llm.circuit_breaker import CircuitBreakerState as CircuitState
 
 # ─── 1. Timeout → cascade fallback ───────────────────────────────────────────
 
@@ -27,13 +28,13 @@ async def test_timeout_triggers_fallback_chain():
         nonlocal call_count
         call_count += 1
         if call_count <= 2:
-            raise asyncio.TimeoutError("Timeout simulé")
+            raise TimeoutError("Timeout simulé")
         return "ok"
 
     for _ in range(2):
         try:
             await cb.call(flaky_call)
-        except (asyncio.TimeoutError, Exception):
+        except (TimeoutError, Exception):
             pass
 
     assert cb.state == CircuitState.OPEN, "Après 2 échecs, le circuit doit être OPEN"
@@ -45,7 +46,7 @@ async def test_timeout_circuit_opens_and_half_opens():
     cb = CircuitBreaker(name="test_half_open", failure_threshold=3, recovery_timeout=0.05)
 
     async def always_timeout():
-        raise asyncio.TimeoutError("timeout")
+        raise TimeoutError("timeout")
 
     for _ in range(3):
         try:

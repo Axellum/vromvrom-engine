@@ -8,10 +8,11 @@ Fournit des mocks réutilisables pour :
 - Router (avec RAG et ContextLoader mockés)
 """
 
-import sys
 import os
+import sys
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-from unittest.mock import MagicMock, AsyncMock
 
 # Ajout du répertoire parent au PYTHONPATH pour les imports relatifs
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -93,10 +94,10 @@ def global_state():
 def mock_provider():
     """Provider LLM mocké qui retourne des réponses préfabriquées."""
     provider = MagicMock()
-    
+
     # Réponse texte par défaut
     provider.generate.return_value = "Réponse mockée du provider LLM."
-    
+
     # Réponse JSON structurée par défaut (plan du Planner)
     provider.generate_structured.return_value = {
         "plan": [
@@ -136,10 +137,10 @@ def mock_gateway(mock_provider):
 def mock_tool_registry():
     """ToolRegistry mocké avec des outils simulés."""
     registry = MagicMock()
-    
+
     # execute() retourne un résultat simulé (async)
     registry.execute = AsyncMock(return_value="Fichier créé avec succès : hello.py")
-    
+
     # Schémas d'outils simulés pour l'ExecutorAgent
     registry.get_all_schemas.return_value = [
         {

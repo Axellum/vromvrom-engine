@@ -15,13 +15,12 @@ Critères de dispatch vers un worker distant :
 - Le worker a répondu au dernier heartbeat
 """
 
-import os
-import time
 import json
 import logging
-import asyncio
-from typing import Optional, Dict, List, Any
+import os
+import time
 from dataclasses import dataclass, field
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +51,13 @@ class WorkerInfo:
     last_heartbeat: float = 0.0
     tasks_completed: int = 0
     tasks_failed: int = 0
-    current_task: Optional[str] = None
-    capabilities: List[str] = field(default_factory=list)
+    current_task: str | None = None
+    capabilities: list[str] = field(default_factory=list)
     # Métriques système enrichies via heartbeat
     cpu_percent: float = 0.0          # Charge CPU du worker (%)
     ram_percent: float = 0.0          # RAM utilisée (%)
     lm_studio_online: bool = False    # True si LM Studio répond sur le worker
-    lm_studio_models: List[str] = field(default_factory=list)  # Modèles chargés
+    lm_studio_models: list[str] = field(default_factory=list)  # Modèles chargés
 
 
 class WorkerRegistry:
@@ -70,14 +69,14 @@ class WorkerRegistry:
     """
 
     def __init__(self):
-        self._workers: Dict[str, WorkerInfo] = {}
+        self._workers: dict[str, WorkerInfo] = {}
         self._load_config()
 
     def _load_config(self):
         """Charge les workers depuis workers.json si le fichier existe."""
         if os.path.exists(_WORKERS_CONFIG):
             try:
-                with open(_WORKERS_CONFIG, 'r', encoding='utf-8') as f:
+                with open(_WORKERS_CONFIG, encoding='utf-8') as f:
                     data = json.load(f)
                 for entry in data.get("workers", []):
                     name = entry.get("name", "")
@@ -112,7 +111,7 @@ class WorkerRegistry:
 
     def get_available_worker(
         self, task_category: str = "general"
-    ) -> Optional[WorkerInfo]:
+    ) -> WorkerInfo | None:
         """
         Retourne un worker disponible pour le type de tâche donné.
         
@@ -142,7 +141,7 @@ class WorkerRegistry:
 
         return None
 
-    def get_lmstudio_worker(self) -> Optional[WorkerInfo]:
+    def get_lmstudio_worker(self) -> WorkerInfo | None:
         """
         Retourne le premier worker avec LM Studio actif et non surchargé.
         Utilisé par MLRouter / ha_fuzzy_matcher pour les embeddings distants.
@@ -162,7 +161,7 @@ class WorkerRegistry:
         self,
         worker: WorkerInfo,
         task_payload: dict,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Envoie une tâche à un worker distant via HTTP POST.
         
@@ -208,7 +207,7 @@ class WorkerRegistry:
                             f"Worker '{worker.name}' erreur {resp.status}: {text[:200]}"
                         )
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             worker.status = "offline"
             worker.current_task = None
             worker.tasks_failed += 1
@@ -265,7 +264,7 @@ class WorkerRegistry:
             except Exception:
                 worker.status = "offline"
 
-    def get_all_status(self) -> List[Dict[str, Any]]:
+    def get_all_status(self) -> list[dict[str, Any]]:
         """Retourne l'état enrichi de tous les workers enregistrés."""
         return [
             {
@@ -288,8 +287,8 @@ class WorkerRegistry:
         ]
 
 
-# Singleton global pour le Swarm de Workers 
-_global_registry_instance: Optional[WorkerRegistry] = None
+# Singleton global pour le Swarm de Workers
+_global_registry_instance: WorkerRegistry | None = None
 
 
 def get_worker_registry() -> WorkerRegistry:

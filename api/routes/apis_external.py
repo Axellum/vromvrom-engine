@@ -3,7 +3,7 @@ api/routes/apis_external.py — Routes API des services externes du Moteur.
 
 Extrait de gui_server.py lors du refactoring Semaine 3.
 Contient : /api/apis-status, /api/generate-image, /api/tts, /api/tts-cloud,
-           /api/translate, /api/vision/analyze, /api/aqa, /api/batch/*,
+           /api/translate, /api/vision/analyze, /api/aqa,
            /api/key-pool, /api/google-cache-status
 
 Auteur : Antigravity IDE + Axel — 2026-06-04
@@ -11,11 +11,11 @@ Auteur : Antigravity IDE + Axel — 2026-06-04
 
 import logging
 import os
-import requests
 from datetime import datetime
+
+import requests
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -28,54 +28,45 @@ router = APIRouter(tags=["APIs Externes"])
 
 class TTSRequest(BaseModel):
     text: str
-    voice: Optional[str] = "fr-FR-Wavenet-A"
-    speed: Optional[float] = 1.0
+    voice: str | None = "fr-FR-Wavenet-A"
+    speed: float | None = 1.0
 
 
 class TTSCloudRequest(BaseModel):
     text: str
-    voice_id: Optional[str] = None
-    provider: Optional[str] = "gcp"
+    voice_id: str | None = None
+    provider: str | None = "gcp"
 
 
 class TranslateRequest(BaseModel):
     text: str
     target_language: str
-    source_language: Optional[str] = None
+    source_language: str | None = None
 
 
 class VisionRequest(BaseModel):
-    image_url: Optional[str] = None
-    image_base64: Optional[str] = None
+    image_url: str | None = None
+    image_base64: str | None = None
     prompt: str = "Décris cette image en détail."
 
 
 class ImageGenerateRequest(BaseModel):
     prompt: str
-    width: Optional[int] = 1024
-    height: Optional[int] = 1024
-    model: Optional[str] = None
+    width: int | None = 1024
+    height: int | None = 1024
+    model: str | None = None
 
 
 class AQARequest(BaseModel):
     question: str
-    context: Optional[str] = None
-
-
-class BatchSubmitRequest(BaseModel):
-    prompts: List[str]
-    model: Optional[str] = "gemini-2.5-flash"
-    system_prompt: Optional[str] = None
+    context: str | None = None
 
 
 # ──────────────────────────────────────────────────────────────────
 # Routes
 # ──────────────────────────────────────────────────────────────────
 
-from core.antigravity_helper import (
-    get_antigravity_status
-)
-
+from core.antigravity_helper import get_antigravity_status
 
 
 @router.get("/api/apis-status")
@@ -295,60 +286,3 @@ async def attributed_question_answering(body: AQARequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ──────────────────────────────────────────────────────────────────
-# Batch (traitement asynchrone de lots de prompts)
-# ──────────────────────────────────────────────────────────────────
-
-@router.post("/api/batch/submit")
-async def batch_submit(body: BatchSubmitRequest):
-    """Soumet un lot de prompts pour traitement batch asynchrone."""
-    try:
-        from core.batch_processor import submit_batch
-        job_id = await submit_batch(body.prompts, model=body.model, system_prompt=body.system_prompt)
-        return {"status": "submitted", "job_id": job_id}
-    except ImportError:
-        raise HTTPException(status_code=501, detail="Module batch non disponible.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/api/batch/status/{job_id}")
-def batch_status(job_id: str):
-    """Retourne le statut d'un job batch."""
-    try:
-        from core.batch_processor import get_job_status
-        status = get_job_status(job_id)
-        if status is None:
-            raise HTTPException(status_code=404, detail=f"Job '{job_id}' introuvable.")
-        return status
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/api/batch/results/{job_id}")
-def batch_results(job_id: str):
-    """Retourne les résultats d'un job batch terminé."""
-    try:
-        from core.batch_processor import get_job_results
-        results = get_job_results(job_id)
-        if results is None:
-            raise HTTPException(status_code=404, detail=f"Job '{job_id}' introuvable ou non terminé.")
-        return results
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/api/batch/list")
-def batch_list(limit: int = 20):
-    """Retourne la liste des jobs batch récents."""
-    try:
-        from core.batch_processor import list_jobs
-        return {"jobs": list_jobs(limit=limit)}
-    except ImportError:
-        return {"jobs": []}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

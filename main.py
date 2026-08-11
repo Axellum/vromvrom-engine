@@ -15,9 +15,9 @@ Usage :
     python main.py            # utilise une requête de démonstration
 """
 
-import sys
 import asyncio
 import logging
+import sys
 
 from dotenv import load_dotenv
 

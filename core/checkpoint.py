@@ -10,14 +10,13 @@ L'interface publique reste identique (save, load, exists, delete, cleanup, list_
 pour garantir la rétrocompatibilité avec engine.py, gui_server.py, etc.
 """
 
+import logging
 import os
 import sqlite3
-import logging
 from datetime import datetime, timedelta
-from typing import Optional
 
-from core.state import GlobalState
 from core.runtime_db import get_connection, get_db_path
+from core.state import GlobalState
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,7 @@ class CheckpointManager:
     def __init__(self, checkpoint_dir: str = _DEFAULT_CHECKPOINT_DIR, db_path: str = None):
         self.checkpoint_dir = checkpoint_dir
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        
+
         self.db_path = db_path or get_db_path()
         logger.info(f"[CHECKPOINT] Point d'accès configuré sur la base de données unifiée : {self.db_path}")
 
@@ -95,7 +94,7 @@ class CheckpointManager:
             logger.error(f"[CHECKPOINT] Échec de la sauvegarde pour '{state.session_id}' : {e}")
             return ""
 
-    def load(self, session_id: str) -> Optional[GlobalState]:
+    def load(self, session_id: str) -> GlobalState | None:
         """
         Recharge un état sauvegardé pour reprise après crash.
         Retourne None si la session n'existe pas ou est corrompue.

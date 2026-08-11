@@ -10,18 +10,18 @@ Couvre :
 - Fallback si cache expiré
 """
 
-import sys
-import os
 import json
+import os
+import sys
 import time
+from unittest.mock import MagicMock, Mock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, Mock
 
 # Ajout du répertoire parent au PYTHONPATH
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from core.gemini_native import GeminiNativeProvider, GeminiCacheManager
-
+from core.gemini_native import GeminiCacheManager, GeminiNativeProvider
 
 # ──────────────────────────────────────────────────────────────────
 # Fixtures
@@ -200,6 +200,149 @@ class TestToolCallsTranslation:
 
 
 # ──────────────────────────────────────────────────────────────────
+# Tests : round-trip de la thought_signature (#T263)
+# ──────────────────────────────────────────────────────────────────
+
+class TestThoughtSignatureRoundTrip:
+    """
+    Vérifie la capture puis la ré-émission de la thought_signature.
+
+    L'API REST Gemini renvoie le champ "thoughtSignature" (camelCase, observé
+    en conditions réelles le 10/08/2026) au niveau de la part functionCall.
+    Il doit être ré-émis à l'identique au tour suivant, sinon l'API répond
+    400. Le champ interne porte la clé privée "_thought_signature" (filtrée
+    avant envoi chez les providers OpenAI-compatibles).
+    """
+
+    SIG_A = "signature-AAAA"
+    SIG_B = "signature-BBBB"
+
+    def test_translate_captures_signature(self, provider):
+        """Une part avec thoughtSignature doit la porter dans le tool_call."""
+        gemini_parts = [{
+            "functionCall": {"name": "get_weather", "args": {"city": "Paris"}},
+            "thoughtSignature": self.SIG_A,
+        }]
+        result = provider._translate_tool_calls(gemini_parts)
+        assert result[0]["_thought_signature"] == self.SIG_A
+        # Le format OpenAI standard reste intact
+        assert result[0]["type"] == "function"
+        assert result[0]["function"]["name"] == "get_weather"
+
+    def test_translate_multiple_calls_keep_own_signature(self, provider):
+        """Chaque functionCall doit retrouver SA signature (pas celle du voisin)."""
+        gemini_parts = [
+            {"functionCall": {"name": "read_file", "args": {"path": "a.py"}},
+             "thoughtSignature": self.SIG_A},
+            {"functionCall": {"name": "read_file", "args": {"path": "b.py"}},
+             "thoughtSignature": self.SIG_B},
+        ]
+        result = provider._translate_tool_calls(gemini_parts)
+        assert len(result) == 2
+        assert result[0]["_thought_signature"] == self.SIG_A
+        assert result[1]["_thought_signature"] == self.SIG_B
+
+    def test_translate_missing_signature_tolerated(self, provider):
+        """Une part sans signature (modèle ancien) ne doit rien casser."""
+        gemini_parts = [
+            {"functionCall": {"name": "read_file", "args": {"path": "a.py"}}},
+            {"functionCall": {"name": "read_file", "args": {"path": "b.py"}},
+             "thoughtSignature": self.SIG_A},
+        ]
+        result = provider._translate_tool_calls(gemini_parts)
+        assert len(result) == 2
+        assert "_thought_signature" not in result[0]
+        assert result[1]["_thought_signature"] == self.SIG_A
+
+    def test_build_contents_reemits_signature(self, provider):
+        """Le tour suivant doit ré-émettre la signature au niveau de la part."""
+        messages = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_gemini_0_123",
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "arguments": json.dumps({"city": "Paris"})
+                },
+                "_thought_signature": self.SIG_A,
+            }],
+        }]
+        contents = provider._build_contents("", messages=messages)
+        part = contents[0]["parts"][0]
+        assert "functionCall" in part
+        assert part["functionCall"]["name"] == "get_weather"
+        # La signature est une sœur de functionCall, comme dans la réponse réelle
+        assert part["thoughtSignature"] == self.SIG_A
+
+    def test_build_contents_multiple_calls_each_own_signature(self, provider):
+        """Deux tool_calls → deux parts, chacune avec SA signature."""
+        messages = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\": \"a.py\"}"},
+                 "_thought_signature": self.SIG_A},
+                {"id": "c2", "type": "function",
+                 "function": {"name": "read_file", "arguments": "{\"path\": \"b.py\"}"},
+                 "_thought_signature": self.SIG_B},
+            ],
+        }]
+        contents = provider._build_contents("", messages=messages)
+        parts = contents[0]["parts"]
+        assert len(parts) == 2
+        assert parts[0]["thoughtSignature"] == self.SIG_A
+        assert parts[1]["thoughtSignature"] == self.SIG_B
+
+    def test_build_contents_missing_signature_tolerated(self, provider):
+        """Sans signature interne, la part est émise sans thoughtSignature."""
+        messages = [{
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "call_gemini_0_123",
+                "type": "function",
+                "function": {"name": "get_weather", "arguments": "{\"city\": \"Paris\"}"},
+            }],
+        }]
+        contents = provider._build_contents("", messages=messages)
+        part = contents[0]["parts"][0]
+        assert "functionCall" in part
+        assert "thoughtSignature" not in part
+
+    def test_full_round_trip_preserves_signature(self, provider):
+        """Traduction → exécution → ré-émission : la part du tour 2 est fidèle."""
+        # Tour 1 : réponse Gemini avec signature
+        gemini_parts = [{
+            "functionCall": {"name": "get_weather", "args": {"city": "Paris"}},
+            "thoughtSignature": self.SIG_A,
+        }]
+        tool_calls = provider._translate_tool_calls(gemini_parts)
+
+        # Le moteur exécute l'outil et reconstruit les messages du tour 2
+        messages = [
+            {"role": "user", "content": "Météo à Paris ?"},
+            {"role": "assistant", "content": "", "tool_calls": tool_calls},
+            {"role": "tool", "tool_call_id": tool_calls[0]["id"],
+             "name": "get_weather", "content": "{\"temperature\": 21}"},
+        ]
+        contents = provider._build_contents("", messages=messages)
+
+        # La part du tour 2 doit porter la même signature que le tour 1
+        model_parts = [p for m in contents if m["role"] == "model"
+                       for p in m["parts"]]
+        fc_parts = [p for p in model_parts if "functionCall" in p]
+        assert len(fc_parts) == 1
+        assert fc_parts[0]["thoughtSignature"] == self.SIG_A
+        assert fc_parts[0]["functionCall"] == {
+            "name": "get_weather",
+            "args": {"city": "Paris"},
+        }
+
+
+# ──────────────────────────────────────────────────────────────────
 # Tests : GeminiCacheManager
 # ──────────────────────────────────────────────────────────────────
 
@@ -246,7 +389,7 @@ class TestCacheManager:
 
         content = "Contenu identique pour les deux appels" * 100
         cache_manager.create(content, ttl_seconds=3600)
-        
+
         # Le deuxième appel ne doit PAS re-créer le cache
         result2 = cache_manager.create(content, ttl_seconds=3600)
         assert result2 == "cachedContents/test123"
@@ -257,7 +400,7 @@ class TestCacheManager:
         """Un cache expiré retourne None pour get_active_cache_name()."""
         cache_manager._active_cache_name = "cachedContents/expired"
         cache_manager._cache_expire_time = time.time() - 10  # Expiré il y a 10s
-        
+
         result = cache_manager.get_active_cache_name()
         assert result is None
         assert cache_manager._active_cache_name is None
@@ -437,7 +580,7 @@ class TestRouterGrounding:
         router.context_loader.load_all.return_value = None
         router.context_loader.reload_if_stale.return_value = None
         router.context_loader.get_context_for_categories.return_value = ""
-        
+
         payload, agent = await router.analyze_request("Quelle est la météo à Paris aujourd'hui ?")
         assert payload.metadata.get("use_search_grounding") is True
 

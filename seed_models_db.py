@@ -44,7 +44,7 @@ def seed_providers():
             "id": "local",
             "name": "LM Studio (Local)",
             "type": "local",
-            "api_endpoint": "http://${OLLAMA_HOST:-192.168.1.x}:1234/v1/chat/completions",
+            "api_endpoint": "http://${LM_STUDIO_HOST:-192.168.1.x}:1234/v1/chat/completions",
             "auth_method": "local",
             "confidentiality": "total",
             "cascade_priority": 1.0,
@@ -367,14 +367,16 @@ def seed_models():
         {"id": "cloud-vision", "provider_id": "cloud_apis", "display_name": "Cloud Vision API", "tier": "paid", "speciality": "vision", "recommended_use": "Analyse d'images Google Cloud"},
         {"id": "cloud-translation", "provider_id": "cloud_apis", "display_name": "Cloud Translation API", "tier": "paid", "speciality": "traduction", "recommended_use": "Traduction multilingue Google Cloud"},
 
-        # ═══ MiniMax, Imagen, Veo, Flux (Spécialisés) ═══
+        # ═══ MiniMax, Imagen, Veo (Spécialisés) ═══
+        # NB : flux-1.1-pro retiré (#T252) — le provider `flux` a été supprimé le
+        # 05/07/2026, aucun transport LLM n'existe dans le gateway (cf. docstring
+        # core/llm/builtin_providers.py) ; l'INSERT violait la clé étrangère.
         {"id": "minimax-m3", "provider_id": "minimax", "display_name": "MiniMax M3", "tier": "paid", "routing_tier": "fort", "context_input": 64000, "context_output": 4096, "cost_input_per_m": 1.20, "cost_output_per_m": 1.20, "supports_tools": 1, "speciality": "polyvalent", "recommended_use": "Modèle d'écriture créative et multilingue"},
         {"id": "MiniMax-M2", "provider_id": "minimax", "display_name": "MiniMax M2", "tier": "paid", "routing_tier": "leger", "context_input": 64000, "context_output": 4096, "cost_input_per_m": 0.15, "cost_output_per_m": 0.6, "supports_tools": 1, "speciality": "polyvalent", "recommended_use": "Tier léger, câblé dans core/llm_gateway.py mais absent du catalogue avant migration routing_tier (07/07/2026)"},
         {"id": "MiniMax-M2.1-highspeed", "provider_id": "minimax", "display_name": "MiniMax M2.1 (Highspeed)", "tier": "paid", "routing_tier": "leger", "context_input": 64000, "context_output": 4096, "cost_input_per_m": 0.3, "cost_output_per_m": 1.2, "supports_tools": 1, "speciality": "polyvalent_rapide", "recommended_use": "Tier léger rapide, câblé dans core/llm_gateway.py mais absent du catalogue avant migration routing_tier (07/07/2026)"},
         {"id": "MiniMax-M2.5-highspeed", "provider_id": "minimax", "display_name": "MiniMax M2.5 (Highspeed)", "tier": "paid", "routing_tier": "moyen", "context_input": 64000, "context_output": 4096, "cost_input_per_m": 0.3, "cost_output_per_m": 1.2, "supports_tools": 1, "speciality": "polyvalent_rapide", "recommended_use": "Tier moyen rapide, câblé dans core/llm_gateway.py mais absent du catalogue avant migration routing_tier (07/07/2026)"},
         {"id": "imagen-4", "provider_id": "cloud_apis", "display_name": "Imagen 4", "tier": "paid", "speciality": "images", "recommended_use": "Génération d'images photoréalistes Google"},
         {"id": "veo-3", "provider_id": "cloud_apis", "display_name": "Veo 3", "tier": "paid", "speciality": "videos", "recommended_use": "Génération de vidéos cinématiques Google"},
-        {"id": "flux-1.1-pro", "provider_id": "flux", "display_name": "Flux 1.1 Pro", "tier": "paid", "speciality": "images", "recommended_use": "Génération d'images ultra-précises (BFL)"},
     ]
 
     count = 0
@@ -568,6 +570,15 @@ def seed_routing_rules():
         {"task_type": "recherche_web", "recommended_model": "gemini-3.5-flash-paid", "provider_id": "gemini_paid", "justification": "Search Grounding débloqué", "effective_cost": "1.28 EUR/M"},
         {"task_type": "confidentiel", "recommended_model": "qwen2.5-14b-instruct-1m", "provider_id": "local", "justification": "100% local, confidentialité totale", "effective_cost": "0.00 $/M"},
         {"task_type": "embeddings", "recommended_model": "nomic-embed-text-v1.5", "provider_id": "local", "justification": "Embeddings airgapped", "effective_cost": "0.00 $/M"},
+
+        # ═══ DASHSCOPE CODING PLAN (forfait ~¥40/mois amorti) ═══
+        # Forfait Lite : quota 4 requêtes/min et ~600/jour → recommandé pour du code
+        # interactif à faible débit (pas pour routine_batch / fort débit).
+        {"task_type": "code_generation", "recommended_model": "dashscope/qwen3-coder-next", "provider_id": "dashscope", "justification": "Défaut Coding Plan : code sans thinking, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
+        {"task_type": "code_complexe", "recommended_model": "dashscope/qwen3-coder-plus", "provider_id": "dashscope", "justification": "Code + contexte 1M (sans thinking), forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
+        {"task_type": "code_revision", "recommended_model": "dashscope/qwen3.7-plus", "provider_id": "dashscope", "justification": "Flagship vision + thinking, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
+        {"task_type": "refactoring", "recommended_model": "dashscope/glm-5", "provider_id": "dashscope", "justification": "GLM-5 thinking via forfait Alibaba, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
+        {"task_type": "agentique", "recommended_model": "dashscope/kimi-k2.5", "provider_id": "dashscope", "justification": "Kimi K2.5 vision + agentique, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
     ]
 
     count = 0

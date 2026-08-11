@@ -75,6 +75,7 @@ lvgl:
     def test_capture_screenshot_returns_none_when_no_chrome(self):
         """Sans Chrome sur le port 9222, la capture doit retourner None."""
         import asyncio
+
         from core.visual_qa import VisualQAService
         service = VisualQAService()
 
@@ -87,6 +88,7 @@ lvgl:
     def test_capture_and_analyze_fails_gracefully(self):
         """Sans Puppeteer, capture_and_analyze doit retourner un résultat d'erreur."""
         import asyncio
+
         from core.visual_qa import VisualQAService
         service = VisualQAService()
 
@@ -110,7 +112,7 @@ class TestReviewLoopVisualIntegration(unittest.TestCase):
             "html", "css", "frontend", "bouton", "button",
             "formulaire", "form", "onglet", "tab", "modal",
         ]
-        
+
         # Vérifier que chaque mot-clé est bien dans la liste
         test_objectives = [
             "Créer une interface utilisateur pour la config",
@@ -119,7 +121,7 @@ class TestReviewLoopVisualIntegration(unittest.TestCase):
             "Créer un onglet pour les paramètres",
             "Ajouter un formulaire de contact",
         ]
-        
+
         for obj in test_objectives:
             obj_lower = obj.lower()
             found = any(kw in obj_lower for kw in ui_keywords)

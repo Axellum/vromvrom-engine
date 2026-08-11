@@ -21,16 +21,15 @@ Persistance : Table SQLite `model_elo_scores` dans `routing_metrics.db`
 (réutilise la BDD existante du Router pour simplifier l'architecture).
 """
 
-import sqlite3
-import time
 import logging
+import sqlite3
 import threading
-from typing import Optional, Dict, List, Tuple
+import time
 
 logger = logging.getLogger(__name__)
 
+from core.elo_core import adaptive_k, expected_score
 from core.runtime_db import get_connection, get_db_path
-from core.elo_core import expected_score, adaptive_k
 
 _DB_PATH = get_db_path()
 
@@ -64,7 +63,7 @@ def update_elo(
     model_name: str,
     domain: str,
     success: bool,
-    latency_ms: Optional[float] = None,
+    latency_ms: float | None = None,
 ) -> float:
     """
     Met à jour le score Elo d'un modèle pour un domaine donné.
@@ -175,8 +174,8 @@ def update_elo(
 
 def get_ranked_models(
     domain: str,
-    model_names: List[str],
-) -> List[Tuple[str, float]]:
+    model_names: list[str],
+) -> list[tuple[str, float]]:
     """
     Retourne les modèles triés par score Elo décroissant pour un domaine donné.
 
@@ -230,7 +229,7 @@ def get_ranked_models(
         return [(m, DEFAULT_ELO) for m in model_names]
 
 
-def get_all_scores() -> Dict[str, Dict[str, dict]]:
+def get_all_scores() -> dict[str, dict[str, dict]]:
     """
     Retourne tous les scores Elo, structurés par modèle puis par domaine.
 
@@ -274,7 +273,7 @@ def get_all_scores() -> Dict[str, Dict[str, dict]]:
         return {}
 
 
-def get_model_profile(model_name: str) -> Dict[str, dict]:
+def get_model_profile(model_name: str) -> dict[str, dict]:
     """
     Retourne le profil complet d'un modèle (forces/faiblesses par domaine).
 
@@ -330,7 +329,7 @@ def get_model_profile(model_name: str) -> Dict[str, dict]:
         return {}
 
 
-def get_cost_per_successful_task() -> Dict[str, dict]:
+def get_cost_per_successful_task() -> dict[str, dict]:
     """
     [#T116] Métrique "coût par tâche réussie", agrégée par provider.
 
@@ -352,8 +351,8 @@ def get_cost_per_successful_task() -> Dict[str, dict]:
         Un provider sans tâche réussie a `cost_per_success_usd: None` (pas de
         division par zéro) plutôt que d'être omis du résultat.
     """
-    from core.token_tracker import load_usage
     from core.models_db import get_model
+    from core.token_tracker import load_usage
 
     try:
         conn = _get_connection()
@@ -375,7 +374,7 @@ def get_cost_per_successful_task() -> Dict[str, dict]:
         logger.warning(f"[ELO] Erreur lecture coûts pour cost_per_success: {e}")
         costs_by_model = {}
 
-    by_provider: Dict[str, dict] = {}
+    by_provider: dict[str, dict] = {}
     for model_name in set(wins_by_model) | set(costs_by_model):
         model_info = get_model(model_name) or {}
         provider_id = model_info.get("provider_id") or "unknown"
@@ -393,7 +392,7 @@ def get_cost_per_successful_task() -> Dict[str, dict]:
     return by_provider
 
 
-def get_domain_leaderboard(domain: str, top_n: int = 10) -> List[dict]:
+def get_domain_leaderboard(domain: str, top_n: int = 10) -> list[dict]:
     """
     Retourne le classement des modèles pour un domaine spécifique.
 

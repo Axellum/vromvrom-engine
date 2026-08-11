@@ -151,15 +151,41 @@ def _dict_row_factory(cursor, row):
 
 
 class VocalAuditTimer:
-    """Context manager léger pour mesurer la latence d'un /api/execute vocal."""
+    """Context manager léger pour mesurer la latence d'un /api/execute vocal.
+
+    #T270 — `elapsed_ms` est une PROPRIÉTÉ, pas un attribut posé à la sortie.
+
+    Auparavant la valeur n'était calculée que dans `__exit__`, or les 14 appels à
+    `log_vocal_response(..., latency_ms=timer.elapsed_ms)` la lisent **à l'intérieur**
+    du bloc `with` — donc avant `__exit__`. Ils enregistraient tous `0.0`. Mesuré en
+    prod le 10/08/2026 : **394 réponses à `latency_ms = 0`** contre 26 valeurs réelles,
+    et zéro NULL. Conséquence en cascade : `/api/vocal/stats` filtrait `IS NOT NULL`,
+    laissait donc passer les 394 zéros, et annonçait **123 ms** de latence moyenne
+    là où la vraie valeur est **1991 ms** — un facteur 16, dans le sens flatteur.
+
+    En propriété, lire pendant le bloc rend le temps écoulé à cet instant, et lire
+    après rend le total figé à la sortie. Les appels existants deviennent corrects
+    sans être modifiés, et un futur chemin de routage ne peut plus se tromper —
+    c'est le point : la mesure ne doit pas dépendre de l'endroit où on la lit.
+    """
 
     def __init__(self):
         self._t0 = 0.0
-        self.elapsed_ms: float = 0.0
+        self._fige: float | None = None
 
     def __enter__(self):
         self._t0 = time.perf_counter()
+        self._fige = None
         return self
 
     def __exit__(self, *args):
-        self.elapsed_ms = (time.perf_counter() - self._t0) * 1000.0
+        self._fige = (time.perf_counter() - self._t0) * 1000.0
+
+    @property
+    def elapsed_ms(self) -> float:
+        if self._fige is not None:
+            return self._fige
+        if not self._t0:
+            # Timer jamais démarré (instancié hors d'un `with`) : pas de mesure.
+            return 0.0
+        return (time.perf_counter() - self._t0) * 1000.0

@@ -7,9 +7,9 @@ Supporte :
 3. CallMeBot API (Unidirectionnel en secours)
 """
 
-import os
-import logging
 import asyncio
+import logging
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -22,24 +22,24 @@ class WhatsAppService:
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
-            cls._instance = super(WhatsAppService, cls).__new__(cls, *args, **kwargs)
+            cls._instance = super().__new__(cls, *args, **kwargs)
             cls._instance._initialized = False
         return cls._instance
 
     def __init__(self):
         if self._initialized:
             return
-        
+
         # Chargement des configurations depuis l'environnement
         self.twilio_sid = os.getenv("TWILIO_ACCOUNT_SID", "").strip()
         self.twilio_token = os.getenv("TWILIO_AUTH_TOKEN", "").strip()
         self.twilio_from = os.getenv("TWILIO_PHONE_NUMBER", "whatsapp:+14155238886").strip()
-        
+
         self.meta_token = os.getenv("META_WHATSAPP_ACCESS_TOKEN", "").strip()
         self.meta_phone_id = os.getenv("META_WHATSAPP_PHONE_NUMBER_ID", "").strip()
-        
+
         self.default_to = os.getenv("WHATSAPP_USER_PHONE_NUMBER", "").strip()
-        
+
         # Optionnel: CallMeBot pour les notifications rapides
         self.callmebot_apikey = os.getenv("CALLMEBOT_APIKEY", "").strip()
 
@@ -56,10 +56,10 @@ class WhatsAppService:
         else:
             self.mode = "disabled"
             logger.warning("[WHATSAPP] Aucune configuration valide trouvée. Le service WhatsApp est désactivé.")
-            
+
         self._initialized = True
 
-    async def send_message(self, message: str, to: Optional[str] = None) -> bool:
+    async def send_message(self, message: str, to: str | None = None) -> bool:
         """
         Envoie un message WhatsApp de manière asynchrone.
         
@@ -73,7 +73,7 @@ class WhatsAppService:
         if self.mode == "disabled":
             logger.error("[WHATSAPP] Impossible d'envoyer le message : service désactivé.")
             return False
-            
+
         target_to = to or self.default_to
         if not target_to:
             logger.error("[WHATSAPP] Aucun numéro de destinataire configuré.")
@@ -99,19 +99,19 @@ class WhatsAppService:
         """Envoi via l'API REST de Twilio."""
         account_sid = self.twilio_sid
         auth_token = self.twilio_token
-        
+
         # Twilio attend les numéros sous le format "whatsapp:+33612345678"
         twilio_to = to if to.startswith("whatsapp:") else f"whatsapp:{to}"
         twilio_from = self.twilio_from if self.twilio_from.startswith("whatsapp:") else f"whatsapp:{self.twilio_from}"
-        
+
         url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
-        
+
         data = {
             "To": twilio_to,
             "From": twilio_from,
             "Body": message
         }
-        
+
         try:
             # On tente d'utiliser httpx si disponible, sinon on fait un fallback vers requests dans un thread
             try:
@@ -128,7 +128,7 @@ class WhatsAppService:
                 import requests
                 def sync_post():
                     return requests.post(url, auth=(account_sid, auth_token), data=data, timeout=15)
-                
+
                 response = await asyncio.to_thread(sync_post)
                 if response.status_code in [200, 201]:
                     logger.info(f"[WHATSAPP] Message envoyé avec succès via Twilio (requests) à {twilio_to}")
@@ -145,12 +145,12 @@ class WhatsAppService:
         # Enlever "whatsapp:" si présent pour l'API Meta
         clean_to = to.replace("whatsapp:", "").replace("+", "")
         url = f"https://graph.facebook.com/v18.0/{self.meta_phone_id}/messages"
-        
+
         headers = {
             "Authorization": f"Bearer {self.meta_token}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "messaging_product": "whatsapp",
             "recipient_type": "individual",
@@ -161,7 +161,7 @@ class WhatsAppService:
                 "body": message
             }
         }
-        
+
         try:
             try:
                 import httpx
@@ -177,7 +177,7 @@ class WhatsAppService:
                 import requests
                 def sync_post():
                     return requests.post(url, headers=headers, json=payload, timeout=15)
-                
+
                 response = await asyncio.to_thread(sync_post)
                 if response.status_code in [200, 201]:
                     logger.info(f"[WHATSAPP] Message envoyé avec succès via Meta requests à {clean_to}")
@@ -193,13 +193,13 @@ class WhatsAppService:
         """Envoi via CallMeBot (notifications unidirectionnelles)."""
         clean_to = to.replace("whatsapp:", "")
         url = "https://api.callmebot.com/whatsapp.php"
-        
+
         params = {
             "phone": clean_to,
             "text": message,
             "apikey": self.callmebot_apikey
         }
-        
+
         try:
             try:
                 import httpx
@@ -215,7 +215,7 @@ class WhatsAppService:
                 import requests
                 def sync_get():
                     return requests.get(url, params=params, timeout=15)
-                
+
                 response = await asyncio.to_thread(sync_get)
                 if response.status_code == 200:
                     logger.info(f"[WHATSAPP] Message envoyé avec succès via CallMeBot requests à {clean_to}")

@@ -10,10 +10,12 @@ Vérifie :
 """
 
 import sys
+
 sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, '.')
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
 import os
@@ -38,7 +40,7 @@ print("\n" + "=" * 60)
 print("2. TEST WORKSPACE PHASE 1 (Calendar + Drive)")
 print("=" * 60)
 
-from tools.google_workspace import list_calendars, get_calendar_events, list_drive_files
+from tools.google_workspace import get_calendar_events, list_calendars, list_drive_files
 
 # Calendar
 try:
@@ -71,7 +73,7 @@ print("\n" + "=" * 60)
 print("3. TEST WORKSPACE PHASE 2")
 print("=" * 60)
 
-from tools.google_workspace import search_gmail, get_tasks, search_youtube, get_contacts
+from tools.google_workspace import get_contacts, get_tasks, search_gmail, search_youtube
 
 # Gmail
 try:
@@ -116,6 +118,7 @@ print("=" * 60)
 
 # Cloud Translation
 from tools.cloud_translate import translate_text
+
 try:
     r = translate_text("Hello, how are you?", "fr")
     print(f"  translate_text: {r[:100]}...")
@@ -126,6 +129,7 @@ except Exception as e:
 
 # Cloud TTS
 from tools.cloud_tts import cloud_tts_synthesize
+
 try:
     r = cloud_tts_synthesize("Bonjour, test rapide.", "neural2_female", "fr-FR")
     print(f"  cloud_tts: {r[:100]}...")
@@ -136,6 +140,7 @@ except Exception as e:
 
 # Cloud Vision (test sur une image existante)
 from tools.cloud_vision import analyze_image
+
 try:
     test_img = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", "imagen_1779811763.png")
     if os.path.exists(test_img):
@@ -143,7 +148,7 @@ try:
         print(f"  analyze_image: {r[:120]}...")
         results["analyze_image"] = "OK" if "analyse" in r.lower() or "labels" in r.lower() else f"FAIL: {r[:60]}"
     else:
-        print(f"  analyze_image: SKIP (pas d'image de test)")
+        print("  analyze_image: SKIP (pas d'image de test)")
         results["analyze_image"] = "SKIP"
 except Exception as e:
     print(f"  analyze_image ERREUR: {e}")
@@ -151,6 +156,7 @@ except Exception as e:
 
 # Cloud STT (test avec le WAV existant)
 from tools.cloud_stt import transcribe_audio
+
 try:
     test_wav = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images", "test_tts.wav")
     if os.path.exists(test_wav):
@@ -158,7 +164,7 @@ try:
         print(f"  transcribe_audio: {r[:100]}...")
         results["transcribe_audio"] = "OK" if "erreur" not in r.lower() or "transcription" in r.lower() else f"WARN: {r[:60]}"
     else:
-        print(f"  transcribe_audio: SKIP (pas de fichier audio)")
+        print("  transcribe_audio: SKIP (pas de fichier audio)")
         results["transcribe_audio"] = "SKIP"
 except Exception as e:
     print(f"  transcribe_audio ERREUR: {e}")
@@ -170,6 +176,7 @@ print("5. TEST KEYPOOL")
 print("=" * 60)
 
 from core.key_pool import GeminiKeyPool
+
 try:
     pool = GeminiKeyPool()
     key = pool.get_key()
@@ -186,8 +193,9 @@ print("6. TEST FACTORY (INTEGRATION)")
 print("=" * 60)
 
 from core.factory import create_engine
+
 try:
-    engine, router, config = create_engine("test_audit_v72", register_git_tools=True)
+    engine, router, config = create_engine("test_audit_v72", register_git_tools=True, enregistrer_plugins=False)
     tools = sorted(engine.agents["executor"].tool_registry._tools.keys())
     agents = sorted(engine.agents.keys())
     print(f"  Factory: {len(tools)} outils, {len(agents)} agents")

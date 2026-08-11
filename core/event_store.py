@@ -22,7 +22,7 @@ import logging
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -56,13 +56,13 @@ class EventStore:
     - Toutes les I/O SQL via asyncio.to_thread (non bloquant)
     """
 
-    def __init__(self, db_path: Optional[str] = None) -> None:
+    def __init__(self, db_path: str | None = None) -> None:
         """
         Args:
             db_path: Chemin vers le fichier SQLite (défaut: moteur_runtime.db)
         """
         self.db_path = db_path or DEFAULT_DB
-        self._conn: Optional[sqlite3.Connection] = None
+        self._conn: sqlite3.Connection | None = None
         self._init_db()
 
     def _init_db(self) -> None:
@@ -85,7 +85,7 @@ class EventStore:
         source: str = "",
         agent: str = "",
         session_id: str = "",
-        payload: Optional[Dict[str, Any]] = None,
+        payload: dict[str, Any] | None = None,
     ) -> int:
         """
         Enregistre un événement (INSERT uniquement).
@@ -122,7 +122,7 @@ class EventStore:
     # Lecture
     # ──────────────────────────────────────────────────────────────
 
-    async def get_session_events(self, session_id: str) -> List[Dict[str, Any]]:
+    async def get_session_events(self, session_id: str) -> list[dict[str, Any]]:
         """
         Récupère tous les événements d'une session (tri chronologique).
 
@@ -144,8 +144,8 @@ class EventStore:
     async def get_recent_events(
         self,
         limit: int = 100,
-        event_type: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        event_type: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Récupère les N événements les plus récents, avec filtre type optionnel.
 
@@ -171,7 +171,7 @@ class EventStore:
             ]
         return await asyncio.to_thread(_fetch)
 
-    async def replay_session(self, session_id: str) -> List[str]:
+    async def replay_session(self, session_id: str) -> list[str]:
         """
         Rejoue les événements d'une session sous forme textuelle (audit).
 
@@ -187,7 +187,7 @@ class EventStore:
             )
         return lines
 
-    async def get_stats(self) -> Dict[str, Any]:
+    async def get_stats(self) -> dict[str, Any]:
         """
         Retourne les statistiques globales sur les événements.
 
@@ -224,7 +224,7 @@ class EventStore:
 # Singleton
 # ──────────────────────────────────────────────────────────────────
 
-_event_store_instance: Optional[EventStore] = None
+_event_store_instance: EventStore | None = None
 
 
 def get_event_store(db_path: str = None) -> EventStore:

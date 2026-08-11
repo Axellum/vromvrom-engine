@@ -9,9 +9,10 @@ Auteur : Antigravity IDE + Axel — 2026-06-04
 
 import json
 import logging
+
 from fastapi import APIRouter, HTTPException
 
-from core.safe_io import safe_json_write, file_lock  # [P1-2.3]
+from core.safe_io import file_lock, safe_json_write  # [P1-2.3]
 
 logger = logging.getLogger(__name__)
 

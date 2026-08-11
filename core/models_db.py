@@ -30,14 +30,14 @@ Usage :
 
 import asyncio
 import concurrent.futures
-import os
 import json
-import time
-import sqlite3
 import logging
+import os
+import sqlite3
 import threading
+import time
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any
+from typing import Any
 
 logger = logging.getLogger("core.models_db")
 
@@ -60,7 +60,7 @@ _db_write_lock = threading.RLock()
 _thread_local = threading.local()
 
 # Cache en mémoire pour get_routing_score() — appelé N fois par sort dans le gateway
-_routing_score_cache: Dict[str, tuple] = {}
+_routing_score_cache: dict[str, tuple] = {}
 _routing_cache_lock = threading.Lock()
 _ROUTING_CACHE_TTL = 60.0  # secondes
 
@@ -68,6 +68,21 @@ _ROUTING_CACHE_TTL = 60.0  # secondes
 # ══════════════════════════════════════════════════════════════════
 # Connexion et création des tables
 # ══════════════════════════════════════════════════════════════════
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    """
+    Ajoute les colonnes manquantes à une table existante (migration additive idempotente).
+
+    Permet d'aligner les bases créées avec un ancien schéma sans recréer la table.
+    Ne touche pas aux colonnes déjà présentes (ALTER TABLE ... ADD COLUMN uniquement).
+    """
+    cursor = conn.execute(f"PRAGMA table_info({table})")
+    existing = {row[1] for row in cursor.fetchall()}
+    for col_name, col_def in columns.items():
+        if col_name not in existing:
+            logger.info(f"[ModelsDB] Migration : ajout de la colonne '{col_name}' à '{table}'.")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Crée toutes les tables et index si absents. Appelé une seule fois par connexion thread-locale."""
@@ -121,6 +136,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_models_status
         ON models(status)
+    """)
+    # routing_tier (leger/moyen/fort) : niveau de capacité pour le routeur.
+    # Distinct de `tier` (canal d'accès : free/paid/subscription/pro/local) déjà existant.
+    _ensure_columns(conn, "models", {"routing_tier": "TEXT"})
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_models_routing_tier
+        ON models(routing_tier)
     """)
 
     # ── Table api_keys ───────────────────────────────────────────
@@ -288,7 +310,7 @@ def _write_transaction():
 # LECTURE — Fonctions de requête ciblée (utilisées par le moteur)
 # ══════════════════════════════════════════════════════════════════
 
-def get_model(model_id: str) -> Optional[Dict[str, Any]]:
+def get_model(model_id: str) -> dict[str, Any] | None:
     """Retourne les détails d'un modèle par son ID."""
     try:
         conn = _get_connection()
@@ -301,7 +323,7 @@ def get_model(model_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def get_active_models(provider_id: str = None) -> List[Dict[str, Any]]:
+def get_active_models(provider_id: str = None) -> list[dict[str, Any]]:
     """Retourne tous les modèles actifs, optionnellement filtrés par provider."""
     try:
         conn = _get_connection()
@@ -320,24 +342,125 @@ def get_active_models(provider_id: str = None) -> List[Dict[str, Any]]:
         return []
 
 
-def get_models_for_tier(tier: str) -> List[Dict[str, Any]]:
-    """Retourne les modèles disponibles pour un tier donné."""
+def get_models_for_tier(routing_tier: str) -> list[dict[str, Any]]:
+    """
+    Retourne les modèles actifs pour un routing_tier donné (leger/moyen/fort).
+
+    routing_tier="automatique" ne filtre pas (tous les modèles actifs, toutes
+    capacités confondues) — reproduit le fallback cross-tier historique de
+    config.json["tiers"]["automatique"].
+    """
     try:
         conn = _get_connection()
-        rows = conn.execute(
-            """SELECT m.*, p.cascade_priority, p.confidentiality, p.type as provider_type
-               FROM models m JOIN providers p ON m.provider_id = p.id
-               WHERE m.status = 'active' AND m.tier = ?
-               ORDER BY p.cascade_priority ASC""",
-            (tier,)
-        ).fetchall()
+        if routing_tier == "automatique":
+            rows = conn.execute(
+                """SELECT m.*, p.cascade_priority, p.confidentiality, p.type as provider_type
+                   FROM models m JOIN providers p ON m.provider_id = p.id
+                   WHERE m.status = 'active'
+                   ORDER BY p.cascade_priority ASC"""
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT m.*, p.cascade_priority, p.confidentiality, p.type as provider_type
+                   FROM models m JOIN providers p ON m.provider_id = p.id
+                   WHERE m.status = 'active' AND m.routing_tier = ?
+                   ORDER BY p.cascade_priority ASC""",
+                (routing_tier,)
+            ).fetchall()
         return [dict(r) for r in rows]
     except Exception as e:
-        logger.warning(f"[ModelsDB] Erreur get_models_for_tier({tier}): {e}")
+        logger.warning(f"[ModelsDB] Erreur get_models_for_tier({routing_tier}): {e}")
         return []
 
 
-def get_model_cost(model_id: str) -> Dict[str, Any]:
+def get_models_for_catalog_tiers(catalog_tiers: list[str]) -> list[dict[str, Any]]:
+    """
+    [#T246] Retourne les modèles actifs dont le **tier catalogue** (colonne `tier` :
+    local/free/subscription/paid) est dans la liste passée, ordonnés par
+    cascade_priority.
+
+    Distinct de get_models_for_tier() qui filtre sur `routing_tier` (leger/moyen/fort,
+    la capacité). Les deux colonnes ne portent pas la même information : aucun modèle
+    n'a routing_tier 'free'/'local', filtrer les paniers budgétaires sur routing_tier
+    les vidait structurellement.
+    """
+    if not catalog_tiers:
+        return []
+    try:
+        conn = _get_connection()
+        placeholders = ", ".join("?" for _ in catalog_tiers)
+        rows = conn.execute(
+            f"""SELECT m.*, p.cascade_priority, p.confidentiality, p.type as provider_type
+                FROM models m JOIN providers p ON m.provider_id = p.id
+                WHERE m.status = 'active' AND m.tier IN ({placeholders})
+                ORDER BY p.cascade_priority ASC""",
+            tuple(catalog_tiers)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"[ModelsDB] Erreur get_models_for_catalog_tiers({catalog_tiers}): {e}")
+        return []
+
+
+def get_all_models() -> list[dict[str, Any]]:
+    """
+    [#T158] Retourne TOUS les modèles, actifs ET inactifs.
+
+    Nécessaire au registre IHM : get_active_models() masque les modèles
+    inactifs, ce qui rendrait un toggle actif→inactif irréversible depuis
+    l'interface (le modèle disparaîtrait de la liste).
+    """
+    try:
+        conn = _get_connection()
+        rows = conn.execute("SELECT * FROM models ORDER BY provider_id, id").fetchall()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        logger.warning(f"[ModelsDB] Erreur get_all_models: {e}")
+        return []
+
+
+def set_model_status(model_id: str, status: str) -> bool:
+    """
+    [#T158] Met à jour UNIQUEMENT le statut d'un modèle (active/inactive).
+
+    UPDATE ciblé volontairement distinct d'upsert_model : l'INSERT OR REPLACE
+    de ce dernier remet à leur valeur par défaut tous les champs non fournis
+    (routing_tier compris) — inadapté à un simple interrupteur.
+    """
+    if status not in ("active", "inactive"):
+        raise ValueError(f"Statut invalide : {status!r} (attendu 'active' ou 'inactive')")
+    try:
+        with _write_transaction() as conn:
+            cur = conn.execute(
+                "UPDATE models SET status = ? WHERE id = ?", (status, model_id)
+            )
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"[ModelsDB] Erreur set_model_status({model_id}, {status}): {e}")
+        return False
+
+
+def set_model_routing_tier(model_id: str, routing_tier: str | None) -> bool:
+    """
+    [#T158/#T185] Met à jour UNIQUEMENT le routing_tier d'un modèle
+    (leger/moyen/fort, ou None = retiré du routage par capacité).
+    """
+    if routing_tier not in (None, "leger", "moyen", "fort"):
+        raise ValueError(
+            f"routing_tier invalide : {routing_tier!r} (attendu leger/moyen/fort ou null)"
+        )
+    try:
+        with _write_transaction() as conn:
+            cur = conn.execute(
+                "UPDATE models SET routing_tier = ? WHERE id = ?", (routing_tier, model_id)
+            )
+            return cur.rowcount > 0
+    except Exception as e:
+        logger.error(f"[ModelsDB] Erreur set_model_routing_tier({model_id}): {e}")
+        return False
+
+
+def get_model_cost(model_id: str) -> dict[str, Any]:
     """Retourne les tarifs d'un modèle (input, output, cached, currency)."""
     try:
         conn = _get_connection()
@@ -395,7 +518,7 @@ def _fetch_routing_score_db(model_id: str) -> float:
         return 5.0
 
 
-def get_bulk_routing_scores(model_ids: List[str]) -> Dict[str, float]:
+def get_bulk_routing_scores(model_ids: list[str]) -> dict[str, float]:
     """Retourne les cascade_priority pour une liste de modèles en une seule requête.
 
     Utilisé par le gateway pour éviter N appels DB lors du tri des modèles d'un tier.
@@ -404,8 +527,8 @@ def get_bulk_routing_scores(model_ids: List[str]) -> Dict[str, float]:
     if not model_ids:
         return {}
     now = time.time()
-    result: Dict[str, float] = {}
-    missing: List[str] = []
+    result: dict[str, float] = {}
+    missing: list[str] = []
 
     # Lire d'abord le cache
     with _routing_cache_lock:
@@ -440,7 +563,7 @@ def get_bulk_routing_scores(model_ids: List[str]) -> Dict[str, float]:
     return result
 
 
-def get_provider(provider_id: str) -> Optional[Dict[str, Any]]:
+def get_provider(provider_id: str) -> dict[str, Any] | None:
     """Retourne les détails d'un provider."""
     try:
         conn = _get_connection()
@@ -453,7 +576,7 @@ def get_provider(provider_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def get_all_providers() -> List[Dict[str, Any]]:
+def get_all_providers() -> list[dict[str, Any]]:
     """Retourne tous les providers."""
     try:
         conn = _get_connection()
@@ -464,7 +587,7 @@ def get_all_providers() -> List[Dict[str, Any]]:
         return []
 
 
-def get_all_api_keys(hide_values: bool = True) -> List[Dict[str, Any]]:
+def get_all_api_keys(hide_values: bool = True) -> list[dict[str, Any]]:
     """Retourne toutes les clés API (sans les valeurs sensibles par défaut)."""
     try:
         conn = _get_connection()
@@ -483,7 +606,7 @@ def get_all_api_keys(hide_values: bool = True) -> List[Dict[str, Any]]:
         return []
 
 
-def get_benchmarks(model_id: str) -> List[Dict[str, Any]]:
+def get_benchmarks(model_id: str) -> list[dict[str, Any]]:
     """Retourne les benchmarks d'un modèle."""
     try:
         conn = _get_connection()
@@ -497,7 +620,7 @@ def get_benchmarks(model_id: str) -> List[Dict[str, Any]]:
         return []
 
 
-def get_subscriptions() -> List[Dict[str, Any]]:
+def get_subscriptions() -> list[dict[str, Any]]:
     """Retourne tous les abonnements."""
     try:
         conn = _get_connection()
@@ -518,7 +641,7 @@ def get_subscriptions() -> List[Dict[str, Any]]:
         return []
 
 
-def get_routing_rules() -> List[Dict[str, Any]]:
+def get_routing_rules() -> list[dict[str, Any]]:
     """Retourne toutes les règles de routage."""
     try:
         conn = _get_connection()
@@ -532,10 +655,10 @@ def get_routing_rules() -> List[Dict[str, Any]]:
 
 
 # ══════════════════════════════════════════════════════════════════
-# LECTURE — Access Channels & Quotas temps réel 
+# LECTURE — Access Channels & Quotas temps réel
 # ══════════════════════════════════════════════════════════════════
 
-def get_access_channels(model_id: str) -> List[Dict[str, Any]]:
+def get_access_channels(model_id: str) -> list[dict[str, Any]]:
     """Retourne tous les canaux d'accès pour un modèle (clé, méthode, vitesse)."""
     try:
         conn = _get_connection()
@@ -554,7 +677,7 @@ def get_access_channels(model_id: str) -> List[Dict[str, Any]]:
         return []
 
 
-def get_models_for_key(api_key_id: str) -> List[Dict[str, Any]]:
+def get_models_for_key(api_key_id: str) -> list[dict[str, Any]]:
     """Retourne tous les modèles accessibles par une clé API donnée."""
     try:
         conn = _get_connection()
@@ -573,7 +696,7 @@ def get_models_for_key(api_key_id: str) -> List[Dict[str, Any]]:
         return []
 
 
-def get_access_map() -> Dict[str, Any]:
+def get_access_map() -> dict[str, Any]:
     """Carte complète : pour chaque clé API, les modèles accessibles + quotas temps réel."""
     try:
         conn = _get_connection()
@@ -629,7 +752,7 @@ def get_access_map() -> Dict[str, Any]:
         return {}
 
 
-def get_quota_realtime(api_key_id: str) -> Optional[Dict[str, Any]]:
+def get_quota_realtime(api_key_id: str) -> dict[str, Any] | None:
     """Retourne le snapshot de quota temps réel pour une clé API."""
     try:
         conn = _get_connection()
@@ -643,7 +766,7 @@ def get_quota_realtime(api_key_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def get_all_quotas_realtime() -> List[Dict[str, Any]]:
+def get_all_quotas_realtime() -> list[dict[str, Any]]:
     """Retourne tous les quotas temps réel avec infos clé API."""
     try:
         conn = _get_connection()
@@ -659,7 +782,7 @@ def get_all_quotas_realtime() -> List[Dict[str, Any]]:
         return []
 
 
-def get_quota_summary() -> Dict[str, Any]:
+def get_quota_summary() -> dict[str, Any]:
     """Résumé compact des quotas pour le dashboard HMI."""
     try:
         conn = _get_connection()
@@ -725,49 +848,88 @@ def upsert_provider(provider_id: str, **kwargs) -> bool:
         return False
 
 
+# Colonnes de `models` acceptées par upsert_model, avec la valeur posée À LA
+# CRÉATION quand l'appelant ne la fournit pas. `None` = laisser le défaut SQL.
+_COLONNES_MODELE: dict[str, Any] = {
+    "provider_id": "unknown",
+    "display_name": None,          # défaut spécial : l'id du modèle
+    "status": None,                # défaut SQL 'active'
+    "tier": "free",
+    "routing_tier": None,
+    "context_input": None,
+    "context_output": None,
+    "cost_input_per_m": None,
+    "cost_output_per_m": None,
+    "cost_cached_per_m": None,
+    "currency": "USD",
+    "ttft_ms": None,
+    "throughput_tps": None,
+    "supports_thinking": 0,
+    "supports_tools": 0,
+    "supports_vision": 0,
+    "supports_audio": 0,
+    "supports_json_mode": 0,
+    "supports_streaming": 0,
+    "supports_search_grounding": 0,
+    "speciality": None,
+    "recommended_use": None,
+    "last_tested": None,
+    "notes": None,
+}
+
+
 def upsert_model(model_id: str, **kwargs) -> bool:
-    """Insère ou met à jour un modèle."""
+    """
+    Insère ou met à jour un modèle — **sans écraser ce qui n'est pas fourni**.
+
+    [#T254] Avant, la requête était un `INSERT OR REPLACE` portant les 25
+    colonnes : tout appelant qui n'en renseignait qu'une partie remettait les
+    autres à NULL (ou à leur défaut). C'est ce qui a effacé du catalogue de prod
+    `cost_cached_per_m`, `currency` (tous les modèles EUR repassés en USD),
+    `supports_thinking`, `supports_search_grounding`, `ttft_ms`,
+    `throughput_tps` et `last_tested` — les descripteurs de plugins (#T231) ne
+    projetant que 16 colonnes sur 25, et l'enregistrement rejouant à CHAQUE
+    démarrage.
+
+    Désormais : à la création, les défauts ci-dessus s'appliquent ; à la mise à
+    jour, **seules les colonnes explicitement passées** sont écrites. Corollaire
+    volontaire : on ne peut plus effacer une valeur en omettant la clé — il faut
+    passer explicitement `None`… ce qui reste impossible via `kwargs`, et c'est
+    exactement la garantie recherchée pour un catalogue enrichi par plusieurs
+    sources (seed, plugins, IHM, ping).
+    """
+    fournies = {c: v for c, v in kwargs.items() if c in _COLONNES_MODELE}
+    inconnues = set(kwargs) - set(_COLONNES_MODELE)
+    if inconnues:
+        logger.warning(f"[ModelsDB] upsert_model({model_id}) : colonnes ignorées {sorted(inconnues)}")
+
+    # Colonnes de l'INSERT : celles fournies + les défauts de création.
+    valeurs_insert: dict[str, Any] = {}
+    for colonne, defaut in _COLONNES_MODELE.items():
+        if colonne in fournies:
+            valeurs_insert[colonne] = fournies[colonne]
+        elif colonne == "display_name":
+            valeurs_insert[colonne] = model_id
+        elif defaut is not None:
+            valeurs_insert[colonne] = defaut
+
+    colonnes = ["id", *valeurs_insert.keys()]
+    parametres = [model_id, *valeurs_insert.values()]
+    # La mise à jour ne touche QUE ce que l'appelant a fourni.
+    maj = ", ".join(f"{c} = excluded.{c}" for c in fournies)
+
+    # noqa S608 : les noms de colonnes viennent exclusivement de `_COLONNES_MODELE`
+    # (constante du module), jamais de l'appelant — les valeurs, elles, restent
+    # passées en paramètres liés.
+    requete = (  # noqa: S608
+        f"INSERT INTO models ({', '.join(colonnes)}) "
+        f"VALUES ({', '.join('?' * len(colonnes))}) "
+        + (f"ON CONFLICT(id) DO UPDATE SET {maj}" if maj else "ON CONFLICT(id) DO NOTHING")
+    )
+
     try:
         with _write_transaction() as conn:
-            conn.execute(
-                """INSERT OR REPLACE INTO models
-                   (id, provider_id, display_name, status, tier,
-                    context_input, context_output,
-                    cost_input_per_m, cost_output_per_m, cost_cached_per_m, currency,
-                    ttft_ms, throughput_tps,
-                    supports_thinking, supports_tools, supports_vision,
-                    supports_audio, supports_json_mode, supports_streaming,
-                    supports_search_grounding,
-                    speciality, recommended_use, last_tested, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                           ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    model_id,
-                    kwargs.get("provider_id", "unknown"),
-                    kwargs.get("display_name", model_id),
-                    kwargs.get("status", "active"),
-                    kwargs.get("tier", "free"),
-                    kwargs.get("context_input"),
-                    kwargs.get("context_output"),
-                    kwargs.get("cost_input_per_m"),
-                    kwargs.get("cost_output_per_m"),
-                    kwargs.get("cost_cached_per_m"),
-                    kwargs.get("currency", "USD"),
-                    kwargs.get("ttft_ms"),
-                    kwargs.get("throughput_tps"),
-                    kwargs.get("supports_thinking", 0),
-                    kwargs.get("supports_tools", 0),
-                    kwargs.get("supports_vision", 0),
-                    kwargs.get("supports_audio", 0),
-                    kwargs.get("supports_json_mode", 0),
-                    kwargs.get("supports_streaming", 0),
-                    kwargs.get("supports_search_grounding", 0),
-                    kwargs.get("speciality"),
-                    kwargs.get("recommended_use"),
-                    kwargs.get("last_tested"),
-                    kwargs.get("notes"),
-                ),
-            )
+            conn.execute(requete, parametres)
         return True
     except Exception as e:
         logger.error(f"[ModelsDB] Erreur upsert_model({model_id}): {e}")
@@ -1094,7 +1256,7 @@ def export_to_pricing_json() -> dict:
         return {}
 
 
-def get_all_data() -> Dict[str, Any]:
+def get_all_data() -> dict[str, Any]:
     """Dump complet de la BDD pour la route /api/models."""
     return {
         "providers": get_all_providers(),
@@ -1108,7 +1270,7 @@ def get_all_data() -> Dict[str, Any]:
     }
 
 
-def get_db_stats() -> Dict[str, Any]:
+def get_db_stats() -> dict[str, Any]:
     """Retourne des statistiques sur le contenu de la BDD."""
     try:
         conn = _get_connection()
@@ -1141,13 +1303,13 @@ def get_db_stats() -> Dict[str, Any]:
 #   await async_update_quota_realtime("key_id", used_rpm=5, ...)
 # ══════════════════════════════════════════════════════════════════
 
-async def async_get_model(model_id: str) -> Optional[Dict[str, Any]]:
+async def async_get_model(model_id: str) -> dict[str, Any] | None:
     """Version async de get_model() — ne bloque pas l'event loop."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_DB_EXECUTOR, get_model, model_id)
 
 
-async def async_get_active_models(provider_id: str = None) -> List[Dict[str, Any]]:
+async def async_get_active_models(provider_id: str = None) -> list[dict[str, Any]]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_DB_EXECUTOR, get_active_models, provider_id)
 
@@ -1158,17 +1320,17 @@ async def async_get_routing_score(model_id: str) -> float:
     return await loop.run_in_executor(_DB_EXECUTOR, get_routing_score, model_id)
 
 
-async def async_get_bulk_routing_scores(model_ids: List[str]) -> Dict[str, float]:
+async def async_get_bulk_routing_scores(model_ids: list[str]) -> dict[str, float]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_DB_EXECUTOR, get_bulk_routing_scores, model_ids)
 
 
-async def async_get_all_quotas_realtime() -> List[Dict[str, Any]]:
+async def async_get_all_quotas_realtime() -> list[dict[str, Any]]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_DB_EXECUTOR, get_all_quotas_realtime)
 
 
-async def async_get_quota_summary() -> Dict[str, Any]:
+async def async_get_quota_summary() -> dict[str, Any]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_DB_EXECUTOR, get_quota_summary)
 
@@ -1182,6 +1344,6 @@ async def async_update_quota_realtime(api_key_id: str, **kwargs) -> bool:
     )
 
 
-async def async_get_db_stats() -> Dict[str, Any]:
+async def async_get_db_stats() -> dict[str, Any]:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_DB_EXECUTOR, get_db_stats)

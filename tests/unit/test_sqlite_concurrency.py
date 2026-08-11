@@ -14,11 +14,11 @@ import sqlite3
 import tempfile
 import threading
 import time
+
 import pytest
 
-from core.models_db import upsert_model, upsert_provider
 import core.models_db as models_db
-
+from core.models_db import upsert_model, upsert_provider
 
 # ─── 1. Test historique : models_registry.db ─────────────────────────────────
 

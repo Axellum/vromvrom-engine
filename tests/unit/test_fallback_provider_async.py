@@ -6,12 +6,12 @@ Vérifie que la variante async du FallbackProvider :
 - applique le circuit breaker (CB ouvert → skip)
 - retourne le résultat du premier provider disponible
 """
-import asyncio
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from core.llm.providers.deepseek import FallbackProvider
+import pytest
+
 from core.llm.circuit_breaker import CircuitBreaker
+from core.llm.providers.deepseek import FallbackProvider
 
 
 def _make_provider(response="ok", fail=False):

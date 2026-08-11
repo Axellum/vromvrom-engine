@@ -14,8 +14,8 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from core.state import TaskPayload, ExecutionPhase
 from core.errors import classify_error
+from core.state import ExecutionPhase, TaskPayload
 
 if TYPE_CHECKING:
     from core.engine import Engine

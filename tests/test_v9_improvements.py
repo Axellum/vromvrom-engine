@@ -1,6 +1,6 @@
+import logging
 import os
 import sys
-import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
 logger = logging.getLogger("test_v9")
@@ -8,8 +8,9 @@ logger = logging.getLogger("test_v9")
 # S'assurer d'être dans le bon path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core.llm_gateway import LLMGateway, LLMProvider, ClaudeInstructionsWrapper
+from core.llm_gateway import ClaudeInstructionsWrapper, LLMGateway, LLMProvider
 from memory.context_manager import ContextManager
+
 
 class FakeBaseProvider(LLMProvider):
     def __init__(self):
@@ -28,11 +29,11 @@ class FakeBaseProvider(LLMProvider):
 
 def test_claude_instructions_wrapper():
     print("\n--- TEST 1 : CLAUDE_INSTRUCTIONS_WRAPPER ---")
-    
+
     # Créer un fichier de test temporaire CLAUDE.md local
     temp_claude_path = "CLAUDE.md"
     temp_created = False
-    
+
     if not os.path.exists(temp_claude_path):
         with open(temp_claude_path, "w", encoding="utf-8") as f:
             f.write("# Rules\n- Use pytest\n- Comments in French")
@@ -42,17 +43,26 @@ def test_claude_instructions_wrapper():
     try:
         base_provider = FakeBaseProvider()
         wrapped = ClaudeInstructionsWrapper(base_provider)
-        
-        # Lancer un appel
+
+        # [T287] LE CONTRAT A CHANGÉ, ce test le suit volontairement.
+        # L'injection était inconditionnelle : tout appel de tout provider partait
+        # avec 5056 caractères de CLAUDE.md, chat et vocal compris. Elle est
+        # désormais réservée aux agents de code, qui la demandent explicitement.
         wrapped.generate("Prompt Système Original", "Prompt Utilisateur")
-        
+        assert base_provider.last_system_prompt == "Prompt Système Original", (
+            "sans demande explicite, aucune convention ne doit être injectée"
+        )
+
+        # Lancer un appel d'agent de code
+        wrapped.generate("Prompt Système Original", "Prompt Utilisateur", conventions_projet=True)
+
         print(f"System Prompt après wrapping:\n{base_provider.last_system_prompt}")
-        
+
         assert "Prompt Système Original" in base_provider.last_system_prompt
         assert "CONVENTIONS DE PROJET (CLAUDE.md)" in base_provider.last_system_prompt
         assert "VM Freebox" in base_provider.last_system_prompt or "Use pytest" in base_provider.last_system_prompt
         print("✅ Test ClaudeInstructionsWrapper réussi.")
-        
+
     finally:
         # Nettoyer uniquement si on l'a créé
         if temp_created and os.path.exists(temp_claude_path):
@@ -63,7 +73,7 @@ def test_context_manager_clean():
     print("\n--- TEST 2 : PRE-NETTOYAGE DES LOGS ---")
     gateway = LLMGateway()
     mgr = ContextManager(gateway)
-    
+
     raw_logs = (
         "Log entry 1\n"
         "Log entry 2\n\n\n\n"  # trop de lignes vides
@@ -71,10 +81,10 @@ def test_context_manager_clean():
         "Log entry 2\n"        # doublon consécutif
         "Log entry 3\n"
     )
-    
+
     cleaned = mgr.clean_raw_data(raw_logs)
     print(f"Logs nettoyés :\n{cleaned}")
-    
+
     # Devrait avoir réduit les sauts de lignes et supprimé les doublons
     lines = cleaned.splitlines()
     assert lines.count("Log entry 2") == 1, "Les doublons consécutifs n'ont pas été supprimés."

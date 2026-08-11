@@ -8,6 +8,7 @@ Ces routes encapsulent les appels à l'OAuth Client GCP pour toutes les APIs Goo
 """
 
 import logging
+
 from fastapi import APIRouter
 
 logger = logging.getLogger("api.google_workspace")

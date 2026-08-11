@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tools/night_orchestrator.py — Chef d'orchestre du run de nuit (Audit + Refactoring + Batch).
 
@@ -14,13 +13,14 @@ Usage:
   python tools/night_orchestrator.py
 """
 
-import os
-import sys
 import json
-import time
+import os
 import subprocess
-import requests
+import sys
+import time
 from pathlib import Path
+
+import requests
 
 PROJECT = "ha-delta"
 LOCATION_BATCH = "europe-west1"
@@ -58,10 +58,10 @@ def setup_git_branch():
     print("\n--- Étape 1 : Préparation Git ---")
     ts = time.strftime("%Y%m%d-%H%M%S")
     branch_name = f"night-run-{ts}"
-    
+
     # Vérifier l'état actuel
     run_cmd(["git", "status"])
-    
+
     # Créer et basculer sur la nouvelle branche
     run_cmd(["git", "checkout", "-b", branch_name])
     print(f"✅ Branche active créée : {branch_name}")
@@ -88,7 +88,7 @@ def call_vertex_refactor(file_path, finding, rules_context, access_token):
         return f"Fichier {os.path.basename(file_path)} introuvable"
 
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, encoding="utf-8") as f:
             original_code = f.read()
     except Exception as e:
         return f"Erreur de lecture : {e}"
@@ -173,7 +173,7 @@ def call_vertex_refactor(file_path, finding, rules_context, access_token):
 def main():
     print("=== DÉMARRAGE DU RUN DE NUIT ===")
     branch_name = setup_git_branch()
-    
+
     rules_context = load_contexte_rules()
     access_token = refresh_oauth()
     if not access_token:
@@ -220,10 +220,10 @@ def main():
         f = t["file"]
         desc = t["finding"].split(" : ")[0]
         print(f"Traitement de {f} ({desc})...")
-        
+
         # Appel de refactoring
         res = call_vertex_refactor(f, t["finding"], rules_context, access_token)
-        
+
         status_label = "✅ Réussi" if res == "SUCCESS" else f"❌ Échoué : {res}"
         report_lines.append(f"| `{f}` | `{t['finding'][:80]}...` | {status_label} |")
         print(f"  Résultat : {status_label}")
@@ -234,34 +234,34 @@ def main():
     report_lines.append("\n## 2. Jobs Batch soumis sur Vertex AI")
     report_lines.append("| Dataset source | Modèle | Job ID | Statut |")
     report_lines.append("|---|---|---|---|")
-    
+
     # Nous allons soumettre dataset_moteur_clean.jsonl pour notation
     dataset_file = "dataset_moteur_clean.jsonl"
     batch_req_file = "batch_score_moteur_night.jsonl"
-    
+
     if os.path.exists(dataset_file):
         try:
             print(f"  Build du fichier de requêtes batch pour {dataset_file}...")
             # 1) Build local
-            run_cmd([sys.executable, "tools/vertex_dataset_factory.py", "build", "--task", "score", 
+            run_cmd([sys.executable, "tools/vertex_dataset_factory.py", "build", "--task", "score",
                      "--dataset", dataset_file, "--out", batch_req_file])
-            
+
             # 2) Submit Vertex
             print("  Soumission du job batch à Vertex...")
-            submit_res = run_cmd([sys.executable, "tools/vertex_dataset_factory.py", "submit", 
-                                  "--input", batch_req_file, 
-                                  "--bucket", "gs://ha-delta-corpus-axell", 
-                                  "--project", PROJECT, 
-                                  "--location", LOCATION_BATCH, 
+            submit_res = run_cmd([sys.executable, "tools/vertex_dataset_factory.py", "submit",
+                                  "--input", batch_req_file,
+                                  "--bucket", "gs://ha-delta-corpus-axell",
+                                  "--project", PROJECT,
+                                  "--location", LOCATION_BATCH,
                                   "--model", "gemini-2.5-pro"])
-            
+
             # Tenter d'extraire le job ID de la sortie
             job_name = "Non déterminé (voir log)"
             for line in submit_res.stdout.splitlines():
                 if "Job créé :" in line:
                     job_name = line.split("Job créé :")[-1].strip()
                     break
-            
+
             report_lines.append(f"| `{dataset_file}` | `gemini-2.5-pro` | `{job_name}` | Soumis avec succès ✅ |")
             print(f"  ✅ Job batch Vertex soumis : {job_name}")
         except Exception as e:
@@ -274,27 +274,27 @@ def main():
     # Étape 5 : Lancer l'audit de 00ProjetTab (Tab5)
     print("\n--- Étape 5 : Audit long-contexte de 00ProjetTab ---")
     report_lines.append("\n## 3. Audits long-contexte de nuit")
-    
+
     tab5_dir = r"e:\AuxFilsDesIdees\00ProjetTab"
     audit_out = r"docs\audits\audit_tab5_de_nuit.md"
-    
+
     if os.path.exists(tab5_dir):
         try:
             print("  Lancement de l'audit long-contexte du Tab5...")
             # L'audit de Tab5 concatène le répertoire
-            audit_res = run_cmd([sys.executable, "tools/vertex_audit.py", 
-                                 "--src", tab5_dir, 
-                                 "--prompt", "docs/prompts/ANALYSE_ULTIME_TAB5.md", 
-                                 "--out", audit_out, 
-                                 "--project", PROJECT, 
-                                 "--location", LOCATION_ONLINE, 
+            audit_res = run_cmd([sys.executable, "tools/vertex_audit.py",
+                                 "--src", tab5_dir,
+                                 "--prompt", "docs/prompts/ANALYSE_ULTIME_TAB5.md",
+                                 "--out", audit_out,
+                                 "--project", PROJECT,
+                                 "--location", LOCATION_ONLINE,
                                  "--model", "gemini-3.1-pro-preview"])
-            
+
             if audit_res.returncode == 0:
                 report_lines.append(f"  - **Audit Tab5** : Écrit dans `{audit_out}` ✅")
                 print(f"  ✅ Audit Tab5 terminé : {audit_out}")
             else:
-                report_lines.append(f"  - **Audit Tab5** : Échec (voir logs) ❌")
+                report_lines.append("  - **Audit Tab5** : Échec (voir logs) ❌")
                 print("  ❌ Échec de l'audit Tab5.")
         except Exception as e:
             report_lines.append(f"  - **Audit Tab5** : Erreur {e} ❌")
@@ -307,7 +307,7 @@ def main():
     report_dir = Path("docs/reports")
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / f"night_run_report_{time.strftime('%Y%d%m_%H%M%S')}.md"
-    
+
     report_lines.append("\n## 4. Consignes pour le lendemain matin")
     report_lines.append("1. Vérifier les diffs sur la branche de nuit : `git diff master`.")
     report_lines.append("2. Lancer les tests unitaires : `pytest`.")
@@ -316,7 +316,7 @@ def main():
 
     report_path.write_text("\n".join(report_lines), encoding="utf-8")
     print(f"\n✅ Rapport de nuit rédigé : {report_path}")
-    
+
     # Revenir sur master ou sauvegarder l'état
     print("\nRun de nuit configuré et lancé. Le reste tourne sur le Cloud Google.")
     return 0

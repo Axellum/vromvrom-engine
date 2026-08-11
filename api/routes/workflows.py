@@ -8,10 +8,13 @@ au moteur d'orchestration.
 @version 1.0.0 — Extraction depuis gui_server.py
 """
 
-import os
 import json
 import logging
+import os
+
 from fastapi import APIRouter, HTTPException
+
+from core.safe_io import safe_json_write
 
 logger = logging.getLogger("api.workflows")
 
@@ -31,7 +34,7 @@ def get_workflows():
     """Récupère le workflow sauvegardé depuis agents_workflows.json."""
     if os.path.exists(WORKFLOWS_FILE):
         try:
-            with open(WORKFLOWS_FILE, 'r', encoding='utf-8') as f:
+            with open(WORKFLOWS_FILE, encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Erreur de lecture du workflow: {str(e)}")
@@ -42,8 +45,7 @@ def get_workflows():
 def save_workflows(body: dict):
     """Sauvegarde un workflow dans agents_workflows.json."""
     try:
-        with open(WORKFLOWS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(body, f, indent=2, ensure_ascii=False)
+        safe_json_write(WORKFLOWS_FILE, body)
         return {"message": "Workflow sauvegardé avec succès.", "nodes": len(body.get("nodes", []))}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur de sauvegarde du workflow: {str(e)}")
@@ -73,14 +75,13 @@ def load_workflow_by_name(name: str):
         raise HTTPException(status_code=404, detail=f"Le workflow '{name}' n'existe pas.")
 
     try:
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             workflow_data = json.load(f)
 
-        with open(WORKFLOWS_FILE, 'w', encoding='utf-8') as active_f:
-            json.dump(workflow_data, active_f, indent=2, ensure_ascii=False)
+        safe_json_write(WORKFLOWS_FILE, workflow_data)
 
-        from core.workflow_bridge import WorkflowBridge
         from agents.planner import _workflow_bridge as planner_bridge
+        from core.workflow_bridge import WorkflowBridge
         planner_bridge.reload()
         WorkflowBridge().reload()
 
@@ -97,14 +98,11 @@ def save_workflow_by_name(name: str, body: dict):
 
     file_path = os.path.join(WORKFLOWS_DIR, f"{name}.json")
     try:
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(body, f, indent=2, ensure_ascii=False)
+        safe_json_write(file_path, body)
+        safe_json_write(WORKFLOWS_FILE, body)
 
-        with open(WORKFLOWS_FILE, 'w', encoding='utf-8') as active_f:
-            json.dump(body, active_f, indent=2, ensure_ascii=False)
-
-        from core.workflow_bridge import WorkflowBridge
         from agents.planner import _workflow_bridge as planner_bridge
+        from core.workflow_bridge import WorkflowBridge
         planner_bridge.reload()
         WorkflowBridge().reload()
 
@@ -137,8 +135,8 @@ def delete_workflow_by_name(name: str):
 def apply_workflow():
     """Recharge le WorkflowBridge pour appliquer les modifications."""
     try:
-        from core.workflow_bridge import WorkflowBridge
         from agents.planner import _workflow_bridge as planner_bridge
+        from core.workflow_bridge import WorkflowBridge
 
         planner_bridge.reload()
         bridge = WorkflowBridge()

@@ -4,11 +4,11 @@ tools/minimax_image.py — Outil de génération d'images via l'API MiniMax (mod
 Permet de générer des images de haute qualité et de les sauvegarder localement à partir de descriptions textuelles.
 """
 
+import logging
 import os
 import time
-import logging
+
 import requests
-from typing import Optional
 
 logger = logging.getLogger("tools.minimax_image")
 
@@ -19,27 +19,27 @@ class MiniMaxImageProvider:
         img_provider = MiniMaxImageProvider()
         path = img_provider.generate_image("A futuristic smart home dashboard...")
     """
-    
+
     BASE_URL = "https://api.minimax.io/v1/image_generation"
-    
-    def __init__(self, api_key: Optional[str] = None):
+
+    def __init__(self, api_key: str | None = None):
         """
         Args:
             api_key: Clé API MiniMax (défaut: MINIMAX_API_KEY du .env)
         """
         self.api_key = api_key or os.environ.get("MINIMAX_API_KEY", "")
         self.available = bool(self.api_key)
-        
+
         if not self.available:
             logger.warning("[MiniMax Image] Aucune clé API configurée dans l'environnement")
-            
+
     def generate_image(
         self,
         prompt: str,
-        output_path: Optional[str] = None,
+        output_path: str | None = None,
         aspect_ratio: str = "1:1",
         model: str = "image-01"
-    ) -> Optional[str]:
+    ) -> str | None:
         """Génère une image et la sauvegarde en local.
         
         Args:
@@ -54,46 +54,46 @@ class MiniMaxImageProvider:
         if not self.available:
             logger.error("[MiniMax Image] Clé API absente. Génération impossible.")
             return None
-            
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
-        
+
         payload = {
             "model": model,
             "prompt": prompt,
             "aspect_ratio": aspect_ratio
         }
-        
+
         try:
             logger.info(f"[MiniMax Image] Envoi de la requête de génération d'image à {self.BASE_URL}")
             response = requests.post(self.BASE_URL, headers=headers, json=payload, timeout=40.0)
-            
+
             if response.status_code != 200:
                 logger.error(f"[MiniMax Image] Erreur HTTP {response.status_code}: {response.text}")
                 return None
-                
+
             res_json = response.json()
             base_resp = res_json.get("base_resp", {})
             if base_resp.get("status_code") != 0:
                 logger.error(f"[MiniMax Image] Erreur API interne: {base_resp.get('status_msg')} (code: {base_resp.get('status_code')})")
                 return None
-                
+
             image_urls = res_json.get("data", {}).get("image_urls", [])
             if not image_urls:
                 logger.error("[MiniMax Image] Aucune URL d'image retournée par l'API")
                 return None
-                
+
             image_url = image_urls[0]
             logger.info(f"[MiniMax Image] Image générée avec succès. Téléchargement depuis : {image_url}")
-            
+
             # Téléchargement de l'image binaire
             image_response = requests.get(image_url, timeout=20.0)
             if image_response.status_code != 200:
                 logger.error(f"[MiniMax Image] Échec du téléchargement de l'image (HTTP {image_response.status_code})")
                 return None
-                
+
             # Déterminer le chemin de sortie par défaut
             if not output_path:
                 images_dir = os.path.join(
@@ -105,13 +105,13 @@ class MiniMaxImageProvider:
                 output_path = os.path.join(images_dir, f"minimax_{timestamp}.jpg")
             else:
                 os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-                
+
             with open(output_path, "wb") as f:
                 f.write(image_response.content)
-                
+
             logger.info(f"[MiniMax Image] ✅ Image sauvegardée avec succès : {output_path} ({len(image_response.content)} octets)")
             return output_path
-            
+
         except Exception as e:
             logger.error(f"[MiniMax Image] Erreur inattendue lors de la génération : {e}")
             return None
@@ -138,7 +138,7 @@ def minimax_image_generate(
     provider = MiniMaxImageProvider()
     if not provider.available:
         return "Erreur : La clé MINIMAX_API_KEY est manquante."
-        
+
     res = provider.generate_image(prompt=prompt, output_path=output_path or None, aspect_ratio=aspect_ratio)
     if res:
         return f"✅ Image MiniMax générée avec succès dans : {res}"

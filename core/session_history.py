@@ -7,13 +7,13 @@ dans SQLite pour permettre la consultation historique et le replay depuis l'IHM.
 Créé dans le cadre de l'audit V5.5 (Axe U2 — Historique des sessions).
 """
 
-import re
-import time
 import json
-import sqlite3
 import logging
+import re
+import sqlite3
 import threading
-from typing import List, Dict, Any, Optional
+import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +55,11 @@ def record_session_start(
 def record_session_end(
     session_id: str,
     status: str,
-    agents_invoked: List[str] = None,
+    agents_invoked: list[str] = None,
     task_count: int = 0,
-    error_message: Optional[str] = None,
-    result_summary: Optional[str] = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    error_message: str | None = None,
+    result_summary: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Enregistre la fin d'une session avec les résultats."""
     try:
@@ -108,8 +108,8 @@ def record_session_end(
 
 def get_sessions(
     limit: int = 50,
-    status_filter: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    status_filter: str | None = None,
+) -> list[dict[str, Any]]:
     """
     Retourne les dernières sessions (les plus récentes en premier).
 
@@ -172,7 +172,7 @@ def get_sessions(
         return []
 
 
-def get_session_detail(session_id: str) -> Optional[Dict[str, Any]]:
+def get_session_detail(session_id: str) -> dict[str, Any] | None:
     """Retourne le détail complet d'une session par son ID."""
     try:
         conn = _get_connection()
@@ -210,7 +210,7 @@ def get_session_detail(session_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def get_session_stats() -> Dict[str, Any]:
+def get_session_stats() -> dict[str, Any]:
     """Retourne les statistiques agrégées de l'historique des sessions."""
     try:
         conn = _get_connection()
@@ -281,9 +281,9 @@ def record_token_usage(
     prompt_tokens: int,
     completion_tokens: int,
     cost_usd: float = 0.0,
-    session_id: Optional[str] = None,
-    channel: Optional[str] = None,
-    agent_name: Optional[str] = None,
+    session_id: str | None = None,
+    channel: str | None = None,
+    agent_name: str | None = None,
 ) -> None:
     """
     Enregistre un appel LLM individuel dans la table token_usage.
@@ -321,9 +321,9 @@ def record_token_usage(
 
 
 def get_token_stats(
-    since_hours: Optional[int] = None,
-    model_filter: Optional[str] = None,
-) -> Dict[str, Any]:
+    since_hours: int | None = None,
+    model_filter: str | None = None,
+) -> dict[str, Any]:
     """
     Retourne des statistiques agrégées de consommation de tokens.
     
@@ -417,9 +417,9 @@ def get_token_stats(
 
 def get_token_history(
     limit: int = 100,
-    session_id: Optional[str] = None,
-    model_filter: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    session_id: str | None = None,
+    model_filter: str | None = None,
+) -> list[dict[str, Any]]:
     """
     Retourne l'historique des appels LLM enregistrés en BDD.
     
@@ -481,7 +481,7 @@ def get_token_history(
         return []
 
 
-def get_quotas_from_db() -> Dict[str, int]:
+def get_quotas_from_db() -> dict[str, int]:
     """
     Calcule les quotas glissants depuis SQLite — tab5-engine UNIQUEMENT.
 
@@ -639,7 +639,7 @@ def _ensure_ide_conversations_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def upsert_ide_conversation(session_data: Dict[str, Any]) -> bool:
+def upsert_ide_conversation(session_data: dict[str, Any]) -> bool:
     """
     Insère ou met à jour une conversation IDE dans la BDD.
     
@@ -650,7 +650,7 @@ def upsert_ide_conversation(session_data: Dict[str, Any]) -> bool:
         conv_id = session_data.get("conversation_id", "")
         if not conv_id:
             return False
-        
+
         with _db_lock:
             conn = _get_connection()
             _ensure_ide_conversations_table(conn)
@@ -696,7 +696,7 @@ def upsert_ide_conversation(session_data: Dict[str, Any]) -> bool:
         return False
 
 
-def bulk_upsert_ide_conversations(sessions: List[Dict[str, Any]]) -> int:
+def bulk_upsert_ide_conversations(sessions: list[dict[str, Any]]) -> int:
     """
     Insère en masse des conversations IDE dans la BDD.
     
@@ -708,7 +708,7 @@ def bulk_upsert_ide_conversations(sessions: List[Dict[str, Any]]) -> int:
             conn = _get_connection()
             _ensure_ide_conversations_table(conn)
             now = time.time()
-            
+
             for session_data in sessions:
                 conv_id = session_data.get("conversation_id", "")
                 if not conv_id:
@@ -751,20 +751,20 @@ def bulk_upsert_ide_conversations(sessions: List[Dict[str, Any]]) -> int:
                     count += 1
                 except Exception as inner_e:
                     logger.warning(f"[SESSION HISTORY] Erreur bulk upsert {conv_id[:8]}: {inner_e}")
-            
+
             conn.commit()
             conn.close()
     except Exception as e:
         logger.warning(f"[SESSION HISTORY] Erreur bulk_upsert : {e}")
-    
+
     logger.info(f"[SESSION HISTORY] {count}/{len(sessions)} conversations IDE persistées en BDD")
     return count
 
 
 def get_ide_conversations(
     limit: int = 100,
-    source_filter: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    source_filter: str | None = None,
+) -> list[dict[str, Any]]:
     """
     Retourne les conversations IDE stockées en BDD.
     
@@ -832,7 +832,7 @@ def get_ide_conversations(
         return []
 
 
-def get_ide_conversations_stats() -> Dict[str, Any]:
+def get_ide_conversations_stats() -> dict[str, Any]:
     """Retourne les statistiques agrégées des conversations IDE."""
     try:
         conn = _get_connection()
@@ -874,7 +874,7 @@ def get_ide_conversations_stats() -> Dict[str, Any]:
         return {"error": str(e)}
 
 
-def get_combined_cost_from_db() -> Dict[str, Any]:
+def get_combined_cost_from_db() -> dict[str, Any]:
     """Calcule le coût combiné moteur + CLI/IDE depuis la BDD SQLite.
     
     Source de vérité unique — remplace le calcul JSON + cache mémoire.
@@ -882,7 +882,7 @@ def get_combined_cost_from_db() -> Dict[str, Any]:
     """
     try:
         conn = _get_connection()
-        
+
         # 1. Coût moteur (table token_usage) — tous les appels API du moteur
         moteur = conn.execute("""
             SELECT COALESCE(SUM(total_tokens), 0),
@@ -891,7 +891,7 @@ def get_combined_cost_from_db() -> Dict[str, Any]:
                    COALESCE(SUM(cost_usd), 0)
             FROM token_usage
         """).fetchone()
-        
+
         # 2. Coût CLI/IDE (table ide_conversations) — toutes les sessions
         ide_total = conn.execute("""
             SELECT COALESCE(SUM(total_tokens), 0),
@@ -899,14 +899,14 @@ def get_combined_cost_from_db() -> Dict[str, Any]:
                    COUNT(*)
             FROM ide_conversations
         """).fetchone()
-        
+
         # 3. Coût CLI/IDE uniquement les APIs payantes (pas abonnements)
         ide_payant = conn.execute("""
             SELECT COALESCE(SUM(estimated_cost_usd), 0)
             FROM ide_conversations
             WHERE is_subscription = 0
         """).fetchone()
-        
+
         # 4. Ventilation par source
         by_source = conn.execute("""
             SELECT source, 
@@ -917,15 +917,15 @@ def get_combined_cost_from_db() -> Dict[str, Any]:
             FROM ide_conversations
             GROUP BY source
         """).fetchall()
-        
+
         conn.close()
-        
+
         moteur_tokens = moteur[0]
         moteur_cost = moteur[3]
         cli_tokens = ide_total[0]
         cli_cost_abo = ide_total[1]  # Valeur estimée (abonnements inclus)
         cli_cost_payant = ide_payant[0]  # Coût réel APIs payantes uniquement
-        
+
         return {
             "moteur_tokens": moteur_tokens,
             "moteur_prompt": moteur[1],
@@ -949,7 +949,7 @@ def get_combined_cost_from_db() -> Dict[str, Any]:
             ],
             "source": "sqlite",  # Marqueur pour traçabilité
         }
-        
+
     except Exception as e:
         logger.warning(f"[SESSION HISTORY] Erreur get_combined_cost : {e}")
         return None
@@ -959,7 +959,26 @@ def get_combined_cost_from_db() -> Dict[str, Any]:
 # HISTORIQUE QUOTAS & BILLING
 # =====================================================================
 
-def insert_quota_snapshot(quotas: Dict[str, Any]) -> int:
+def _ensure_quota_snapshots_table(conn: sqlite3.Connection) -> None:
+    """Crée la table quota_snapshots si absente (garantie d'existence, #T269).
+
+    Miroir du schéma canonique de core.runtime_db : la table peut manquer sur
+    les bases héritées — l'écriture d'instantané doit rester autonome.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS quota_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            channel TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            value INTEGER DEFAULT 0,
+            max_value INTEGER NOT NULL,
+            window_seconds INTEGER
+        )
+    """)
+
+
+def insert_quota_snapshot(quotas: dict[str, Any]) -> int:
     """Enregistre un snapshot des quotas actuels en BDD.
     
     Appelé toutes les 60s par le sse_quota_pusher_loop.
@@ -967,7 +986,7 @@ def insert_quota_snapshot(quotas: Dict[str, Any]) -> int:
     """
     if not quotas:
         return 0
-    
+
     # Mapping des clés API → (channel, metric, max, window_seconds)
     QUOTA_MAP = {
         'gemini_free_flash_rpm': ('gemini_free_flash', 'rpm', 15, 60),
@@ -981,9 +1000,10 @@ def insert_quota_snapshot(quotas: Dict[str, Any]) -> int:
         'gemini_cli_tph': ('gemini_cli', 'tph', 4000000, 3600),
         'gemini_cli_tpm': ('gemini_cli', 'tpm', 100000000, 2592000),
     }
-    
+
     try:
         conn = _get_connection()
+        _ensure_quota_snapshots_table(conn)
         ts = time.time()
         inserted = 0
         for key, (channel, metric, max_val, window) in QUOTA_MAP.items():
@@ -1002,7 +1022,7 @@ def insert_quota_snapshot(quotas: Dict[str, Any]) -> int:
         return 0
 
 
-def get_quota_history(hours: int = 24, channel: str = None, metric: str = None) -> List[Dict]:
+def get_quota_history(hours: int = 24, channel: str = None, metric: str = None) -> list[dict]:
     """Récupère l'historique des snapshots de quotas.
     
     Args:
@@ -1013,21 +1033,21 @@ def get_quota_history(hours: int = 24, channel: str = None, metric: str = None) 
     try:
         conn = _get_connection()
         since = time.time() - (hours * 3600)
-        
+
         query = "SELECT timestamp, channel, metric, value, max_value FROM quota_snapshots WHERE timestamp > ?"
         params = [since]
-        
+
         if channel:
             query += " AND channel = ?"
             params.append(channel)
         if metric:
             query += " AND metric = ?"
             params.append(metric)
-        
+
         query += " ORDER BY timestamp ASC"
         rows = conn.execute(query, params).fetchall()
         conn.close()
-        
+
         return [
             {
                 "timestamp": r[0],
@@ -1064,7 +1084,7 @@ def insert_billing_record(provider: str, metric: str, value: float,
         return False
 
 
-def get_billing_history(days: int = 30, provider: str = None) -> List[Dict]:
+def get_billing_history(days: int = 30, provider: str = None) -> list[dict]:
     """Récupère l'historique de facturation.
     
     Args:
@@ -1074,18 +1094,18 @@ def get_billing_history(days: int = 30, provider: str = None) -> List[Dict]:
     try:
         conn = _get_connection()
         since = time.time() - (days * 86400)
-        
+
         query = "SELECT timestamp, provider, metric, value, currency, sync_source FROM billing_history WHERE timestamp > ?"
         params = [since]
-        
+
         if provider:
             query += " AND provider = ?"
             params.append(provider)
-        
+
         query += " ORDER BY timestamp ASC"
         rows = conn.execute(query, params).fetchall()
         conn.close()
-        
+
         return [
             {
                 "timestamp": r[0],
@@ -1114,29 +1134,29 @@ def cleanup_old_snapshots(retention_days: int = 90):
     try:
         with _db_lock:
             conn = _get_connection()
-            
+
             # 1. Rétention quotas (90 jours par défaut)
             cutoff_quotas = time.time() - (retention_days * 86400)
             deleted_q = conn.execute("DELETE FROM quota_snapshots WHERE timestamp < ?", (cutoff_quotas,)).rowcount
-            
+
             # 2. Rétention métriques unitaires (90 jours par défaut)
             deleted_r = conn.execute("DELETE FROM routing_decisions WHERE timestamp < ?", (cutoff_quotas,)).rowcount
             deleted_t = conn.execute("DELETE FROM token_usage WHERE timestamp < ?", (cutoff_quotas,)).rowcount
-            
+
             # 3. Rétention exécutions techniques (14 jours de TTL)
             cutoff_runtime = time.time() - (14 * 86400)
             deleted_tasks = conn.execute("DELETE FROM dag_tasks WHERE started_at < ? OR (ended_at IS NOT NULL AND ended_at < ?)", (cutoff_runtime, cutoff_runtime)).rowcount
             deleted_edges = conn.execute("DELETE FROM dag_edges WHERE session_id IN (SELECT session_id FROM sessions WHERE started_at < ?)", (cutoff_runtime,)).rowcount
             deleted_memory = conn.execute("DELETE FROM scoped_memory WHERE session_id IN (SELECT session_id FROM sessions WHERE started_at < ?)", (cutoff_runtime,)).rowcount
             deleted_steps = conn.execute("DELETE FROM agent_steps WHERE timestamp < ?", (cutoff_runtime,)).rowcount
-            
+
             # 4. Rétention checkpoints (48 heures)
             deleted_chk = conn.execute("DELETE FROM checkpoints WHERE datetime(updated_at) < datetime('now', '-2 days')").rowcount
-            
+
             conn.commit()
-            
+
             total_deleted = deleted_q + deleted_r + deleted_t + deleted_tasks + deleted_edges + deleted_memory + deleted_steps + deleted_chk
-            
+
             # 5. Optimisation physique de la base de données (defragmentation)
             if total_deleted > 0:
                 conn.execute("VACUUM")
@@ -1182,7 +1202,7 @@ def cleanup_zombie_sessions() -> int:
             affected = cursor.rowcount
             conn.commit()
             conn.close()
-            
+
             if affected > 0:
                 logger.warning(f"[SESSION HISTORY] {affected} session(s) zombie(s) nettoyée(s)")
             return affected

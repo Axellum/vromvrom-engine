@@ -51,6 +51,7 @@ except Exception:
 
 from core import token_tracker
 from core.cli_token_collector import collect_all_cli_tokens
+from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
 
 # Initialisation du logger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
@@ -65,6 +66,16 @@ try:
         logger.info("☁️  Google Cloud Logging intégré avec succès au root logger.")
 except Exception as e:
     logger.warning(f"⚠️  Google Cloud Logging non initialisé : {e}")
+
+# [#T262] Masquage des secrets à la sortie des journaux. Posé APRÈS
+# `setup_logging()` de Google Cloud Logging, sinon son handler — ajouté au root
+# logger juste au-dessus — expédierait les secrets vers GCP sans être filtré.
+try:
+    from core.log_redaction import installer_redaction
+    _n_handlers = installer_redaction()
+    logger.info(f"🔒 Masquage des secrets actif sur {_n_handlers} handler(s) de journalisation.")
+except Exception as e:
+    logger.error(f"⚠️  Masquage des secrets NON actif ({e}) — les journaux peuvent exposer des clés.")
 
 # Lifespan handler (remplace les 2 @app.on_event('startup') dépréciés)
 # Défini ici mais complété après les helpers (sse_quota_pusher_loop, swarm_heartbeat_loop)
@@ -83,6 +94,15 @@ async def lifespan(app: FastAPI):
     from core.async_db_serializer import AsyncDBSerializer
     db_serializer = AsyncDBSerializer.get_instance()
     await db_serializer.start()
+
+    # [#T277] Trace la hiérarchie des fenêtres de temps et signale toute
+    # incohérence (une fenêtre interne plus longue que celle qui la contient
+    # rend le mécanisme interne décoratif — cas #T267 et #T277).
+    try:
+        from core.fenetres_execution import journaliser_fenetres
+        journaliser_fenetres()
+    except Exception as _fe:
+        logger.debug(f"[STARTUP] Fenêtres d'exécution non journalisées : {_fe}")
 
     # ── Initialisation du Router global ──
     # [P1-2.1] Construit via l'assemblage canonique (factory) : gateway + RAG +
@@ -110,8 +130,10 @@ async def lifespan(app: FastAPI):
     try:
         from core.ha_fuzzy_matcher import init_fuzzy_matcher
         _ha_url = os.environ.get("HASS_URL", "https://${HA_HOST:-192.168.1.x}:8123")
-        _ha_token = os.environ.get("HASS_TOKEN", "")
+        _ha_token = get_ha_token()
         if not _ha_token:
+            # Secours : lecture brute du fichier .env (T239) — hors accesseur
+            # get_ha_token(), qui ne lit que os.environ.
             _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
             if os.path.exists(_env_path):
                 with open(_env_path, encoding="utf-8") as _ef:
@@ -139,6 +161,12 @@ async def lifespan(app: FastAPI):
     # ── Lancement des tâches de fond ──
     asyncio.create_task(sse_quota_pusher_loop())
     logger.info("[STARTUP] sse_quota_pusher_loop enregistré et lancé.")
+
+    # Refresh périodique des quotas (intervalle QUOTA_REFRESH_INTERVAL_SECONDS,
+    # défaut 300 s — voir core.quota_collector.quota_refresh_loop, #T269)
+    from core.quota_collector import quota_refresh_loop
+    asyncio.create_task(quota_refresh_loop())
+    logger.info("[STARTUP] 🔄 Refresh périodique des quotas lancé.")
 
     from core.daemon_loop import daemon_main_loop
     asyncio.create_task(daemon_main_loop())
@@ -268,7 +296,7 @@ Requête → Router → Planner (DAG) → Executor/Antigravity/HA Agent → Revi
 
 # Configuration CORS pilotée par l'environnement.
 # MOTEUR_CORS_ORIGINS : liste d'origines séparées par des virgules
-#   (ex. "http://${ENGINE_HOST:-192.168.1.x}:8000,http://localhost:8000").
+#   (ex. "http://${DECK_HOST:-192.168.1.x}:8000,http://localhost:8000").
 # Sécurité : la combinaison allow_origins=["*"] + allow_credentials=True est
 # invalide/dangereuse (CSRF cross-origin authentifié). Si aucune origine n'est
 # définie, on retombe sur "*" SANS credentials.
@@ -1126,6 +1154,9 @@ async def broadcast_engine_state(event_type: str, data: dict):
 @app.get("/api/system/tokens-status", tags=["Configuration"], dependencies=_AUTH_DEP)
 async def get_tokens_status():
     """Remonte le statut des tokens (GCP, API météo, HA) pour l'IHM."""
+    # Diagnostic de présence de la clé HASS_TOKEN (T239) — volontairement hors
+    # accesseur get_ha_token() : la sémantique est « cette clé précise
+    # existe-t-elle », pas « donne-moi le token ».
     return {
         "ha_token": {"status": "ok" if os.environ.get("HASS_TOKEN") else "missing"},
         "gcp_key": {"status": "ok" if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") else "missing"},

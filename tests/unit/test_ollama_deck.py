@@ -3,9 +3,9 @@ tests/unit/test_ollama_deck.py
 Tests unitaires pour OllamaDeckProvider et la méthode get_deck_provider() de LLMGateway.
 Les tests mockent requests pour ne pas dépendre du réseau.
 """
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 # ──────────────────────────────────────────────────────────────────
 # Fixtures
@@ -49,15 +49,15 @@ class TestOllamaDeckProvider:
 
     def test_init_url_defaut(self, ollama_provider):
         """Vérifie que l'URL par défaut pointe bien vers le Deck (IP Ethernet)."""
-        assert "${OLLAMA_HOST:-localhost}" in ollama_provider.base_url
+        assert "${DECK_HOST:-192.168.1.x}" in ollama_provider.base_url
         assert "11434" in ollama_provider.base_url
         assert ollama_provider.model_name == "phi3:mini"
 
     def test_init_url_custom(self):
         """Vérifie qu'on peut surcharger l'hôte et le modèle."""
         from core.llm_gateway import OllamaDeckProvider
-        p = OllamaDeckProvider(host="localhost", port=11434, model_name="gemma2:2b")
-        assert "localhost" in p.base_url
+        p = OllamaDeckProvider(host="${DECK_HOST_WIFI:-192.168.1.x}", port=11434, model_name="gemma2:2b")
+        assert "${DECK_HOST_WIFI:-192.168.1.x}" in p.base_url
         assert p.model_name == "gemma2:2b"
 
     def test_ping_available_deck_joignable(self, ollama_provider, mock_tags_ok):
@@ -76,14 +76,15 @@ class TestOllamaDeckProvider:
     def test_ping_available_basculement_wifi(self):
         """Test que ping_available() bascule automatiquement vers l'IP Wi-Fi si Ethernet échoue."""
         import requests
+
         from core.llm_gateway import OllamaDeckProvider
-        p = OllamaDeckProvider(host="${OLLAMA_HOST:-localhost}")
+        p = OllamaDeckProvider(host="${DECK_HOST:-192.168.1.x}")
 
         mock_tags_wifi = MagicMock()
         mock_tags_wifi.status_code = 200
 
         def mock_get_side_effect(url, **kwargs):
-            if "${OLLAMA_HOST:-localhost}" in url:
+            if "${DECK_HOST:-192.168.1.x}" in url:
                 raise requests.exceptions.ConnectTimeout
             return mock_tags_wifi  # Wi-Fi répond
 
@@ -92,7 +93,7 @@ class TestOllamaDeckProvider:
 
         assert result is True
         # Vérifier que l'IP a bien basculé vers le Wi-Fi
-        assert "localhost" in p.base_url
+        assert "${DECK_HOST_WIFI:-192.168.1.x}" in p.base_url
 
     def test_generate_reponse_ok(self, ollama_provider, mock_response_ok):
         """Test generate() avec une réponse Ollama valide."""
@@ -196,7 +197,7 @@ class TestGetDeckProvider:
 
     def test_get_deck_provider_hors_ligne(self):
         """Test que get_deck_provider() retourne None quand le Deck est hors ligne."""
-        from core.llm_gateway import OllamaDeckProvider, LLMGateway
+        from core.llm_gateway import LLMGateway, OllamaDeckProvider
         gw = MagicMock()
         gw.providers = {"deck_ollama": OllamaDeckProvider()}
         gw.get_deck_provider = LLMGateway.get_deck_provider.__get__(gw)

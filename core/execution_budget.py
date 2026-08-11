@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 core/execution_budget.py — Budget global d'exécution par requête (P2-3.4).
 
@@ -18,9 +17,9 @@ Le même objet est partagé entre `engine` (boucle séquentielle) et `dag_runner
 (et non réinitialisés par sous-étape).
 """
 
-import time
 import logging
-from typing import Optional, Dict, Any
+import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +33,7 @@ class ExecutionBudget:
         max_tokens: int = 0,
         max_duration_s: float = 0.0,
         max_cost_usd: float = 0.0,
-        start_time: Optional[float] = None,
+        start_time: float | None = None,
     ):
         self.session_id = session_id
         self.max_tokens = int(max_tokens or 0)
@@ -46,8 +45,8 @@ class ExecutionBudget:
     def from_config(
         cls,
         session_id: str,
-        config: Optional[dict] = None,
-        start_time: Optional[float] = None,
+        config: dict | None = None,
+        start_time: float | None = None,
     ) -> "ExecutionBudget":
         """Construit le budget depuis config.json (clés `max_session_tokens`,
         `max_execution_seconds`, `max_execution_cost_usd`)."""
@@ -69,7 +68,7 @@ class ExecutionBudget:
         """Secondes écoulées depuis le début de la requête."""
         return time.time() - self.start_time
 
-    def remaining_tokens(self) -> Optional[int]:
+    def remaining_tokens(self) -> int | None:
         """Tokens restants avant plafond, ou `None` si l'axe tokens est désactivé.
 
         [#T111] Utilisé pour borner le fan-out parallèle du DAG runner par le
@@ -84,7 +83,7 @@ class ExecutionBudget:
             consumed = 0
         return max(self.max_tokens - consumed, 0)
 
-    def check(self) -> Optional[Dict[str, Any]]:
+    def check(self) -> dict[str, Any] | None:
         """
         Vérifie les trois axes. Renvoie `None` si la requête est dans le budget,
         sinon un dict décrivant le premier dépassement constaté :
@@ -121,7 +120,7 @@ class ExecutionBudget:
 
         return None
 
-    def event_payload(self, violation: Dict[str, Any], blocked: str = "") -> Dict[str, Any]:
+    def event_payload(self, violation: dict[str, Any], blocked: str = "") -> dict[str, Any]:
         """Construit le payload SSE `budget_exceeded` à partir d'un dépassement."""
         return {
             "reason": violation["reason"],

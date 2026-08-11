@@ -37,7 +37,7 @@ _INTENTS_OUT = _OUT_DIR / "tab5_local_fallback_intents.yaml"
 _CORE_SERVICES = frozenset({
     "light.turn_on", "light.turn_off",
     "climate.turn_on", "climate.turn_off",
-    "script.tab5_volet_action",
+    "script.blind_action",
 })
 
 # Phrase TTS courte par action (cohérente avec build_natural_ha_response du moteur).
@@ -60,7 +60,7 @@ def _camel(text: str) -> str:
 
 def _intent_name(cmd: dict[str, Any]) -> str:
     service = cmd["service"]
-    if service == "script.tab5_volet_action":
+    if service == "script.blind_action":
         action = (cmd.get("service_data") or {}).get("action", "")
         return f"Tab5CoreVolet{action.title()}"
     domain, verb = service.split(".", 1)
@@ -71,7 +71,7 @@ def _intent_name(cmd: dict[str, Any]) -> str:
 
 def _speech_for(cmd: dict[str, Any]) -> str:
     service = cmd["service"]
-    if service == "script.tab5_volet_action":
+    if service == "script.blind_action":
         action = (cmd.get("service_data") or {}).get("action", "")
         return _SPEECH.get(f"volet.{action}", "C'est fait.")
     return _SPEECH.get(service, "C'est fait.")
@@ -79,7 +79,7 @@ def _speech_for(cmd: dict[str, Any]) -> str:
 
 def _action_for(cmd: dict[str, Any]) -> dict[str, Any]:
     service = cmd["service"]
-    if service == "script.tab5_volet_action":
+    if service == "script.blind_action":
         return {"service": service, "data": dict(cmd.get("service_data") or {})}
     action: dict[str, Any] = {"service": service}
     if cmd.get("entity_id"):
@@ -145,3 +145,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

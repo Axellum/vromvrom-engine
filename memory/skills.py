@@ -23,15 +23,15 @@ Format de stockage :
     ]
 """
 
-import os
+import asyncio
 import json
 import logging
+import os
 import time
-import asyncio
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any
 
-from core.safe_io import safe_json_write, file_lock  # [P1-2.3]
+from core.safe_io import file_lock, safe_json_write  # [P1-2.3]
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class SkillStore:
         if os.path.exists(self.skills_file):
             try:
                 with file_lock(self.skills_file):
-                    with open(self.skills_file, 'r', encoding='utf-8') as f:
+                    with open(self.skills_file, encoding='utf-8') as f:
                         self._skills = json.load(f)
                 logger.info(f"[SKILLS] {len(self._skills)} skill(s) chargé(s)")
             except Exception as e:
@@ -135,7 +135,7 @@ class SkillStore:
                     f"[SKILLS] Skill existant renforcé : '{pattern}' "
                     f"(succès: {skill['success_count']})"
                 )
-                
+
                 # Détection de candidat pour le ToolMaker
                 if (
                     skill["success_count"] >= self.TOOLMAKING_THRESHOLD
@@ -147,7 +147,7 @@ class SkillStore:
                     )
                     skill["toolmaking_candidate"] = True
                     self._save()
-                
+
                 return
 
         # Nouveau skill
@@ -315,7 +315,7 @@ class SkillStore:
 def record_learned_lesson(db, category: str, title: str,
                           content: str, source_file: str = "",
                           tags: str = "",
-                          severity: str = "minor") -> Dict[str, Any]:
+                          severity: str = "minor") -> dict[str, Any]:
     """
     Enregistre une leçon apprise automatiquement (hook post-DAG).
     """
@@ -395,7 +395,7 @@ def record_learned_lesson(db, category: str, title: str,
     return result
 
 
-def _get_lecon_md_path(db, category: str) -> Optional[str]:
+def _get_lecon_md_path(db, category: str) -> str | None:
     """Retourne le chemin du fichier de leçons Markdown pour une catégorie."""
     # Résoudre le chemin depuis la racine contexte_ia
     base = os.path.abspath(
@@ -458,7 +458,7 @@ def _compute_quality_score(db, title: str, content: str,
 async def record_learned_lesson_async(db, category: str, title: str,
                                        content: str, source_file: str = "",
                                        tags: str = "",
-                                       severity: str = "minor") -> Dict[str, Any]:
+                                       severity: str = "minor") -> dict[str, Any]:
     """Enregistre asynchronement une leçon apprise (avec scoring V9 et sync Markdown)."""
     fact_id = await db.upsert_fact_async(
         category=category, title=title, content=content,

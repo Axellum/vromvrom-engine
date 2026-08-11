@@ -14,8 +14,9 @@ import asyncio
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger("watchdog")
 
@@ -36,8 +37,8 @@ def _build_rules() -> list[tuple[re.Pattern, re.Pattern, str]]:
 class WatchdogConfig:
     mqtt_host: str = "${HA_HOST:-192.168.1.x}"
     mqtt_port: int = 1883
-    mqtt_username: Optional[str] = None
-    mqtt_password: Optional[str] = None
+    mqtt_username: str | None = None
+    mqtt_password: str | None = None
     mqtt_client_id: str = "watchdog-domus"
     moteur_url: str = "http://localhost:8000"
     moteur_model: str = "auto"
@@ -45,6 +46,7 @@ class WatchdogConfig:
     backoff_initial: float = 1.0
     backoff_max: float = 60.0
     backoff_factor: float = 2.0
+    connect_timeout: float = 15.0  # délai max d'attente du CONNACK avant retry
     topics: tuple[str, ...] = (
         "homeassistant/status",
         "esphome/+/status",
@@ -68,15 +70,15 @@ class WatchdogDaemon:
         self.config = config or WatchdogConfig()
         self._rules = _build_rules()
         self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._mqtt_client = None
         self._connected = asyncio.Event()
         self._stopping = asyncio.Event()
         self._last_alert: dict[str, float] = {}
         self._http = None
-        self._consumer_task: Optional[asyncio.Task] = None
-        self._supervisor_task: Optional[asyncio.Task] = None
-        self._log_poller_task: Optional[asyncio.Task] = None
+        self._consumer_task: asyncio.Task | None = None
+        self._supervisor_task: asyncio.Task | None = None
+        self._log_poller_task: asyncio.Task | None = None
         self._stats: dict[str, int] = {
             "messages_received": 0,
             "alerts_emitted": 0,
@@ -209,7 +211,7 @@ class WatchdogDaemon:
         while not self._stopping.is_set():
             try:
                 topic, payload = await asyncio.wait_for(self._queue.get(), timeout=1.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             except asyncio.CancelledError:
                 raise
@@ -228,6 +230,33 @@ class WatchdogDaemon:
             userdata["queue"].put_nowait, (msg.topic, payload)
         )
 
+    def _on_connect(self, client, userdata, connect_flags, reason_code, properties=None) -> None:
+        """Callback de connexion (paho API v2, appelé depuis le thread réseau).
+
+        Souscrit aux topics PUIS débloque le superviseur. Les deux actions doivent
+        être séquentielles : les combiner en une expression `or` faisait sauter le
+        `set()` (une liste de souscriptions non vide est toujours vraie).
+        """
+        if client is not self._mqtt_client:
+            # CONNACK tardif d'une tentative déjà abandonnée (délai de connexion
+            # expiré) : l'honorer poserait `_connected` alors que le client courant,
+            # lui, n'est pas connecté — le superviseur repartirait dans sa boucle
+            # interne sans MQTT, exactement le blocage que ce module corrige.
+            logger.debug("[WATCHDOG] CONNACK ignoré : provient d'une tentative abandonnée.")
+            return
+        if reason_code.is_failure:
+            logger.error("[WATCHDOG] Connexion MQTT refusée par le broker : %s", reason_code)
+            return
+        for topic in self.config.topics:
+            client.subscribe(topic, qos=1)
+        self._loop.call_soon_threadsafe(self._connected.set)
+
+    def _on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties=None) -> None:
+        """Callback de déconnexion (paho API v2) : réveille le superviseur pour le backoff."""
+        if client is not self._mqtt_client:
+            return  # déconnexion d'un client abandonné : sans effet sur le courant
+        self._loop.call_soon_threadsafe(self._connected.clear)
+
     async def _supervisor(self) -> None:
         try:
             import paho.mqtt.client as mqtt
@@ -238,7 +267,15 @@ class WatchdogDaemon:
         backoff = self.config.backoff_initial
         while not self._stopping.is_set():
             try:
+                # Repartir d'un état « déconnecté » à chaque tentative. Sans ce
+                # clear, un CONNACK arrivé juste après l'expiration du délai
+                # laissait `_connected` posé : le `wait_for` de la tentative
+                # suivante rendait la main immédiatement et le superviseur se
+                # croyait connecté alors que son client ne l'était pas.
+                self._connected.clear()
+
                 client = mqtt.Client(
+                    mqtt.CallbackAPIVersion.VERSION2,
                     client_id=self.config.mqtt_client_id,
                     clean_session=True,
                 )
@@ -247,19 +284,41 @@ class WatchdogDaemon:
 
                 client.user_data_set({"loop": self._loop, "queue": self._queue})
                 client.on_message = self._on_message
-                client.on_connect = lambda c, u, f, rc, p=None: (
-                    [c.subscribe(t, qos=1) for t in self.config.topics]
-                    or self._loop.call_soon_threadsafe(self._connected.set)
-                ) if rc == 0 else None
-                client.on_disconnect = lambda c, u, rc, p=None: (
-                    self._loop.call_soon_threadsafe(self._connected.clear)
-                )
+                client.on_connect = self._on_connect
+                client.on_disconnect = self._on_disconnect
 
+                # Publier le client AVANT de lancer la boucle réseau : les callbacks
+                # comparent leur `client` à celui-ci pour écarter les tentatives
+                # abandonnées, et un CONNACK très rapide ne doit pas être pris pour
+                # un retardataire.
+                self._mqtt_client = client
                 client.connect(self.config.mqtt_host, self.config.mqtt_port, keepalive=60)
                 client.loop_start()
-                self._mqtt_client = client
 
-                await self._connected.wait()
+                # Un CONNACK refusé (identifiants invalides) ne passe jamais par
+                # _connected : borner l'attente évite un blocage définitif ici.
+                try:
+                    await asyncio.wait_for(
+                        self._connected.wait(), timeout=self.config.connect_timeout
+                    )
+                except TimeoutError:
+                    # Abandonner ce client : le retirer d'abord de `_mqtt_client`,
+                    # pour qu'un CONNACK arrivant pendant l'arrêt soit écarté par
+                    # les callbacks au lieu de poser `_connected` pour rien.
+                    self._mqtt_client = None
+                    try:
+                        client.disconnect()
+                    except Exception as exc:  # noqa: BLE001 — client jamais connecté
+                        logger.debug("[WATCHDOG] disconnect() du client abandonné : %s", exc)
+                    client.loop_stop()
+                    logger.warning(
+                        "[WATCHDOG] Aucun CONNACK en %.0fs, retry dans %.1fs",
+                        self.config.connect_timeout, backoff,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * self.config.backoff_factor, self.config.backoff_max)
+                    continue
+
                 backoff = self.config.backoff_initial
 
                 while not self._stopping.is_set() and self._connected.is_set():
@@ -288,13 +347,13 @@ class WatchdogDaemon:
                 try:
                     await asyncio.wait_for(self._stopping.wait(), timeout=self.config.log_poll_interval)
                     break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
                 if os.path.exists(self.config.ha_log_path):
                     def read_tail():
                         try:
-                            with open(self.config.ha_log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                            with open(self.config.ha_log_path, encoding='utf-8', errors='ignore') as f:
                                 f.seek(0, 2)
                                 size = f.tell()
                                 f.seek(max(0, size - 500000))
@@ -304,7 +363,7 @@ class WatchdogDaemon:
 
                     lines = await asyncio.to_thread(read_tail)
                     error_lines = [l for l in lines if "ERROR" in l or "Traceback" in l or "Bootloop" in l]
-                    
+
                     if error_lines:
                         payload = "".join(error_lines[-5:])[:500]
                         self._loop.call_soon_threadsafe(

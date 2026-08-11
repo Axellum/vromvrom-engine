@@ -23,13 +23,13 @@ réellement activé. Conservé volontairement, pas mort : ne pas supprimer sans
 abandonner le concept Swarm.
 """
 
+import argparse
+import asyncio
+import logging
 import os
 import sys
 import time
-import logging
-import argparse
-import asyncio
-from typing import Optional, Dict, Any
+from typing import Any
 
 # Ajout du répertoire parent au path pour importer les modules du moteur
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,9 +39,9 @@ logger = logging.getLogger("worker_daemon")
 # Déférer l'import FastAPI pour éviter les dépendances si non installé
 _HAS_FASTAPI = False
 try:
+    import uvicorn
     from fastapi import FastAPI, HTTPException
     from pydantic import BaseModel
-    import uvicorn
     _HAS_FASTAPI = True
 except ImportError:
     pass
@@ -75,7 +75,7 @@ class WorkerDaemon:
         self._start_time = time.time()
         self._tasks_completed = 0
         self._tasks_failed = 0
-        self._current_task: Optional[str] = None
+        self._current_task: str | None = None
         self._gateway = None
 
     def _get_gateway(self):
@@ -89,7 +89,7 @@ class WorkerDaemon:
                 logger.error(f"[WORKER:{self.name}] Erreur LLMGateway : {e}")
         return self._gateway
 
-    async def execute_task(self, request: dict) -> Dict[str, Any]:
+    async def execute_task(self, request: dict) -> dict[str, Any]:
         """
         Exécute une tâche localement et retourne le résultat.
         
@@ -177,7 +177,7 @@ class WorkerDaemon:
                 },
             }
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Retourne l'état actuel du worker (pour heartbeat/monitoring)."""
         return {
             "name": self.name,
@@ -251,6 +251,10 @@ def main():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
     )
+    # [#T262] Même filet que le serveur principal : un worker journalise les
+    # mêmes exceptions de providers, donc les mêmes URLs porteuses de clé.
+    from core.log_redaction import installer_redaction
+    installer_redaction()
 
     daemon = WorkerDaemon(name=args.name, port=args.port, host=args.host)
     app = daemon.create_app()

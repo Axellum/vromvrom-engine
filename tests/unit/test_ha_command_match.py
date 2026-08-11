@@ -16,14 +16,14 @@ def test_normalize_stt_verbs():
 def test_match_ha_command_exact():
     m = match_ha_command("allume le salon")
     assert m is not None
-    assert m.entity_id == "light.salon"
+    assert m.entity_id == "light.living_room"
     assert m.service == "light.turn_on"
 
 
 def test_match_ha_command_stt_variant():
     m = match_ha_command("allumé le salon")
     assert m is not None
-    assert m.entity_id == "light.salon"
+    assert m.entity_id == "light.living_room"
 
 
 def test_prompt_has_domotic_action():
@@ -32,21 +32,21 @@ def test_prompt_has_domotic_action():
 
 
 def test_build_natural_ha_response_cached():
-    text = build_natural_ha_response("light.salon", "light.turn_on", "Salon")
+    text = build_natural_ha_response("light.living_room", "light.turn_on", "Salon")
     assert text == "Lumière du salon allumée."
 
 
 def test_build_natural_volet_stop():
     text = build_natural_ha_response(
         "",
-        "script.tab5_volet_action",
+        "script.blind_action",
         service_data={"action": "stop"},
     )
     assert text == "Volet arrêté."
 
 
 def test_build_natural_ha_response_no_entity_slug():
-    text = build_natural_ha_response("light.h6008_2", "light.turn_on", "Lumiere chambre")
+    text = build_natural_ha_response("light.bedroom", "light.turn_on", "Lumiere chambre")
     assert "h6008" not in text.lower()
     assert "lumière" in text.lower()
 
@@ -70,7 +70,7 @@ def test_climate_temperature_and_mode():
     m = match_ha_command("mets la clim a 21 en mode froid")
     assert m is not None
     assert m.service == "climate.set_temperature"
-    assert m.entity_id == "climate.salon_daikinap71273_clim"
+    assert m.entity_id == "climate.living_room"
     assert m.service_data == {"temperature": 21, "hvac_mode": "cool"}
 
 
@@ -97,7 +97,7 @@ def test_climate_without_temp_or_mode_falls_back_to_on_off():
 
 def test_build_natural_climate_temperature_response():
     text = build_natural_ha_response(
-        "climate.salon_daikinap71273_clim",
+        "climate.living_room",
         "climate.set_temperature",
         service_data={"temperature": 21, "hvac_mode": "cool"},
     )

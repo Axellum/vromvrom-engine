@@ -10,7 +10,6 @@ Créé dans le cadre de l'audit V5.5 (Axe H1).
 """
 
 from enum import Enum
-from typing import Optional
 
 
 class ErrorCategory(str, Enum):
@@ -60,7 +59,7 @@ class AgentError:
         category: ErrorCategory,
         message: str,
         source: str = "",
-        original_exception: Optional[Exception] = None,
+        original_exception: Exception | None = None,
     ):
         self.category = category
         self.message = message
@@ -124,7 +123,10 @@ def classify_error(error_message: str, source: str = "") -> AgentError:
         return AgentError(ErrorCategory.VALIDATION, error_message, source)
 
     # --- Patterns de permission ---
-    if any(kw in msg_lower for kw in ["permission denied", "access denied", "permissionerror", "readonly", "read-only"]):
+    # [#T233] « permission » seul couvre les refus d'outils par agent (message
+    # « Erreur permission : l'agent ... »), qui doivent rester NON retriables :
+    # un retry automatique sur un refus volontaire n'a aucun sens.
+    if any(kw in msg_lower for kw in ["permission", "permission denied", "access denied", "permissionerror", "readonly", "read-only"]):
         return AgentError(ErrorCategory.PERMISSION, error_message, source)
 
     # --- Patterns de ressource introuvable ---

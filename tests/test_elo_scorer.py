@@ -42,7 +42,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_initial_score_is_default(self):
         """Un modèle inconnu doit avoir le score par défaut (1500)."""
-        from core.elo_scorer import get_ranked_models, DEFAULT_ELO
+        from core.elo_scorer import DEFAULT_ELO, get_ranked_models
         ranked = get_ranked_models("code_generation", ["model-a", "model-b"])
         self.assertEqual(len(ranked), 2)
         for _, score in ranked:
@@ -50,19 +50,19 @@ class TestEloScorer(unittest.TestCase):
 
     def test_score_increases_after_success(self):
         """Le score Elo doit augmenter après un succès."""
-        from core.elo_scorer import update_elo, DEFAULT_ELO
+        from core.elo_scorer import DEFAULT_ELO, update_elo
         new_elo = update_elo("test-model", "code_gen", success=True)
         self.assertGreater(new_elo, DEFAULT_ELO)
 
     def test_score_decreases_after_failure(self):
         """Le score Elo doit diminuer après un échec."""
-        from core.elo_scorer import update_elo, DEFAULT_ELO
+        from core.elo_scorer import DEFAULT_ELO, update_elo
         new_elo = update_elo("test-model", "analysis", success=False)
         self.assertLess(new_elo, DEFAULT_ELO)
 
     def test_multiple_successes_increase_score(self):
         """Plusieurs succès consécutifs doivent augmenter le score significativement."""
-        from core.elo_scorer import update_elo, DEFAULT_ELO
+        from core.elo_scorer import DEFAULT_ELO, update_elo
         last_elo = DEFAULT_ELO
         for _ in range(5):
             last_elo = update_elo("strong-model", "home_assistant", success=True)
@@ -70,7 +70,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_ranking_reflects_performance(self):
         """Le modèle le plus performant doit être classé en premier."""
-        from core.elo_scorer import update_elo, get_ranked_models
+        from core.elo_scorer import get_ranked_models, update_elo
         # Modèle A : 5 succès
         for _ in range(5):
             update_elo("model-a", "test_domain", success=True)
@@ -87,7 +87,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_domain_independence(self):
         """Les scores Elo sont indépendants par domaine."""
-        from core.elo_scorer import update_elo, get_ranked_models
+        from core.elo_scorer import get_ranked_models, update_elo
         # Modèle X : excellent en code, mauvais en HA
         for _ in range(3):
             update_elo("model-x", "code_gen", success=True)
@@ -101,7 +101,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_get_all_scores(self):
         """get_all_scores doit retourner la structure correcte."""
-        from core.elo_scorer import update_elo, get_all_scores
+        from core.elo_scorer import get_all_scores, update_elo
         update_elo("model-test", "domain-a", success=True)
         update_elo("model-test", "domain-b", success=False)
 
@@ -116,7 +116,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_get_model_profile(self):
         """get_model_profile doit retourner les forces et faiblesses."""
-        from core.elo_scorer import update_elo, get_model_profile
+        from core.elo_scorer import get_model_profile, update_elo
         # Créer un profil diversifié
         for _ in range(10):
             update_elo("profiled-model", "code", success=True)
@@ -131,7 +131,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_get_domain_leaderboard(self):
         """Le leaderboard doit être trié par Elo décroissant."""
-        from core.elo_scorer import update_elo, get_domain_leaderboard
+        from core.elo_scorer import get_domain_leaderboard, update_elo
         for _ in range(3):
             update_elo("leader-1", "lb_test", success=True)
             update_elo("leader-2", "lb_test", success=False)
@@ -143,7 +143,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_empty_inputs(self):
         """Les entrées vides ne doivent pas planter."""
-        from core.elo_scorer import update_elo, get_ranked_models, DEFAULT_ELO
+        from core.elo_scorer import DEFAULT_ELO, get_ranked_models, update_elo
         result = update_elo("", "", success=True)
         self.assertEqual(result, DEFAULT_ELO)
         ranked = get_ranked_models("", [])
@@ -151,8 +151,8 @@ class TestEloScorer(unittest.TestCase):
 
     def test_cost_per_successful_task(self):
         """[#T116] Le coût par tâche réussie doit être correctement agrégé."""
-        from core.elo_scorer import update_elo, get_cost_per_successful_task
         import core.runtime_db as db_mod
+        from core.elo_scorer import get_cost_per_successful_task, update_elo
 
         # 2 succès + 1 échec pour "cost-model" (seuls les succès comptent)
         update_elo("cost-model", "code_gen", success=True)
@@ -179,7 +179,7 @@ class TestEloScorer(unittest.TestCase):
 
     def test_cost_per_successful_task_no_wins(self):
         """[#T116] Un modèle sans succès ne doit pas provoquer de division par zéro."""
-        from core.elo_scorer import update_elo, get_cost_per_successful_task
+        from core.elo_scorer import get_cost_per_successful_task, update_elo
         update_elo("failing-model", "code_gen", success=False)
 
         result = get_cost_per_successful_task()

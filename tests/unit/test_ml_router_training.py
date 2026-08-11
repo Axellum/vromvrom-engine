@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
 """Tests du pipeline d'entraînement du ML Router (jointure texte↔label par hash)."""
 
-from core.ml_router import build_training_pairs, _prompt_hash, ROUTING_CLASSES
+from core.ml_router import ROUTING_CLASSES, _prompt_hash, build_training_pairs
 
 
 def _session(objective, status="success"):

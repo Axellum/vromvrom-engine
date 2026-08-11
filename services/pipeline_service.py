@@ -26,6 +26,10 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import Any
 
+from pydantic import ValidationError
+
+from core.state import TaskPayload
+
 logger = logging.getLogger(__name__)
 
 
@@ -59,10 +63,15 @@ def apply_workload_override(config: dict, tier: str | None = None, model: str | 
 # ══════════════════════════════════════════════════════════════════
 
 FAST_PATH_SYSTEM_PROMPT = (
-    "Tu es l'assistant vocal d'Axel. "
-    "Réponds en français, 1 à 2 phrases max, chaleureux, sans markdown. "
-    "N'invente jamais d'état domotique, de météo ou d'agenda : "
-    "si tu n'as pas l'info, dis-le simplement."
+    "Tu es l'assistant vocal d'Axel sur sa tablette. "
+    "Réponds UNIQUEMENT en français, en phrases naturelles (ou un petit tableau texte "
+    "si on te le demande). Chaleureux, concis. "
+    "INTERDIT : JSON, code, balises, appels d'outils, MCP, function_call, "
+    "ou tout texte technique du type {\"tool\":...}. "
+    "Tu n'as PAS d'outils MCP ni de recherche web dans ce mode chat : "
+    "si tu ne peux pas répondre (actualité, dernier modèle sorti, photo réelle, etc.), "
+    "dis-le clairement en français avec la raison, sans inventer d'appel d'outil. "
+    "N'invente jamais d'état domotique, de météo ou d'agenda."
 )
 
 # Cerebras gpt-oss-120b en tête : bench local 2026-07-21 ~430 ms TTFT
@@ -277,31 +286,18 @@ def _build_fast_path_response(session_id: str, user_prompt: str, response_text: 
 # Service : Pipeline complet (Planner → DAG → Executor → Reviewer)
 # ══════════════════════════════════════════════════════════════════
 
-async def run_full_pipeline(
-    user_prompt: str,
-    session_id: str,
-    initial_payload: Any,
-    starting_agent: str,
-    on_event_callback,
-    config: dict,
-    timeout_seconds: float = 120.0,
-) -> dict[str, Any]:
+def monter_moteur(session_id: str, user_prompt: str, config: dict) -> tuple:
     """
-    Exécute le pipeline complet du moteur : Planner → DAG → Executor → Reviewer.
+    [#T267] Assemble un moteur complet : gateway, outils, agents, plugins.
 
-    Assemble toutes les briques : LLMGateway, ToolRegistry, Agents, Engine,
-    MCPBridge, WorkflowBridge, Plugins. Timeout 120s maximum.
-
-    Args:
-        user_prompt      : Requête utilisateur
-        session_id       : ID de session unique
-        initial_payload  : Payload de démarrage (depuis Router.analyze_request)
-        starting_agent   : Nom de l'agent de démarrage (ex: "planner")
-        on_event_callback: Coroutine async appelée à chaque événement moteur
-        config           : Configuration du moteur (config.json)
+    Extrait tel quel du corps de `run_full_pipeline()` (aucun changement de
+    logique) pour être réutilisable par la reprise après approbation humaine :
+    le DAG approuvé doit se rejouer dans le même environnement que celui qui l'a
+    planifié, sinon un outil absent le ferait échouer pour une raison qui n'a
+    rien à voir avec le plan.
 
     Returns:
-        dict : Réponse JSON normalisée avec status, response, history, agents_used
+        (engine, registry, mcp_bridge, gateway)
     """
     from agents.antigravity_agent import AntigravityAgent
     from agents.executor import ExecutorAgent
@@ -312,14 +308,11 @@ async def run_full_pipeline(
     from core.engine import Engine
     from core.llm_gateway import LLMGateway
     from core.mcp_bridge import MCPBridge
-    from core.serializers import global_state_to_dict, state_update_to_dict
-    from core.session_history import record_session_end, record_session_start
     from core.workflow_bridge import WorkflowBridge
     from memory.context_manager import ContextManager
     from tools.registry_setup import register_base_tools, register_extended_tools
     from tools.tool_registry import ToolRegistry
 
-    # ── Construction des dépendances ──
     gateway = LLMGateway()
     registry = ToolRegistry()
     context_manager = ContextManager(llm_gateway=gateway)
@@ -371,17 +364,18 @@ async def run_full_pipeline(
 
     # ── Agents custom (WorkflowBridge) ──
     try:
+        from core.custom_agents import build_custom_agent_prompt
         bridge = WorkflowBridge()
         for custom in bridge.get_custom_agents_config():
             custom_agent = ExecutorAgent(
                 llm_gateway=gateway, tool_registry=registry,
-                provider_name=custom.get("tier", "automatique")
+                provider_name=custom.get("tier", "automatique"),
+                # [#T233] Restrictions d'outils (absent/None = tous, [] = aucun)
+                allowed_tools=custom.get("allowed_tools"),
             )
             custom_agent.name = custom["name"]
-            custom_agent.system_prompt = (
-                f"Tu es l'agent custom '{custom['name']}' ({custom.get('label', custom['name'])}).\n"
-                f"Tu hérites de la boucle ReAct d'ExecutorAgent avec accès à tous les outils.\n"
-                f"Exécute la tâche qui t'est assignée de manière rigoureuse et pédagogue."
+            custom_agent.system_prompt = build_custom_agent_prompt(
+                custom["name"], custom.get("label"), custom.get("allowed_tools")
             )
             engine.register_agent(custom_agent)
     except Exception:
@@ -407,6 +401,89 @@ async def run_full_pipeline(
                     engine.register_agent(plugin_agent)
     except Exception:
         pass
+
+    return engine, registry, mcp_bridge, gateway
+
+
+def _normaliser_payload_initial(initial_payload: Any) -> TaskPayload:
+    """
+    Normalise le payload d'entrée de run_full_pipeline en TaskPayload (#T281).
+
+    Contrat de frontière : le moteur (core/engine.py) a le droit d'attendre un
+    TaskPayload — c'est ici, à l'entrée du pipeline, que ce contrat est garanti.
+    - TaskPayload : passe tel quel (même objet, aucune copie sur le chemin nominal).
+    - dict : validé par Pydantic, qui nomme lui-même le champ manquant.
+    - autre : refus explicite nommant le paramètre et le type reçu.
+
+    Lève ValueError avec un message actionnable en cas de refus — jamais
+    d'AttributeError nu qui remonterait jusqu'à la route HTTP.
+    """
+    if isinstance(initial_payload, TaskPayload):
+        return initial_payload
+    if isinstance(initial_payload, dict):
+        try:
+            return TaskPayload.model_validate(initial_payload)
+        except ValidationError as _ve:
+            champs = ", ".join(
+                f"{'.'.join(str(p) for p in e['loc'])} : {e['msg']}" for e in _ve.errors()
+            )
+            raise ValueError(
+                f"initial_payload : dict invalide pour TaskPayload — {champs}. "
+                "Le champ task_objective (str) est obligatoire."
+            ) from _ve
+    raise ValueError(
+        f"initial_payload : type reçu « {type(initial_payload).__name__} » au lieu d'un "
+        "TaskPayload ou d'un dict. Le champ task_objective (str) est obligatoire."
+    )
+
+
+async def run_full_pipeline(
+    user_prompt: str,
+    session_id: str,
+    initial_payload: TaskPayload | dict[str, Any],
+    starting_agent: str,
+    on_event_callback,
+    config: dict,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """
+    Exécute le pipeline complet du moteur : Planner → DAG → Executor → Reviewer.
+
+    Assemble toutes les briques : LLMGateway, ToolRegistry, Agents, Engine,
+    MCPBridge, WorkflowBridge, Plugins. Timeout 120s maximum.
+
+    Args:
+        user_prompt      : Requête utilisateur
+        session_id       : ID de session unique
+        initial_payload  : TaskPayload (recommandé — passe tel quel, même objet)
+                           ou dict validé en TaskPayload par Pydantic (#T281)
+        starting_agent   : Nom de l'agent de démarrage (ex: "planner")
+        on_event_callback: Coroutine async appelée à chaque événement moteur
+        config           : Configuration du moteur (config.json)
+
+    Returns:
+        dict : Réponse JSON normalisée avec status, response, history, agents_used
+    """
+    # ── Contrat de frontière (#T281) : le moteur attend un TaskPayload ──
+    # Avant : un dict passait la frontière (type annoncé `Any`) et mourait plus
+    # loin dans core/engine.py sur `initial_payload.metadata` — AttributeError
+    # qui ne nommait ni le paramètre fautif ni ce qui était attendu.
+    try:
+        initial_payload = _normaliser_payload_initial(initial_payload)
+    except ValueError as _ve:
+        logger.error(f"[PIPELINE] Payload initial refusé : {_ve}")
+        return {"status": "error", "error": f"❌ {_ve}"}
+
+    from core.serializers import global_state_to_dict, state_update_to_dict
+    from core.session_history import record_session_end, record_session_start
+
+    # ── Construction des dépendances ──
+    # [#T267] Montage extrait dans `monter_moteur()` pour que la REPRISE après
+    # approbation humaine obtienne exactement le même environnement d'exécution
+    # (mêmes agents, mêmes outils, même bridge MCP). Une reprise montée
+    # différemment exécuterait le plan approuvé dans un moteur qui n'est pas
+    # celui qui l'a produit — outils manquants en silence, donc échec inexplicable.
+    engine, registry, mcp_bridge, _gateway = monter_moteur(session_id, user_prompt, config)
 
     # ── Détection Multi-Intent avant exécution ──
     # Si la requête contient plusieurs intentions séparables, on les distribue
@@ -474,6 +551,33 @@ async def run_full_pipeline(
     response_text = "\n\n".join(str(r["result_data"]) for r in results) if results else ""
 
     agents_used = list({h.agent_name for h in final_state.history if h.agent_name})
+
+    # [#T267] Session suspendue en attente d'approbation humaine : ni « success »
+    # ni « error ». Avant, l'opérateur voyait « ⏱️ Timeout : l'exécution a dépassé
+    # 120 secondes » alors que le moteur attendait sagement son feu vert — le
+    # message désignait la mauvaise cause et l'approbation n'arrivait jamais.
+    if getattr(engine, "est_suspendue", lambda: False)():
+        request_id = getattr(engine, "_suspension_request_id", None)
+        record_session_end(
+            session_id, "waiting_approval",
+            agents_invoked=agents_used,
+            task_count=len(final_state.history),
+            result_summary=f"En attente d'approbation ({request_id})",
+        )
+        await _cleanup_mcp(mcp_bridge)
+        return {
+            "status": "waiting_approval",
+            "session_id": session_id,
+            "request_id": request_id,
+            "response": (
+                "⏸️ Le plan contient des tâches à risque et attend votre approbation. "
+                "L'exécution reprendra exactement sur ce plan une fois approuvé."
+            ),
+            "history": history_dicts,
+            "agents_used": agents_used,
+            "engine_state": global_state_to_dict(final_state),
+        }
+
     record_session_end(
         session_id, "success",
         agents_invoked=agents_used,
@@ -498,7 +602,9 @@ async def run_full_pipeline(
     try:
         from core.event_store import get_event_store
         _es     = get_event_store()
-        _source = initial_payload.metadata.get("source", "") if hasattr(initial_payload, "metadata") else ""
+        # [#T281] La frontière garantit un TaskPayload : metadata est toujours un
+        # dict (défaut Pydantic), le hasattr est devenu inutile.
+        _source = initial_payload.metadata.get("source", "")
         asyncio.create_task(_es.log(
             "response_sent", source=_source, agent="|".join(agents_used),
             session_id=session_id,
@@ -520,7 +626,7 @@ async def run_full_pipeline(
 async def run_multi_intent_pipeline(
     intents: list,
     session_id: str,
-    initial_payload: Any,
+    initial_payload: TaskPayload,
     starting_agent: str,
     engine,
     on_event_callback,
@@ -535,7 +641,8 @@ async def run_multi_intent_pipeline(
     Args:
         intents:          Liste de sous-requêtes (strings)
         session_id:       ID de session
-        initial_payload:  Payload de référence (cloné par intent)
+        initial_payload:  TaskPayload de référence (cloné par intent) — la
+                          frontière de run_full_pipeline garantit ce type (#T281)
         starting_agent:   Agent de démarrage
         engine:           Instance Engine (déjà configurée)
         on_event_callback: Callback SSE
@@ -567,11 +674,9 @@ async def run_multi_intent_pipeline(
             # Cloner le payload et remplacer l'objectif
             import copy
             sub_payload = copy.deepcopy(initial_payload)
-            # Adapter selon le type de payload (dataclass ou dict)
-            if hasattr(sub_payload, 'task_objective'):
-                sub_payload.task_objective = intent
-            elif isinstance(sub_payload, dict):
-                sub_payload['task_objective'] = intent
+            # [#T281] La frontière garantit un TaskPayload : plus besoin
+            # d'adapter selon le type (dataclass ou dict).
+            sub_payload.task_objective = intent
 
             sub_state = await asyncio.wait_for(
                 engine.run(sub_payload, starting_agent),
@@ -706,6 +811,14 @@ async def run_engine_background(objective: str, on_event_callback, session_id: s
             session_id = f"bg_{_uuid.uuid4().hex[:8]}"
         gateway = LLMGateway()
 
+        # [#T277] Une session de fond héritait du défaut de 120 s, calibré pour
+        # le chemin interactif où un humain attend. Ici personne n'attend
+        # (fire-and-forget) : la borne n'est là que pour éviter une session
+        # immortelle. À 120 s, le Planner servi, il restait quelques dizaines de
+        # secondes pour le DAG, la revue et la finalisation — d'où des sessions
+        # tuées en cours de route.
+        from core.fenetres_execution import duree_session_fond_s
+
         result = await run_full_pipeline(
             user_prompt=objective,
             session_id=session_id,
@@ -713,6 +826,7 @@ async def run_engine_background(objective: str, on_event_callback, session_id: s
             starting_agent=starting_agent,
             on_event_callback=on_event_callback,
             config=config,
+            timeout_seconds=duree_session_fond_s(),
         )
 
         async with state.execution_lock:
@@ -836,12 +950,12 @@ async def stream_discussion_fast_path_sse(
     """
     import json
 
-    from core.vocal_tts_cache import sanitize_discussion_tts
     from core.vocal_abort import (
         is_vocal_aborted,
         register_vocal_stream,
         unregister_vocal_stream,
     )
+    from core.vocal_tts_cache import sanitize_discussion_tts
 
     register_vocal_stream(session_id, conversation_id=conversation_id)
 

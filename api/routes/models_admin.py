@@ -6,19 +6,19 @@ et de configuration des modèles directement en base de données.
 """
 
 import logging
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
 
 from core.models_db import (
-    upsert_model,
-    upsert_provider,
-    upsert_api_key,
-    upsert_subscription,
+    get_all_api_keys,
     get_model,
     get_provider,
-    get_all_api_keys,
-    get_subscriptions
+    get_subscriptions,
+    upsert_api_key,
+    upsert_model,
+    upsert_provider,
+    upsert_subscription,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,60 +33,61 @@ router = APIRouter(tags=["Administration Modèles"])
 class ModelUpdateBody(BaseModel):
     id: str
     provider_id: str
-    display_name: Optional[str] = None
-    status: Optional[str] = "active"
-    tier: Optional[str] = None
-    context_input: Optional[int] = None
-    context_output: Optional[int] = None
-    cost_input_per_m: Optional[float] = None
-    cost_output_per_m: Optional[float] = None
-    cost_cached_per_m: Optional[float] = None
-    currency: Optional[str] = "USD"
-    supports_thinking: Optional[int] = 0
-    supports_tools: Optional[int] = 0
-    supports_vision: Optional[int] = 0
-    supports_audio: Optional[int] = 0
-    supports_json_mode: Optional[int] = 0
-    supports_streaming: Optional[int] = 0
-    supports_search_grounding: Optional[int] = 0
-    speciality: Optional[str] = None
-    recommended_use: Optional[str] = None
-    notes: Optional[str] = None
+    display_name: str | None = None
+    status: str | None = "active"
+    tier: str | None = None
+    routing_tier: str | None = None
+    context_input: int | None = None
+    context_output: int | None = None
+    cost_input_per_m: float | None = None
+    cost_output_per_m: float | None = None
+    cost_cached_per_m: float | None = None
+    currency: str | None = "USD"
+    supports_thinking: int | None = 0
+    supports_tools: int | None = 0
+    supports_vision: int | None = 0
+    supports_audio: int | None = 0
+    supports_json_mode: int | None = 0
+    supports_streaming: int | None = 0
+    supports_search_grounding: int | None = 0
+    speciality: str | None = None
+    recommended_use: str | None = None
+    notes: str | None = None
 
 
 class ProviderUpdateBody(BaseModel):
     id: str
     name: str
-    type: Optional[str] = "unknown"
-    api_endpoint: Optional[str] = None
-    auth_method: Optional[str] = None
-    confidentiality: Optional[str] = "non confidentiel"
-    cascade_priority: Optional[float] = 5.0
-    notes: Optional[str] = None
+    type: str | None = "unknown"
+    api_endpoint: str | None = None
+    auth_method: str | None = None
+    confidentiality: str | None = "non confidentiel"
+    cascade_priority: float | None = 5.0
+    notes: str | None = None
 
 
 class ApiKeyUpdateBody(BaseModel):
     id: str
     provider_id: str
     env_var: str
-    project_name: Optional[str] = None
-    key_type: Optional[str] = "free"
-    quota_rpm: Optional[int] = None
-    quota_rpd: Optional[int] = None
-    quota_tpm: Optional[int] = None
-    status: Optional[str] = "active"
+    project_name: str | None = None
+    key_type: str | None = "free"
+    quota_rpm: int | None = None
+    quota_rpd: int | None = None
+    quota_tpm: int | None = None
+    status: str | None = "active"
 
 
 class SubscriptionUpdateBody(BaseModel):
     id: str
     name: str
-    cost_monthly_usd: Optional[float] = 0.0
-    rolling_window_hours: Optional[int] = 24
-    hourly_token_limit: Optional[int] = None
-    monthly_token_limit: Optional[int] = None
-    estimated_messages_limit: Optional[int] = None
-    advantages: Optional[str] = None
-    recommended_use: Optional[str] = None
+    cost_monthly_usd: float | None = 0.0
+    rolling_window_hours: int | None = 24
+    hourly_token_limit: int | None = None
+    monthly_token_limit: int | None = None
+    estimated_messages_limit: int | None = None
+    advantages: str | None = None
+    recommended_use: str | None = None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -95,12 +96,24 @@ class SubscriptionUpdateBody(BaseModel):
 
 @router.post("/api/models/update")
 def route_update_model(body: ModelUpdateBody):
-    """Met à jour ou crée un modèle dans models_registry.db."""
+    """
+    Met à jour ou crée un modèle dans models_registry.db.
+
+    Sémantique merge-patch : les champs non fournis (None) sont repris du modèle
+    existant plutôt que remis à leur valeur par défaut — l'INSERT OR REPLACE
+    d'upsert_model effaçait sinon routing_tier (et ttft_ms, notes…) à chaque
+    édition partielle depuis l'IHM (bug de la même famille que #T160).
+    """
     try:
-        success = upsert_model(body.id, **body.dict())
+        # Base = ligne existante complète (préserve aussi les colonnes hors body
+        # comme ttft_ms/throughput_tps), surchargée par les champs réellement fournis.
+        provided = {k: v for k, v in body.dict().items() if v is not None}
+        existing = get_model(body.id) or {}
+        merged = {**existing, **provided}
+        success = upsert_model(body.id, **merged)
         if not success:
             raise HTTPException(status_code=500, detail="Échec de l'écriture en base de données.")
-        
+
         # Mettre à jour l'export passif pricing_strategy.json (rétrocompatibilité)
         try:
             from core.models_db import export_to_pricing_json
@@ -134,7 +147,7 @@ def route_update_key(body: ApiKeyUpdateBody):
         success = upsert_api_key(body.id, **body.dict())
         if not success:
             raise HTTPException(status_code=500, detail="Échec de l'écriture en base de données.")
-        
+
         # Rafraîchir les quotas temps réel pour cette clé
         try:
             from core.quota_collector import refresh_all_quotas
@@ -155,7 +168,7 @@ def route_update_subscription(body: SubscriptionUpdateBody):
         success = upsert_subscription(body.id, **body.dict())
         if not success:
             raise HTTPException(status_code=500, detail="Échec de l'écriture en base de données.")
-        
+
         # Mettre à jour l'export passif pricing_strategy.json (rétrocompatibilité)
         try:
             from core.models_db import export_to_pricing_json

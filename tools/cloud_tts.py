@@ -19,11 +19,12 @@ Architecture :
   - Fallback automatique vers Gemini TTS si Cloud TTS échoue
 """
 
-import os
 import base64
 import logging
+import os
+from typing import Literal
+
 import requests
-from typing import Optional, Literal
 
 logger = logging.getLogger("tools.cloud_tts")
 
@@ -54,32 +55,32 @@ class CloudTTSProvider:
         audio_path = tts.synthesize("Bonjour, je suis votre assistant.")
         audio_path = tts.synthesize("<speak>Bonjour <break time='500ms'/> monde</speak>", ssml=True)
     """
-    
+
     BASE_URL = "https://texttospeech.googleapis.com/v1/text:synthesize"
-    
-    def __init__(self, api_key: Optional[str] = None):
+
+    def __init__(self, api_key: str | None = None):
         """
         Args:
             api_key: Clé API Google (défaut: GEMINI_API_KEY du .env)
         """
         self.api_key = api_key or os.environ.get("CLOUD_API_KEY", "")
         self.available = bool(self.api_key)
-        
+
         if not self.available:
             logger.warning("[Cloud TTS] Aucune clé API configurée")
-    
+
     def synthesize(
         self,
         text: str,
-        output_path: Optional[str] = None,
+        output_path: str | None = None,
         language: str = "fr-FR",
-        voice_name: Optional[str] = None,
+        voice_name: str | None = None,
         voice_gender: str = "FEMALE",
         ssml: bool = False,
         speaking_rate: float = 1.0,
         pitch: float = 0.0,
         audio_encoding: Literal["MP3", "LINEAR16", "OGG_OPUS"] = "MP3",
-    ) -> Optional[str]:
+    ) -> str | None:
         """Synthétise du texte ou SSML en audio.
         
         Args:
@@ -99,14 +100,14 @@ class CloudTTSProvider:
         if not self.available:
             logger.error("[Cloud TTS] Provider non disponible")
             return None
-        
+
         # Sélection automatique de la voix
         if not voice_name:
             if language.startswith("fr"):
                 voices = FRENCH_VOICES
             else:
                 voices = ENGLISH_VOICES
-            
+
             gender_key = "female" if voice_gender.upper() == "FEMALE" else "male"
             # Préférer Neural2 > WaveNet > Standard
             for quality in ["neural2", "wavenet", "standard"]:
@@ -114,7 +115,7 @@ class CloudTTSProvider:
                 if key in voices:
                     voice_name = voices[key]["name"]
                     break
-        
+
         # Construction du payload
         input_field = "ssml" if ssml else "text"
         payload = {
@@ -129,10 +130,10 @@ class CloudTTSProvider:
                 "pitch": pitch,
             },
         }
-        
+
         # Appel API
         url = f"{self.BASE_URL}?key={self.api_key}"
-        
+
         try:
             resp = requests.post(
                 url,
@@ -140,42 +141,42 @@ class CloudTTSProvider:
                 json=payload,
                 timeout=30,
             )
-            
+
             if resp.status_code != 200:
                 error_msg = resp.text[:300]
                 logger.error(f"[Cloud TTS] Erreur HTTP {resp.status_code}: {error_msg}")
                 return None
-            
+
             data = resp.json()
             audio_content = data.get("audioContent", "")
-            
+
             if not audio_content:
                 logger.error("[Cloud TTS] Pas de contenu audio dans la réponse")
                 return None
-            
+
             # Décodage base64 → fichier audio
             audio_bytes = base64.b64decode(audio_content)
-            
+
             # Chemin de sortie
             ext = {"MP3": ".mp3", "LINEAR16": ".wav", "OGG_OPUS": ".ogg"}.get(audio_encoding, ".mp3")
             if not output_path:
                 import tempfile
                 output_path = os.path.join(tempfile.gettempdir(), f"cloud_tts_output{ext}")
-            
+
             with open(output_path, "wb") as f:
                 f.write(audio_bytes)
-            
+
             logger.info(
                 f"[Cloud TTS] ✅ Audio généré : {output_path} "
                 f"({len(audio_bytes)} bytes, voix={voice_name}, "
                 f"chars={len(text)})"
             )
             return output_path
-            
+
         except Exception as e:
             logger.error(f"[Cloud TTS] Erreur : {e}")
             return None
-    
+
     def list_voices(self, language: str = "fr-FR") -> list:
         """Liste les voix disponibles pour une langue.
         
@@ -186,12 +187,12 @@ class CloudTTSProvider:
             Liste des voix avec nom, genre et type
         """
         url = f"https://texttospeech.googleapis.com/v1/voices?languageCode={language}&key={self.api_key}"
-        
+
         try:
             resp = requests.get(url, timeout=10)
             if resp.status_code != 200:
                 return []
-            
+
             voices = resp.json().get("voices", [])
             return [
                 {
@@ -230,22 +231,22 @@ def cloud_tts_synthesize(
         Chemin du fichier audio généré ou message d'erreur.
     """
     tts = CloudTTSProvider()
-    
+
     if not tts.available:
         return "Erreur: Cloud TTS non disponible (clé API manquante)"
-    
+
     # Résolution du nom de voix
     voices = FRENCH_VOICES if language.startswith("fr") else ENGLISH_VOICES
     voice_info = voices.get(voice)
     voice_name = voice_info["name"] if voice_info else None
-    
+
     result = tts.synthesize(
         text=text,
         output_path=output_path or None,
         language=language,
         voice_name=voice_name,
     )
-    
+
     if result:
         return f"✅ Audio généré : {result} (voix: {voice_name or voice})"
     else:

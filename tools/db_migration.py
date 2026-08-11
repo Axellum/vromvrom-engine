@@ -40,7 +40,6 @@ import shutil
 import sqlite3
 import time
 from dataclasses import dataclass
-from typing import List
 
 # Bases legacy à fusionner puis retirer (non écrites par le code courant).
 LEGACY_DBS = ["session_history.db", "routing_metrics.db"]
@@ -52,7 +51,7 @@ class MergePlan:
     table: str
     source_db: str           # nom de fichier (ex: "routing_metrics.db")
     dest_db: str             # base canonique (ex: "moteur_runtime.db")
-    natural_key: List[str]   # colonnes formant la clé de dédup (hors surrogate id)
+    natural_key: list[str]   # colonnes formant la clé de dédup (hors surrogate id)
     drop_source: bool = True # supprimer la table source après fusion réussie
     note: str = ""
 
@@ -69,7 +68,7 @@ class DropPlan:
 # Source = base legacy ; dest = moteur_runtime.db ; dédup par clé naturelle.
 # Les lignes runtime existantes sont prioritaires (NOT EXISTS) ; on n'ajoute que
 # l'historique legacy absent. Colonnes = intersection (runtime conserve son schéma riche).
-MERGE_PLANS: List[MergePlan] = [
+MERGE_PLANS: list[MergePlan] = [
     MergePlan("routing_decisions", "routing_metrics.db", "moteur_runtime.db",
               ["timestamp", "user_prompt_hash", "session_id"]),
     MergePlan("model_elo_scores", "routing_metrics.db", "moteur_runtime.db",
@@ -89,7 +88,7 @@ MERGE_PLANS: List[MergePlan] = [
               note="dédup sur session_id (index unique) ; runtime prioritaire"),
 ]
 
-DROP_PLANS: List[DropPlan] = []
+DROP_PLANS: list[DropPlan] = []
 
 
 @dataclass
@@ -106,7 +105,7 @@ def _connect(path: str, read_only: bool = True) -> sqlite3.Connection:
     return sqlite3.connect(os.path.abspath(path))
 
 
-def _table_columns(conn: sqlite3.Connection, table: str) -> List[str]:
+def _table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [r[1] for r in conn.execute(f"PRAGMA table_info('{table}')").fetchall()]
 
 
@@ -117,7 +116,7 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
-def _common_columns(dest_cols: List[str], src_cols: List[str]) -> List[str]:
+def _common_columns(dest_cols: list[str], src_cols: list[str]) -> list[str]:
     """Colonnes communes hors surrogate 'id' (préserve l'ordre de la destination)."""
     src_set = set(src_cols)
     return [c for c in dest_cols if c != "id" and c in src_set]
@@ -143,7 +142,7 @@ def _backup_db(path: str) -> str:
     return dst
 
 
-def _build_insert_sql(table: str, cols: List[str], natural_key: List[str]) -> str:
+def _build_insert_sql(table: str, cols: list[str], natural_key: list[str]) -> str:
     """INSERT colonnes explicites depuis src.<table>, dédup par clé naturelle (NULL-safe)."""
     col_list = ", ".join(f'"{c}"' for c in cols)
     # Calculé hors f-string : un backslash dans une expression f-string est interdit (< Py3.12).
@@ -157,7 +156,7 @@ def _build_insert_sql(table: str, cols: List[str], natural_key: List[str]) -> st
     )
 
 
-def _count_would_insert(dest_conn: sqlite3.Connection, table: str, natural_key: List[str]) -> int:
+def _count_would_insert(dest_conn: sqlite3.Connection, table: str, natural_key: list[str]) -> int:
     where = " AND ".join(f'd."{k}" IS s."{k}"' for k in natural_key)
     sql = (
         f'SELECT COUNT(*) FROM src."{table}" s '
@@ -166,8 +165,8 @@ def _count_would_insert(dest_conn: sqlite3.Connection, table: str, natural_key: 
     return dest_conn.execute(sql).fetchone()[0]
 
 
-def run(db_dir: str, apply: bool, do_backup: bool = True) -> List[StepResult]:
-    results: List[StepResult] = []
+def run(db_dir: str, apply: bool, do_backup: bool = True) -> list[StepResult]:
+    results: list[StepResult] = []
     mode = "APPLY" if apply else "DRY-RUN"
     print("=" * 78)
     print(f" MIGRATION DE CONSOLIDATION SQLITE — {mode} — {db_dir}")

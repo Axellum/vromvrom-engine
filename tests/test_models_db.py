@@ -19,7 +19,7 @@ class TestModelsDB:
 
     def test_import(self):
         """Le module s'importe sans erreur."""
-        from core.models_db import get_model, get_active_models, get_routing_score
+        from core.models_db import get_active_models, get_model, get_routing_score
         assert callable(get_model)
         assert callable(get_active_models)
         assert callable(get_routing_score)
@@ -73,10 +73,39 @@ class TestModelsDB:
             assert m["provider_id"] == "local"
 
     def test_get_models_for_tier(self):
-        """Récupération par tier retourne des modèles triés."""
+        """Récupération par routing_tier (capacité leger/moyen/fort) retourne des modèles triés."""
         from core.models_db import get_models_for_tier
-        free_models = get_models_for_tier("free")
-        assert len(free_models) >= 3, f"Attendu >= 3 modèles free, reçu {len(free_models)}"
+        fort_models = get_models_for_tier("fort")
+        assert len(fort_models) >= 3, f"Attendu >= 3 modèles fort, reçu {len(fort_models)}"
+        for m in fort_models:
+            assert m["routing_tier"] == "fort"
+
+    def test_get_models_for_tier_automatique_no_filter(self):
+        """routing_tier='automatique' ne filtre pas : retourne tous les modèles actifs."""
+        from core.models_db import get_active_models, get_models_for_tier
+        assert len(get_models_for_tier("automatique")) == len(get_active_models())
+
+    def test_status_inactive_gates_routing_tier(self):
+        """Un modèle status='inactive' disparaît de get_models_for_tier() sans toucher au code."""
+        from core.models_db import _get_connection, get_models_for_tier
+
+        test_id = "test_fixture_inactive_gate_model"
+        conn = _get_connection()
+        try:
+            conn.execute(
+                """INSERT INTO models (id, provider_id, display_name, status, routing_tier)
+                   VALUES (?, 'local', 'Fixture Test Model', 'active', 'fort')""",
+                (test_id,),
+            )
+            conn.commit()
+            assert test_id in {m["id"] for m in get_models_for_tier("fort")}
+
+            conn.execute("UPDATE models SET status = 'inactive' WHERE id = ?", (test_id,))
+            conn.commit()
+            assert test_id not in {m["id"] for m in get_models_for_tier("fort")}
+        finally:
+            conn.execute("DELETE FROM models WHERE id = ?", (test_id,))
+            conn.commit()
 
     def test_get_model_cost(self):
         """Les tarifs sont correctement stockés."""
@@ -165,7 +194,7 @@ class TestModelsDB:
 
     def test_upsert_model_idempotent(self):
         """L'upsert d'un modèle existant ne crée pas de doublon."""
-        from core.models_db import upsert_model, get_model, get_db_stats
+        from core.models_db import get_db_stats, get_model, upsert_model
         stats_before = get_db_stats()
 
         # upsert_model fait un INSERT OR REPLACE sur TOUTES les colonnes — tout champ non

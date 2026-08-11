@@ -17,6 +17,8 @@ import sqlite3
 
 from fastapi import APIRouter
 
+from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/setup", tags=["Installation"])
@@ -36,7 +38,6 @@ _PROVIDER_KEYS = [
     ("MINIMAX_API_KEY", "MiniMax"),
     ("DEEPINFRA_API_KEY", "DeepInfra"),
     ("ZHIPU_API_KEY", "Zhipu / GLM"),
-    ("GITHUB_TOKEN", "GitHub Models"),
 ]
 
 
@@ -236,13 +237,13 @@ async def setup_diagnostics():
 
     # ── 5. Home Assistant ─────────────────────────────────────────────
     ha_checks = []
-    ha_token = os.environ.get("HASS_TOKEN") or os.environ.get("HA_TOKEN")
+    ha_token = get_ha_token()
     ha_url = os.environ.get("HASS_URL") or os.environ.get("HA_URL")
     if not ha_token:
         ha_checks.append(_check(
             "ha_token", "Token Home Assistant", "warn",
             "Absent : les commandes domotiques et l'assistant vocal sont hors service.",
-            "Créer un token longue durée dans HA (profil utilisateur) et le poser dans HASS_TOKEN.",
+            "Créer un token longue durée dans HA (profil utilisateur) et le poser dans HASS_TOKEN (ou HA_TOKEN).",
         ))
     else:
         ha_checks.append(_check("ha_token", "Token Home Assistant", "ok", "Configuré."))

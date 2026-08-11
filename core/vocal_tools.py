@@ -13,6 +13,8 @@ import logging
 import os
 from typing import Any
 
+from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ROUNDS = 2
@@ -106,7 +108,7 @@ VOCAL_TOOLS_OPENAI: list[dict[str, Any]] = [
 
 def _ha_credentials() -> tuple[str, str]:
     ha_url = os.environ.get("HA_URL") or os.environ.get("HASS_URL") or "http://${HA_HOST:-192.168.1.x}:8123"
-    ha_token = os.environ.get("HA_TOKEN") or os.environ.get("HASS_TOKEN") or ""
+    ha_token = get_ha_token()
     return ha_url.rstrip("/"), ha_token
 
 
@@ -131,7 +133,7 @@ def _tool_ha_list(query: str, domain: str = "") -> str:
 
     ha_url, ha_token = _ha_credentials()
     if not ha_token:
-        return "Erreur: HASS_TOKEN absent."
+        return "Erreur: token Home Assistant absent (HASS_TOKEN/HA_TOKEN)."
     try:
         resp = _ha_session().get(
             f"{ha_url}/api/states",
@@ -186,7 +188,7 @@ def _tool_ha_get_state(entity_id: str) -> str:
 
     ha_url, ha_token = _ha_credentials()
     if not ha_token:
-        return "Erreur: HASS_TOKEN absent."
+        return "Erreur: token Home Assistant absent (HASS_TOKEN/HA_TOKEN)."
     try:
         resp = _ha_session().get(
             f"{ha_url}/api/states/{entity_id}",
@@ -260,7 +262,7 @@ def _tool_ha_call_service(
 
     ha_url, ha_token = _ha_credentials()
     if not ha_token:
-        return "Erreur: HASS_TOKEN absent."
+        return "Erreur: token Home Assistant absent (HASS_TOKEN/HA_TOKEN)."
 
     try:
         resp = _ha_session().post(

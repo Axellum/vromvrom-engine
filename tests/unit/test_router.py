@@ -9,8 +9,8 @@ Vérifie :
 - La détection de la routine FIN DE SESSION
 """
 
-import sys
 import os
+import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
@@ -27,14 +27,14 @@ class TestRouterClassification:
         self.router.rag_engine = None
         self.router.llm_gateway = None
         self.router.config = {}
-        
+
         # Mock du ContextLoader pour éviter de charger les fichiers réels
         from unittest.mock import MagicMock
         self.router.context_loader = MagicMock()
         self.router.context_loader.load_all.return_value = None
         self.router.context_loader.reload_if_stale.return_value = None
         self.router.context_loader.get_context_for_categories.return_value = ""
-        
+
         # Mock des mémoires épisodique et sémantique
         self.router.episode_store = MagicMock()
         del self.router.episode_store.query_relevant_episodes_async
@@ -42,7 +42,7 @@ class TestRouterClassification:
         self.router.fact_store = MagicMock()
         del self.router.fact_store.get_facts_for_context_async
         self.router.fact_store.get_facts_for_context.return_value = ""
-        
+
         # Initialiser les catégories (copie de router.py)
         self.router.categories = {
             "casual_chat": {
@@ -114,7 +114,7 @@ class TestRouterDeterministicShortcuts:
         self.router.rag_engine = None
         self.router.llm_gateway = None
         self.router.config = {}
-        
+
         from unittest.mock import MagicMock
         self.router.context_loader = MagicMock()
         self.router.context_loader.load_all.return_value = None
@@ -177,7 +177,7 @@ class TestRouterComplexity:
         self.router.rag_engine = None
         self.router.llm_gateway = None
         self.router.config = {}
-        
+
         from unittest.mock import MagicMock
         self.router.context_loader = MagicMock()
         self.router.context_loader.load_all.return_value = None
@@ -224,7 +224,7 @@ class TestRouterFinDeSession:
         self.router.rag_engine = None
         self.router.llm_gateway = None
         self.router.config = {}
-        
+
         from unittest.mock import MagicMock
         self.router.context_loader = MagicMock()
         self.router.context_loader.load_all.return_value = None

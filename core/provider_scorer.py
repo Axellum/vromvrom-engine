@@ -8,7 +8,6 @@ ne fait plus que résoudre le tier, instancier les providers et trier via cette
 classe ; toute la logique de scoring vit ici.
 """
 import logging
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +40,7 @@ class ProviderScorer:
         # Évite N ouvertures/fermetures SQLite dans la closure du tri + ne bloque pas
         # l'event loop car appelé depuis un thread via _DB_EXECUTOR si run_in_executor
         # est utilisé en amont.
-        self._bulk_scores: Dict[str, float] = {}
+        self._bulk_scores: dict[str, float] = {}
         try:
             from core.models_db import get_bulk_routing_scores
             self._bulk_scores = get_bulk_routing_scores(model_names)
@@ -75,8 +74,8 @@ class ProviderScorer:
         Pénalise graduellement les modèles approchant de la saturation (>70%).
         Pénalise DeepSeek si le solde prépayé est critique (<1$).
         """
-        from core.token_tracker import classify_model_channel
         from core.llm_gateway import get_live_latency_penalty
+        from core.token_tracker import classify_model_channel
 
         m_lower = model_name.lower()
         channel = classify_model_channel(model_name)
@@ -132,7 +131,7 @@ class ProviderScorer:
         )
         return total_score
 
-    def sort_providers(self, providers_list: list, elo_order: Optional[list] = None) -> list:
+    def sort_providers(self, providers_list: list, elo_order: list | None = None) -> list:
         """
         Trie une liste [(model_name, provider), ...] par Elo (si fourni, priorité
         principale) puis par score coût/quota/latence (départage) ; sinon par

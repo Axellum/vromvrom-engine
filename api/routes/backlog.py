@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Antigravity Engine  - Router d'API pour le Backlog d'Agents
 Conçu pour une fiabilité maximale sous Windows, avec gestion transactionnelle des branches Git
@@ -7,19 +6,14 @@ et contrôle strict des budgets d'exécution.
 Auteur: Équipe d'Ingénierie Domotique & IA DeepMind
 """
 
-from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
 import logging
 import re
-from core.backlog_db import (
-    add_task, 
-    delete_task, 
-    get_all_tasks, 
-    get_task_by_id, 
-    get_task_stats, 
-    update_task_status
-)
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
+
+from core.backlog_db import add_task, delete_task, get_all_tasks, get_task_by_id, get_task_stats, update_task_status
 from core.budget_guard import BudgetGuard
 from tools.git_safety import _run_git
 
@@ -40,13 +34,13 @@ class TaskCreate(BaseModel):
     title: str = Field(..., description="Titre de la tâche")
     description: str = Field(..., description="Description détaillée de la tâche")
     priority: int = Field(2, description="Priorité de la tâche (1: Haute, 2: Moyenne, 3: Basse)")
-    scheduled_at: Optional[float] = Field(None, description="Timestamp de planification optionnel")
+    scheduled_at: float | None = Field(None, description="Timestamp de planification optionnel")
 
 class TaskUpdate(BaseModel):
-    status: Optional[str] = Field(None, description="Nouveau statut de la tâche")
-    git_branch: Optional[str] = Field(None, description="Branche Git associée")
+    status: str | None = Field(None, description="Nouveau statut de la tâche")
+    git_branch: str | None = Field(None, description="Branche Git associée")
 
-@router.get("/tasks", response_model=List[Dict[str, Any]])
+@router.get("/tasks", response_model=list[dict[str, Any]])
 async def get_tasks():
     """
     Récupère l'ensemble des tâches du backlog.
@@ -67,9 +61,9 @@ async def create_task(payload: TaskCreate):
     """
     try:
         task_id = await add_task(
-            payload.title, 
-            payload.description, 
-            payload.priority, 
+            payload.title,
+            payload.description,
+            payload.priority,
             payload.scheduled_at
         )
         return {"status": "success", "task_id": task_id}
@@ -120,7 +114,7 @@ async def update_task(id: int, payload: TaskUpdate):
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Échec de la fusion Git. Fusion annulée. Erreur: {str(e)}"
                 )
-            
+
             try:
                 # Étape 3 : Nettoyage de la branche locale fusionnée
                 _run_git(["branch", "-d", branch])
@@ -138,7 +132,7 @@ async def update_task(id: int, payload: TaskUpdate):
                 _run_git(["branch", "-D", branch])
             except Exception as e:
                 logger.error(f"Erreur lors du nettoyage de la branche rejetée {branch}: {e}")
-        
+
         # Mise à jour de la tâche en base comme abandonnée
         await update_task_status(id, "abandoned", git_branch=None)
 

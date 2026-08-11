@@ -4,13 +4,12 @@ Gère à la fois les épisodes stockés sous forme de fichiers JSON (EpisodeStor
 et les fonctions d'historique de sessions en base de données SQLite (MemoryDB).
 """
 
-import os
-import re
 import json
 import logging
+import os
+import re
 import time
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +35,7 @@ class EpisodeStore:
         self.episodes_dir = episodes_dir
         os.makedirs(self.episodes_dir, exist_ok=True)
         # Cache en mémoire des épisodes (chargé au premier accès)
-        self._cache: Optional[List[dict]] = None
+        self._cache: list[dict] | None = None
         # Stopwords français simplifiés pour le scoring
         self._stopwords = {
             "le", "la", "les", "un", "une", "des", "ce", "cet", "cette", "ces",
@@ -47,12 +46,12 @@ class EpisodeStore:
         }
         logger.info(f"[EPISODES] Dossier épisodes : {self.episodes_dir}")
 
-    def _tokenize(self, text: str) -> List[str]:
+    def _tokenize(self, text: str) -> list[str]:
         """Découpe un texte en mots, filtre les stopwords."""
         words = re.findall(r'[a-zA-Z0-9_\-àâéèêëîïôöùûüç]+', text.lower())
         return [w for w in words if w not in self._stopwords and len(w) > 1]
 
-    def _extract_tags(self, text: str) -> List[str]:
+    def _extract_tags(self, text: str) -> list[str]:
         """Extrait des tags pertinents à partir d'un texte (mots significatifs)."""
         tokens = self._tokenize(text)
         # Garder les mots qui apparaissent au moins une fois et sont assez longs
@@ -63,9 +62,9 @@ class EpisodeStore:
         session_id: str,
         objective: str,
         result_summary: str,
-        errors: List[str] = None,
-        lessons: List[str] = None,
-        entities_touched: Dict[str, str] = None,
+        errors: list[str] = None,
+        lessons: list[str] = None,
+        entities_touched: dict[str, str] = None,
         total_tokens: int = 0,
         total_cost_usd: float = 0.0,
         execution_phase: str = "completed",
@@ -112,7 +111,7 @@ class EpisodeStore:
             logger.error(f"[EPISODES] Échec de sauvegarde : {e}")
             return ""
 
-    def _load_all_episodes(self, include_expired: bool = False) -> List[dict]:
+    def _load_all_episodes(self, include_expired: bool = False) -> list[dict]:
         """
         Charge tous les épisodes depuis le dossier (avec cache).
         Filtre automatiquement les épisodes expirés (TTL 30/90j).
@@ -134,7 +133,7 @@ class EpisodeStore:
                 continue
             filepath = os.path.join(self.episodes_dir, filename)
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
+                with open(filepath, encoding='utf-8') as f:
                     episode = json.load(f)
 
                 # Filtrage TTL
@@ -189,7 +188,7 @@ class EpisodeStore:
                 continue
             filepath = os.path.join(self.episodes_dir, filename)
             try:
-                with open(filepath, 'r', encoding='utf-8') as f:
+                with open(filepath, encoding='utf-8') as f:
                     episode = json.load(f)
 
                 created_str = episode.get("created_at") or episode.get("timestamp", "")
@@ -277,7 +276,7 @@ class EpisodeStore:
 
         return "\n".join(parts)
 
-    def get_recent_episodes(self, n: int = 5) -> List[dict]:
+    def get_recent_episodes(self, n: int = 5) -> list[dict]:
         """Retourne les N derniers épisodes chronologiquement."""
         episodes = self._load_all_episodes()
         return episodes[:n]
@@ -325,7 +324,7 @@ def upsert_episode(db, session_date: str, session_folder: str,
             conn.close()
 
 
-def search_episodes(db, query: str, limit: int = 10) -> List[Dict]:
+def search_episodes(db, query: str, limit: int = 10) -> list[dict]:
     """Recherche dans les résumés de sessions stockés dans la base SQLite."""
     conn = db._get_conn()
     try:

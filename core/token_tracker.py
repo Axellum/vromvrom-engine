@@ -1,8 +1,17 @@
-import os
+"""
+core/token_tracker.py — Agrégateur de tracking tokens et quotas glissants.
+
+Charge l'usage depuis core/runtime_db.py (table token_usage), classifie les
+modèles par canal (claude-cli-abo, gemini-free-flash, deepseek...) et compile
+les quotas (RPM/TPM/RPD/TPH) par fenêtre glissante. Source de vérité pour
+core/provider_scorer.py et core/quota_collector.py. Le barème de prix vient
+désormais de core/pricing.py (source unique pricing_strategy.json).
+"""
 import json
 import logging
-from threading import RLock
+import os
 from datetime import datetime, timedelta
+from threading import RLock
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +43,7 @@ def classify_model_channel(model: str) -> str:
     - Les modèles 'pro' → gemini-free-pro, les autres flash/etc → gemini-free-flash
     """
     m = model.lower()
-    
+
     # 1. Canaux CLI (abonnements mensuels) — identifiés par le suffixe '-cli'
     if "-cli" in m:
         if "claude" in m:
@@ -44,29 +53,30 @@ def classify_model_channel(model: str) -> str:
     # Alias direct sans suffixe
     if m == "claude":
         return "claude-cli-abo"
-    
+
     # 2. API payante GCP (pas de quota free tier)
     if "-paid" in m:
         return "gemini-paid-api"
-    
+
     # 3. Modèles Gemini (API Free Tier — la majorité des appels du moteur)
     if "gemini" in m:
         if "pro" in m:
             return "gemini-free-pro"
         else:
             return "gemini-free-flash"
-    
+
     # 4. DeepSeek API payante
     if "deepseek" in m:
         return "deepseek-api-payant"
-        
+
     # 5. MiniMax API payante
     if "minimax" in m:
         return "minimax-api-payant"
-    
+
     return "other"
 
 import sqlite3
+
 
 def load_usage() -> dict:
     """Charge les données agrégées depuis SQLite pour simuler l'ancienne structure JSON."""
@@ -74,7 +84,7 @@ def load_usage() -> dict:
         from core.runtime_db import get_connection
         conn = get_connection()
         conn.row_factory = sqlite3.Row
-        
+
         # 1. Charger total
         row_total = conn.execute("""
             SELECT 
@@ -84,14 +94,14 @@ def load_usage() -> dict:
                 COALESCE(SUM(cost_usd), 0.0) as cost
             FROM token_usage
         """).fetchone()
-        
+
         total = {
             "prompt_tokens": row_total["prompt"],
             "completion_tokens": row_total["completion"],
             "total_tokens": row_total["total"],
             "estimated_cost_usd": row_total["cost"]
         }
-        
+
         # 2. Charger models
         models = {}
         cursor_models = conn.execute("""
@@ -111,7 +121,7 @@ def load_usage() -> dict:
                 "total_tokens": row["total"],
                 "estimated_cost_usd": row["cost"]
             }
-            
+
         # 3. Charger sessions
         sessions = {}
         cursor_sessions = conn.execute("""
@@ -138,7 +148,7 @@ def load_usage() -> dict:
                 "estimated_cost_usd": row["cost"],
                 "models": {}
             }
-            
+
         # 4. Charger history (100 derniers appels)
         history = []
         cursor_history = conn.execute("""
@@ -154,7 +164,7 @@ def load_usage() -> dict:
                 "completion_tokens": row["completion_tokens"],
                 "cost_usd": row["cost_usd"]
             })
-            
+
         # 5. Charger real_billing depuis scoped_memory
         real_billing = {
             "gemini_gcp_cost_usd": 0.0,
@@ -175,7 +185,7 @@ def load_usage() -> dict:
                 real_billing.update(loaded_billing)
             except Exception:
                 pass
-                
+
         conn.close()
         return {
             "total": total,
@@ -206,13 +216,20 @@ def save_usage(data: dict):
     """Sauvegarde les données d'utilisation (no-op car stocké en direct dans SQLite)."""
     pass
 
-def update_real_billing(gcp_cost_usd: float = None, deepseek_balance_usd: float = None, claude_message_usage_pct: int = None, claude_summary_text: str = None):
+def update_real_billing(
+    gcp_cost_usd: float = None,
+    deepseek_balance_usd: float = None,
+    claude_message_usage_pct: int = None,
+    claude_summary_text: str = None,
+    anthropic_api_cost_usd: float = None,
+    gemini_subscription_summary: str = None,
+):
     """Met à jour les informations de facturation réelle dans scoped_memory SQLite."""
     try:
         from core.runtime_db import get_connection
         conn = get_connection()
         conn.row_factory = sqlite3.Row
-        
+
         # Charger la valeur existante
         real_billing = {
             "gemini_gcp_cost_usd": 0.0,
@@ -221,10 +238,14 @@ def update_real_billing(gcp_cost_usd: float = None, deepseek_balance_usd: float 
             "deepseek_last_sync": None,
             "claude_message_usage_pct": None,
             "claude_summary_text": None,
-            "claude_last_sync": None
+            "claude_last_sync": None,
+            "anthropic_api_cost_usd": None,
+            "anthropic_api_last_sync": None,
+            "gemini_subscription_summary": None,
+            "gemini_subscription_last_sync": None,
         }
         row_billing = conn.execute("""
-            SELECT value_json FROM scoped_memory 
+            SELECT value_json FROM scoped_memory
             WHERE session_id = 'global' AND scope_id = 'global' AND key = 'real_billing'
         """).fetchone()
         if row_billing and row_billing["value_json"]:
@@ -233,7 +254,7 @@ def update_real_billing(gcp_cost_usd: float = None, deepseek_balance_usd: float 
                 real_billing.update(loaded_billing)
             except Exception:
                 pass
-                
+
         # Mettre à jour avec les nouveaux paramètres
         now_str = datetime.now().isoformat()
         if gcp_cost_usd is not None:
@@ -248,7 +269,13 @@ def update_real_billing(gcp_cost_usd: float = None, deepseek_balance_usd: float 
         if claude_summary_text is not None:
             real_billing["claude_summary_text"] = claude_summary_text
             real_billing["claude_last_sync"] = now_str
-            
+        if anthropic_api_cost_usd is not None:
+            real_billing["anthropic_api_cost_usd"] = anthropic_api_cost_usd
+            real_billing["anthropic_api_last_sync"] = now_str
+        if gemini_subscription_summary is not None:
+            real_billing["gemini_subscription_summary"] = gemini_subscription_summary
+            real_billing["gemini_subscription_last_sync"] = now_str
+
         # Écrire dans scoped_memory
         conn.execute("""
             INSERT OR REPLACE INTO scoped_memory (session_id, scope_id, key, value_json)
@@ -258,6 +285,54 @@ def update_real_billing(gcp_cost_usd: float = None, deepseek_balance_usd: float 
         conn.close()
     except Exception as e:
         logger.warning(f"[TOKEN TRACKER] Erreur update_real_billing SQLite : {e}")
+
+
+def get_manual_balances() -> dict:
+    """
+    Soldes saisis manuellement par l'utilisateur pour les providers sans API
+    de solde connue (Mistral, Cohere, Cerebras, Zhipu, MiniMax, xAI...).
+    Clé : nom du provider (ex: "mistral") -> {"balance_usd", "updated_at", "note"}.
+    """
+    try:
+        from core.runtime_db import get_connection
+        conn = get_connection()
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("""
+            SELECT value_json FROM scoped_memory
+            WHERE session_id = 'global' AND scope_id = 'global' AND key = 'manual_provider_balances'
+        """).fetchone()
+        conn.close()
+        if row and row["value_json"]:
+            return json.loads(row["value_json"])
+        return {}
+    except Exception as e:
+        logger.warning(f"[TOKEN TRACKER] Erreur get_manual_balances : {e}")
+        return {}
+
+
+def set_manual_balance(provider: str, balance_usd: float, note: str = "") -> None:
+    """Enregistre/actualise un solde saisi manuellement pour un provider donné."""
+    try:
+        from core.runtime_db import get_connection
+        conn = get_connection()
+        conn.row_factory = sqlite3.Row
+
+        balances = get_manual_balances()
+        balances[provider] = {
+            "balance_usd": balance_usd,
+            "updated_at": datetime.now().isoformat(),
+            "note": note,
+        }
+
+        conn.execute("""
+            INSERT OR REPLACE INTO scoped_memory (session_id, scope_id, key, value_json)
+            VALUES ('global', 'global', 'manual_provider_balances', ?)
+        """, (json.dumps(balances),))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"[TOKEN TRACKER] Erreur set_manual_balance : {e}")
+
 
 def init_session(session_id: str, objective: str):
     """Initialise une session/conversation dans la base SQLite."""
@@ -270,10 +345,24 @@ def init_session(session_id: str, objective: str):
     except Exception as e:
         logger.warning(f"[TOKEN TRACKER] Erreur init_session SQLite : {e}")
 
-def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session_id: str = None, cost_usd: float = None):
-    """Enregistre la consommation de tokens pour un modèle donné directement dans SQLite."""
+def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session_id: str = None, cost_usd: float = None, agent_name: str = None):
+    """Enregistre la consommation de tokens pour un modèle donné directement dans SQLite.
+
+    [#T296] `agent_name` : à défaut d'être passé explicitement, il est lu dans la
+    ContextVar posée par `BaseAgent.invoke()` (`core/agent_trace.py`). Les ~15
+    call-sites des providers n'ont donc rien à transporter — un provider ne
+    connaît de toute façon pas l'agent. Reste None hors agent (routeur,
+    collecteur de quotas, script direct) : une absence légitime, pas un défaut.
+    """
     if prompt_tokens <= 0 and completion_tokens <= 0:
         return
+
+    if agent_name is None:
+        try:
+            from core.agent_trace import lire_agent_courant
+            agent_name = lire_agent_courant()
+        except Exception:  # pragma: no cover - import défensif
+            agent_name = None
 
     price = _get_pricing_for_model(model)
     if cost_usd is not None:
@@ -291,6 +380,7 @@ def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session
             cost_usd=cost,
             session_id=session_id,
             channel=channel,
+            agent_name=agent_name,
         )
     except Exception as e:
         logger.warning(f"[TOKEN TRACKER] Erreur record_usage SQLite : {e}")
@@ -337,25 +427,25 @@ def get_quotas_status() -> dict:
             return db_result
     except Exception as e:
         logger.warning(f"[QUOTAS] Fallback JSON (SQLite indisponible) : {e}")
-    
+
     # Fallback : calcul depuis le JSON history[] (ancien code)
     with _lock:
         data = load_usage()
         history = data.get("history", [])
-        
+
         now = datetime.now()
         t_1m = now - timedelta(minutes=1)
         t_1h = now - timedelta(hours=1)
         t_24h = now - timedelta(days=1)
         t_30j = now - timedelta(days=30)
-        
+
         calls = {
             "gemini-free-flash": [],
             "gemini-free-pro": [],
             "claude-cli-abo": [],
             "gemini-cli-abo": []
         }
-        
+
         for tx in history:
             try:
                 tx_time = datetime.fromisoformat(tx["timestamp"])
@@ -367,36 +457,36 @@ def get_quotas_status() -> dict:
                     "time": tx_time,
                     "tokens": tx.get("prompt_tokens", 0) + tx.get("completion_tokens", 0)
                 })
-        
+
         flat = {
             "gemini_free_flash_rpm": 0, "gemini_free_flash_tpm": 0, "gemini_free_flash_rpd": 0,
             "gemini_free_pro_rpm": 0, "gemini_free_pro_tpm": 0, "gemini_free_pro_rpd": 0,
             "claude_cli_tph": 0, "claude_cli_tpm": 0,
             "gemini_cli_tph": 0, "gemini_cli_tpm": 0,
         }
-        
+
         # Gemini Free Flash
         items = calls["gemini-free-flash"]
         flat["gemini_free_flash_rpm"] = len([x for x in items if x["time"] > t_1m])
         flat["gemini_free_flash_tpm"] = sum(x["tokens"] for x in items if x["time"] > t_1m)
         flat["gemini_free_flash_rpd"] = len([x for x in items if x["time"] > t_24h])
-        
+
         # Gemini Free Pro
         items = calls["gemini-free-pro"]
         flat["gemini_free_pro_rpm"] = len([x for x in items if x["time"] > t_1m])
         flat["gemini_free_pro_tpm"] = sum(x["tokens"] for x in items if x["time"] > t_1m)
         flat["gemini_free_pro_rpd"] = len([x for x in items if x["time"] > t_24h])
-        
+
         # Claude CLI
         items = calls["claude-cli-abo"]
         flat["claude_cli_tph"] = sum(x["tokens"] for x in items if x["time"] > t_1h)
         flat["claude_cli_tpm"] = sum(x["tokens"] for x in items if x["time"] > t_30j)
-        
+
         # Gemini CLI
         items = calls["gemini-cli-abo"]
         flat["gemini_cli_tph"] = sum(x["tokens"] for x in items if x["time"] > t_1h)
         flat["gemini_cli_tpm"] = sum(x["tokens"] for x in items if x["time"] > t_30j)
-        
+
         return flat
 
 
@@ -410,7 +500,7 @@ def get_global_summary() -> dict:
         total = data.get("total", {})
         models = data.get("models", {})
         real_billing = data.get("real_billing", {})
-        
+
         return {
             "total_tokens": total.get("total_tokens", 0),
             "total_prompt_tokens": total.get("prompt_tokens", 0),
@@ -429,6 +519,10 @@ def get_global_summary() -> dict:
                 "deepseek_balance_usd": real_billing.get("deepseek_balance_usd", 0.0),
                 "gemini_gcp_cost_usd": real_billing.get("gemini_gcp_cost_usd", 0.0),
                 "claude_usage_pct": real_billing.get("claude_message_usage_pct"),
+                "anthropic_api_cost_usd": real_billing.get("anthropic_api_cost_usd"),
+                "anthropic_api_last_sync": real_billing.get("anthropic_api_last_sync"),
+                "gemini_subscription_summary": real_billing.get("gemini_subscription_summary"),
+                "gemini_subscription_last_sync": real_billing.get("gemini_subscription_last_sync"),
             }
         }
     except Exception as e:

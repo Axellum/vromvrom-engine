@@ -2,17 +2,17 @@
 memory/graph.py — Gestion du graphe de connaissances (entités, relations, Garbage Collection, liaisons fait-entité).
 """
 
-import time
 import json
 import logging
 import sqlite3
-from typing import List, Dict, Any
+import time
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
 def upsert_graph_entity(db, name: str, entity_type: str,
-                        observations: List[str] = None) -> int:
+                        observations: list[str] = None) -> int:
     """Insère ou met à jour une entité du graphe."""
     now = time.time()
     obs_json = json.dumps(observations or [], ensure_ascii=False)
@@ -69,7 +69,7 @@ def upsert_graph_relation(db, from_entity: str, to_entity: str,
             conn.close()
 
 
-def search_graph(db, query: str, limit: int = 10) -> Dict[str, Any]:
+def search_graph(db, query: str, limit: int = 10) -> dict[str, Any]:
     """Recherche dans les entités et leurs observations."""
     conn = db._get_conn()
     try:
@@ -114,7 +114,7 @@ def search_graph(db, query: str, limit: int = 10) -> Dict[str, Any]:
         conn.close()
 
 
-def get_full_graph(db) -> Dict[str, Any]:
+def get_full_graph(db) -> dict[str, Any]:
     """Retourne le graphe complet (toutes les entités et relations)."""
     conn = db._get_conn()
     try:
@@ -144,7 +144,7 @@ def get_full_graph(db) -> Dict[str, Any]:
 
 
 def gc_graph_entities(db, max_observations: int = 15,
-                      max_age_days: int = 30) -> Dict[str, int]:
+                      max_age_days: int = 30) -> dict[str, int]:
     """Garbage Collection du graphe de connaissances."""
     now = time.time()
     max_age_ts = now - (max_age_days * 24 * 3600)
@@ -208,7 +208,7 @@ def gc_graph_entities(db, max_observations: int = 15,
 
 
 async def gc_graph_entities_async(db, max_observations: int = 15,
-                                  max_age_days: int = 30) -> Dict[str, int]:
+                                  max_age_days: int = 30) -> dict[str, int]:
     """Garbage Collection asynchrone du graphe de connaissances."""
     now = time.time()
     max_age_ts = now - (max_age_days * 24 * 3600)
@@ -266,7 +266,7 @@ async def gc_graph_entities_async(db, max_observations: int = 15,
 
 
 async def upsert_graph_entity_async(db, name: str, entity_type: str,
-                                     observations: List[str] = None) -> int:
+                                     observations: list[str] = None) -> int:
     """Insère ou met à jour asynchronement une entité du graphe."""
     now = time.time()
     obs_json = json.dumps(observations or [], ensure_ascii=False)
@@ -321,7 +321,7 @@ def link_fact_to_entity(db, fact_id: int, entity_name: str) -> bool:
             conn.close()
 
 
-def get_connected_facts_for_entity(db, entity_name: str, limit: int = 5) -> List[Dict]:
+def get_connected_facts_for_entity(db, entity_name: str, limit: int = 5) -> list[dict]:
     """Récupère les faits (leçons) liés à une entité du graphe."""
     conn = db._get_conn()
     try:
@@ -340,7 +340,7 @@ def get_connected_facts_for_entity(db, entity_name: str, limit: int = 5) -> List
         conn.close()
 
 
-def get_connected_entities_for_fact(db, fact_id: int) -> List[Dict]:
+def get_connected_entities_for_fact(db, fact_id: int) -> list[dict]:
     """Récupère les entités du graphe liées à un fait."""
     conn = db._get_conn()
     try:
@@ -377,7 +377,7 @@ async def link_fact_to_entity_async(db, fact_id: int, entity_name: str) -> bool:
             await conn.close()
 
 
-async def get_connected_facts_for_entity_async(db, entity_name: str, limit: int = 5) -> List[Dict]:
+async def get_connected_facts_for_entity_async(db, entity_name: str, limit: int = 5) -> list[dict]:
     """Récupère asynchronement les faits liés à une entité."""
     conn = await db._get_conn_async()
     try:

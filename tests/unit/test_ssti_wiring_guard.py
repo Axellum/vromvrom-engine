@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Garde-fou de câblage : les frontières Home Assistant doivent appeler
 `validate_service_data` (protection anti-SSTI) sur le service_data entrant.

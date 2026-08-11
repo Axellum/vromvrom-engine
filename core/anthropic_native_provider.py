@@ -15,7 +15,7 @@ Date : 2026-07-03
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any
 
 from core.llm_timeouts import get_timeout
 
@@ -31,7 +31,7 @@ except ImportError:
         @abstractmethod
         def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any: pass
         @abstractmethod
-        def generate_structured(self, system_prompt: str, user_prompt: str, schema: Dict[str, Any], **kwargs) -> Dict[str, Any]: pass
+        def generate_structured(self, system_prompt: str, user_prompt: str, schema: dict[str, Any], **kwargs) -> dict[str, Any]: pass
 
 ANTHROPIC_API_VERSION = "2023-06-01"
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
@@ -126,7 +126,9 @@ class AnthropicNativeProvider(LLMProvider):
     async def generate_async(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
         """[D5] Génération asynchrone native via httpx.AsyncClient (I/O non bloquante)."""
         import asyncio
+
         import httpx
+
         from core.openai_compat_provider import SharedAsyncHTTPPool
 
         payload = self._build_payload(system_prompt, user_prompt, **kwargs)
@@ -152,8 +154,8 @@ class AnthropicNativeProvider(LLMProvider):
 
     def generate_structured(
         self, system_prompt: str, user_prompt: str,
-        schema: Dict[str, Any], **kwargs,
-    ) -> Dict[str, Any]:
+        schema: dict[str, Any], **kwargs,
+    ) -> dict[str, Any]:
         from core.openai_compat_provider import SharedHTTPPool
 
         tool_name = "respond_with_json"
@@ -180,5 +182,11 @@ class AnthropicNativeProvider(LLMProvider):
             if block.get("type") == "tool_use" and block.get("name") == tool_name:
                 return block.get("input", {})
 
+        # #T265 : lever, ne pas renvoyer {}. Même famille que gemini_native —
+        # un dict vide est une valeur de retour, donc un SUCCÈS aux yeux de
+        # FallbackProvider : pas de bascule sur le modèle suivant et un succès
+        # enregistré au circuit breaker pour un appel qui n'a rien produit.
         logger.error(f"{self.provider_name} n'a pas retourné de tool_use pour generate_structured")
-        return {}
+        raise RuntimeError(
+            f"{self.provider_name} n'a pas retourné de tool_use pour generate_structured"
+        )

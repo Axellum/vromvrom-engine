@@ -11,7 +11,9 @@ Auteur : Antigravity IDE + Axel — 2026-06-04
 """
 
 import logging
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from core.auth import require_websocket_auth
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +34,7 @@ def get_status():
 async def stop_execution():
     """Demande l'arrêt de l'exécution en cours."""
     global _stop_requested
-    from core.app_state import get_app_state, broadcast_event
+    from core.app_state import broadcast_event, get_app_state
     state = get_app_state()
 
     async with state.execution_lock:
@@ -63,7 +65,7 @@ def get_sandbox_pending():
 @router.post("/api/sandbox/approve")
 async def approve_sandbox():
     """Valide et exécute toutes les écritures en attente du sandbox."""
-    from core.app_state import get_app_state, broadcast_event
+    from core.app_state import broadcast_event, get_app_state
     state = get_app_state()
     sandbox = getattr(state.engine, "sandbox", None)
     if sandbox is None:
@@ -91,19 +93,8 @@ def reject_sandbox():
 
 
 @router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str = Depends(require_websocket_auth)):
     """Canal WebSocket bidirectionnel pour les actions utilisateur en temps réel."""
-    # [P0-1.1] Auth WS : le navigateur ne peut pas porter de header Authorization →
-    # le token transite en query param (?token=). Fail-closed comme require_auth.
-    import hmac
-    from core.auth import _get_api_key
-    _required_key = _get_api_key()
-    _token = websocket.query_params.get("token", "")
-    if not _required_key or not _token or not hmac.compare_digest(_token, _required_key):
-        await websocket.close(code=1008)  # Policy Violation
-        logger.warning("[WS] Connexion refusée : token absent ou invalide.")
-        return
-
     await websocket.accept()
     _ws_clients.append(websocket)
     logger.info(f"[WS] Client connecté. Total : {len(_ws_clients)}")

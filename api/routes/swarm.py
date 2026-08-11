@@ -5,15 +5,15 @@ Permet de lister les workers, forcer un ping (heartbeat) et enregistrer/désenre
 des workers distants avec persistance dans workers.json.
 """
 
-import os
 import json
 import logging
+import os
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
 
+from core.safe_io import file_lock, safe_json_write  # [P1-2.3]
 from core.worker_registry import get_worker_registry
-from core.safe_io import safe_json_write, file_lock  # [P1-2.3]
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,8 @@ class WorkerRegisterBody(BaseModel):
     name: str
     host: str
     port: int = 8780
-    capabilities: List[str] = []
-    description: Optional[str] = None
+    capabilities: list[str] = []
+    description: str | None = None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -46,7 +46,7 @@ def _load_workers_json() -> list:
     if os.path.exists(WORKERS_CONFIG):
         try:
             with file_lock(WORKERS_CONFIG):  # [P1-2.3] lecture hors écriture concurrente
-                with open(WORKERS_CONFIG, 'r', encoding='utf-8') as f:
+                with open(WORKERS_CONFIG, encoding='utf-8') as f:
                     data = json.load(f)
             return data.get("workers", [])
         except Exception as e:
@@ -99,7 +99,7 @@ def route_register_worker(body: WorkerRegisterBody):
     """Enregistre un nouveau worker Swarm (persistance + mémoire)."""
     try:
         registry = get_worker_registry()
-        
+
         # 1. Enregistrement en mémoire
         registry.register(
             name=body.name,
@@ -107,13 +107,13 @@ def route_register_worker(body: WorkerRegisterBody):
             port=body.port,
             capabilities=body.capabilities
         )
-        
+
         # 2. Persistance dans le fichier workers.json
         workers = _load_workers_json()
-        
+
         # Supprimer le doublon s'il existe déjà dans la liste
         workers = [w for w in workers if w.get("name") != body.name]
-        
+
         # Ajouter le nouveau
         worker_entry = {
             "name": body.name,
@@ -123,7 +123,7 @@ def route_register_worker(body: WorkerRegisterBody):
         }
         if body.description:
             worker_entry["description"] = body.description
-            
+
         workers.append(worker_entry)
         _save_workers_json(workers)
 
@@ -138,10 +138,10 @@ def route_unregister_worker(name: str):
     """Retire un worker Swarm (persistance + mémoire)."""
     try:
         registry = get_worker_registry()
-        
+
         # 1. Désenregistrement en mémoire
         registry.unregister(name)
-        
+
         # 2. Retrait du fichier workers.json
         workers = _load_workers_json()
         workers = [w for w in workers if w.get("name") != name]

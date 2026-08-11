@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tests/test_router_factory_wiring.py — Câblage du Router via la factory (P1-2.1).
 

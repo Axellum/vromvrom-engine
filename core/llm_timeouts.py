@@ -11,9 +11,9 @@ code des providers, ex. :
         "claude_cli": 300.0
     }
 """
-import os
 import json
 import logging
+import os
 
 logger = logging.getLogger("core.llm_timeouts")
 
@@ -36,7 +36,7 @@ def _load_overrides() -> dict:
     if _overrides_cache is not None:
         return _overrides_cache
     try:
-        with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(_CONFIG_PATH, encoding="utf-8") as f:
             _overrides_cache = json.load(f).get("provider_timeouts", {})
     except Exception as e:
         logger.debug(f"[LLMTimeouts] Pas d'override config.json ({e}), défauts utilisés.")

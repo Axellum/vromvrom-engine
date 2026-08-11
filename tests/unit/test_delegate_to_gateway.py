@@ -10,12 +10,10 @@ On évite la dépendance au catalogue/gateway réels via du monkeypatch ciblé.
 NB : shim pour forcer le package local `tools` (namespace) face au paquet
 site-packages homonyme qui le masque sous Windows (divergence CI/local connue).
 """
+import asyncio
 import os
 import sys
 import types
-import asyncio
-
-import pytest
 
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if not (getattr(sys.modules.get("tools"), "__file__", "") or "").startswith(_REPO):
@@ -45,6 +43,14 @@ class _FakeProvider:
 class _FakeGateway:
     def __init__(self, providers):
         self.providers = providers
+
+    def get_provider(self, name):
+        """[#T212] Miroir du contrat réel : cascade d'un élément portant le CB."""
+        from core.llm.providers.deepseek import FallbackProvider
+        provider = self.providers.get(name)
+        if not provider:
+            raise ValueError(f"Provider LLM inconnu : {name}")
+        return FallbackProvider([(name, provider)])
 
 
 class _FakeRouter:

@@ -30,9 +30,33 @@ import httpx  # [D5] client HTTP async natif
 import requests
 from requests.adapters import HTTPAdapter
 
+from core.llm.providers.base import LLMProvider
 from core.llm_timeouts import get_timeout
 
 logger = logging.getLogger(__name__)
+
+
+def filtrer_champs_prives(messages: list) -> list:
+    """
+    Retire les champs PRIVÉS (préfixe "_") des messages avant envoi HTTP.
+
+    Le round-trip d'outils Gemini porte la thought_signature dans un champ
+    privé des tool_calls (cf. core/gemini_native.py, #T263). Ce champ est
+    interne au moteur : il ne doit JAMAIS partir dans le payload des
+    providers OpenAI-compatibles, qui peuvent rejeter un champ inconnu
+    (erreur 400). Le préfixe "_" n'est utilisé par aucun champ standard.
+    """
+    nettoyes = []
+    for msg in messages:
+        msg_propre = {k: v for k, v in msg.items() if not k.startswith("_")}
+        tool_calls = msg_propre.get("tool_calls")
+        if isinstance(tool_calls, list):
+            msg_propre["tool_calls"] = [
+                {k: v for k, v in tc.items() if not k.startswith("_")}
+                for tc in tool_calls
+            ]
+        nettoyes.append(msg_propre)
+    return nettoyes
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -94,9 +118,17 @@ class SharedHTTPPool:
         """
         Retourne la session partagée (crée le singleton si besoin).
         Thread-safe — peut être appelé depuis n'importe quel thread.
+
+        [#T268] Se réarme après close() : close() remet `_session` à None sans
+        détruire `_instance`, donc `SharedHTTPPool()` seul ne suffisait plus à
+        relancer l'initialisation (le __new__ rend l'instance existante sans
+        rappeler _init_session). On recrée ici sous verrou (double-check),
+        comme SharedAsyncHTTPPool.get_client().
         """
         if cls._session is None:
-            SharedHTTPPool()  # Déclenche l'initialisation lazy
+            with cls._lock:
+                if cls._session is None:
+                    cls._init_session()
         return cls._session
 
     @classmethod
@@ -146,13 +178,22 @@ class SharedAsyncHTTPPool:
         cls._client = None
 
 
-class OpenAICompatibleProvider:
+class OpenAICompatibleProvider(LLMProvider):
     """
     Classe générique pour tout provider exposant une API OpenAI-compatible.
-    
+
     Factorise les 3 méthodes (generate, generate_structured, generate_stream)
     qui étaient copier-collées dans 9 providers distincts.
-    
+
+    [#T240] Hérite de `LLMProvider` — la classe n'héritait de rien et lui manquait
+    donc `generate_structured_async()`, que `FallbackProvider` appelle pourtant sur
+    chaque provider de sa cascade (`core/llm/providers/deepseek.py:686`). Sur les
+    ~10 providers factorisés ici, l'appel levait un `AttributeError` avalé par le
+    `except Exception` de la cascade : chaque génération structurée échouait
+    silencieusement, enregistrait un échec au circuit breaker du modèle et passait au
+    suivant. `generate_async()` reste surchargée ci-dessous (vrai httpx async) ; seul
+    l'équivalent structuré est désormais fourni par la base (via `asyncio.to_thread`).
+
     Paramètres de configuration :
         provider_name : Nom humain du provider (pour les logs)
         base_url      : URL de l'endpoint /chat/completions
@@ -221,7 +262,11 @@ class OpenAICompatibleProvider:
     def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
         """Génère une réponse complète (non-streaming) via l'API OpenAI-compatible."""
         messages = kwargs.get("messages")
-        if not messages:
+        if messages:
+            # Champs privés internes du moteur (ex: _thought_signature Gemini) :
+            # jamais transmis aux APIs OpenAI-compatibles (#T263).
+            messages = filtrer_champs_prives(messages)
+        else:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -236,6 +281,11 @@ class OpenAICompatibleProvider:
         # Support des outils (function calling)
         if "tools" in kwargs:
             payload["tools"] = kwargs["tools"]
+        # `tool_choice` permet au client de FORCER (ou d'interdire) un appel
+        # d'outil. Sans ce relais, un client qui l'envoie voyait sa contrainte
+        # silencieusement ignorée.
+        if kwargs.get("tool_choice") is not None:
+            payload["tool_choice"] = kwargs["tool_choice"]
 
         # Support du max_tokens si fourni
         if "max_tokens" in kwargs:
@@ -269,7 +319,11 @@ class OpenAICompatibleProvider:
         tool_calls) et même enregistrement d'usage.
         """
         messages = kwargs.get("messages")
-        if not messages:
+        if messages:
+            # Champs privés internes du moteur (ex: _thought_signature Gemini) :
+            # jamais transmis aux APIs OpenAI-compatibles (#T263).
+            messages = filtrer_champs_prives(messages)
+        else:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -282,6 +336,8 @@ class OpenAICompatibleProvider:
         }
         if "tools" in kwargs:
             payload["tools"] = kwargs["tools"]
+        if kwargs.get("tool_choice") is not None:
+            payload["tool_choice"] = kwargs["tool_choice"]
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
 
@@ -373,7 +429,11 @@ class OpenAICompatibleProvider:
             dict: {"token": str, "done": bool, "usage": dict|None}
         """
         messages = kwargs.get("messages")
-        if not messages:
+        if messages:
+            # Champs privés internes du moteur (ex: _thought_signature Gemini) :
+            # jamais transmis aux APIs OpenAI-compatibles (#T263).
+            messages = filtrer_champs_prives(messages)
+        else:
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -503,12 +563,6 @@ OPENAI_COMPAT_PROVIDERS = {
         "default_model": "MiniMax-M3",
         "description": "MiniMax — MoE multimodal (texte/image/vidéo), contexte 1M tokens, optimisé agents",
     },
-    "github": {
-        "base_url": "https://models.inference.ai.azure.com/chat/completions",
-        "env_key": "GITHUB_TOKEN",
-        "default_model": "gpt-4o-mini",
-        "description": "GitHub Models — Inférence gratuite pour développeurs via Azure AI",
-    },
     "zhipu": {
         "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
         "env_key": "ZHIPU_API_KEY",
@@ -533,11 +587,11 @@ OPENAI_COMPAT_PROVIDERS = {
         "description": "Ollama Local PC — Inférence locale ultra-rapide sur RTX 5070 Ti",
     },
     "ollama_pc": {
-        # Même IP LAN que LMStudioProvider (${OLLAMA_HOST:-192.168.1.x}, carte "Ethernet 4") — contrairement
+        # Même IP LAN que LMStudioProvider (${LM_STUDIO_HOST:-192.168.1.x}, carte "Ethernet 4") — contrairement
         # à ollama_local (127.0.0.1), joignable depuis le Deck en prod. Prérequis côté PC :
         # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (ou au moins .84) + pare-feu Windows ouvert
         # sur 11434 pour le LAN, sinon connect timeout (repli cloud silencieux, pas d'erreur bruyante).
-        "base_url": "http://${OLLAMA_HOST:-192.168.1.x}:11434/v1/chat/completions",
+        "base_url": "http://${LM_STUDIO_HOST:-192.168.1.x}:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "domotique-qwen7b:q4",
         "description": "Ollama PC via LAN — joignable depuis le Deck (RTX 5070 Ti, fine-tune domotique)",

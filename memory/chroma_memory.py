@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 memory/chroma_memory.py — Mémoire vectorielle ChromaDB persistante.
 
@@ -23,7 +22,7 @@ import logging
 import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +63,12 @@ class ChromaMemoryStub:
 
     async def search_episodes(
         self, query: str, n_results: int = 5, min_date: str = None
-    ) -> List[dict]:
+    ) -> list[dict]:
         return []
 
     async def search_facts(
         self, query: str, n_results: int = 5, category: str = None
-    ) -> List[dict]:
+    ) -> list[dict]:
         return []
 
     async def hybrid_search(self, query: str, n_results: int = 5) -> dict:
@@ -167,7 +166,7 @@ class ChromaMemory:
 
         for filepath in json_files:
             try:
-                with open(filepath, "r", encoding="utf-8") as f:
+                with open(filepath, encoding="utf-8") as f:
                     episode = json.load(f)
 
                 # Filtrer : uniquement les compressés
@@ -262,10 +261,14 @@ class ChromaMemory:
             content = row["content"] or ""
             doc     = f"{title}. {content}".strip() if title else content
 
+            # #T252 : severity est TEXT depuis la V9 ('minor'/'major'/'critical').
+            # Un int() sur 'minor' levait ValueError et faisait croire que
+            # ChromaDB était indisponible (étape 2.8 du Dreamer). On stocke la
+            # chaîne telle quelle (str() tolère aussi les bases legacy).
             metadata = {
                 "category":   str(row["category"] or ""),
                 "tags":       str(row["tags"] or ""),
-                "severity":   int(row["severity"] or 0),
+                "severity":   str(row["severity"] or ""),
                 "created_at": str(row["created_at"] or ""),
             }
 
@@ -292,7 +295,7 @@ class ChromaMemory:
         query: str,
         n_results: int = 5,
         min_date: str = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Recherche sémantique dans les épisodes compressés.
 
@@ -338,7 +341,7 @@ class ChromaMemory:
         query: str,
         n_results: int = 5,
         category: str = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """
         Recherche sémantique dans les faits.
 
@@ -392,7 +395,7 @@ class ChromaMemory:
         self,
         query: str,
         n_results: int = 5,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Recherche hybride parallèle dans les deux collections.
 
@@ -446,7 +449,7 @@ class ChromaMemory:
 # Singleton
 # ──────────────────────────────────────────────────────────────────
 
-_chroma_instance: Optional[ChromaMemory] = None
+_chroma_instance: ChromaMemory | None = None
 
 
 def get_chroma_memory(persist_dir: str = None) -> "ChromaMemory | ChromaMemoryStub":

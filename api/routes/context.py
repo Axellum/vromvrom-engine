@@ -10,12 +10,14 @@ Contient : /api/context-status, /api/context-reload, /api/context-ha-ingest,
 Auteur : Antigravity IDE + Axel — 2026-06-04
 """
 
-import os
 import json
 import logging
-from fastapi import APIRouter, HTTPException
+import os
 
-from core.safe_io import safe_json_write, file_lock  # [P2-3.1] écritures atomiques
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from core.safe_io import file_lock, safe_json_write  # [P2-3.1] écritures atomiques
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +118,326 @@ def get_models_stats():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/api/models/registry")
+def get_models_registry():
+    """
+    [#T158] Registre enrichi pour la vue LLMRegistry de l'IHM v2 : chaque modèle
+    (actifs ET inactifs, sinon un toggle serait irréversible) est joint à ses
+    métriques réelles — Elo moyen (model_elo_scores), latence moyenne (Circuit
+    Breaker en mémoire, repli Elo puis ttft_ms), coût/appels 30 jours
+    (token_usage), coût par tâche réussie (coût 30j / wins Elo) et état du
+    Circuit Breaker. Aucune valeur inventée : les champs sans donnée sont null.
+
+    NOTE : cette route DOIT rester déclarée avant /api/models/{model_id}
+    (sinon "registry" serait capturé comme un model_id).
+    """
+    from core.models_db import get_all_models
+
+    models = get_all_models()
+
+    # ── Scores Elo + latence + wins par modèle ──
+    elo_by_model: dict = {}
+    try:
+        from core.elo_scorer import get_all_scores
+        elo_by_model = get_all_scores()
+    except Exception as e:
+        logger.warning(f"[REGISTRY] Scores Elo indisponibles : {e}")
+
+    # ── Circuit Breakers (registre en mémoire du process, clé = nom lower) ──
+    cb_by_name: dict = {}
+    try:
+        from core.llm.circuit_breaker import CircuitBreaker
+        with CircuitBreaker._registry_lock:
+            for cb in CircuitBreaker._registry.values():
+                stats = cb.get_stats()
+                cb_by_name[str(stats.get("name", "")).lower()] = stats
+    except Exception as e:
+        logger.warning(f"[REGISTRY] Circuit breakers indisponibles : {e}")
+
+    # ── Coût et volume réels sur 30 jours (token_usage) ──
+    usage_by_model: dict = {}
+    # ── Volume TOTAL depuis toujours (#T243) ──
+    # 30 jours ne suffit pas à décider d'une désactivation : un modèle peut n'avoir
+    # servi qu'une fois il y a deux mois. `calls_total` permet de distinguer
+    # « inutilisé récemment » de « jamais appelé de toute l'histoire du moteur »,
+    # seul critère honnête pour proposer un modèle à la désactivation.
+    calls_total_by_model: dict = {}
+    try:
+        from core.session_history import get_token_stats
+        stats_30d = get_token_stats(since_hours=30 * 24)
+        for entry in stats_30d.get("by_model", []):
+            usage_by_model[entry["model"]] = entry
+        stats_all = get_token_stats()  # since_hours=None = tout l'historique
+        for entry in stats_all.get("by_model", []):
+            calls_total_by_model[entry["model"]] = entry.get("calls")
+    except Exception as e:
+        logger.warning(f"[REGISTRY] Stats token_usage indisponibles : {e}")
+
+    # ── Instantané de ce que les API offrent réellement (#T243) ──
+    # Lecture disque seule : rafraîchir déclencherait une douzaine d'appels réseau,
+    # inacceptable sur l'affichage du registre. Le rafraîchissement est explicite
+    # (POST /api/models/inventory/refresh).
+    instantane = None
+    try:
+        from core.model_inventory import charger
+        instantane = charger()
+    except Exception as e:
+        logger.warning(f"[REGISTRY] Instantané d'inventaire indisponible : {e}")
+
+    # ── Modèles réellement câblés dans le gateway (63 ne le sont pas, cf. #T186) ──
+    wired_names: set = set()
+    try:
+        from core.llm_gateway import LLMGateway
+        wired_names = {str(n).lower() for n in LLMGateway().providers.keys()}
+    except Exception as e:
+        logger.warning(f"[REGISTRY] Gateway indisponible : {e}")
+
+    enriched = []
+    for m in models:
+        model_id = m.get("id", "")
+        domains = elo_by_model.get(model_id, {})
+
+        elo_score = None
+        avg_latency_elo = None
+        wins = 0
+        if domains:
+            elos = [d.get("elo") for d in domains.values() if d.get("elo") is not None]
+            latencies = [
+                d.get("avg_latency_ms") for d in domains.values()
+                if d.get("avg_latency_ms")
+            ]
+            wins = sum(d.get("wins", 0) or 0 for d in domains.values())
+            if elos:
+                elo_score = round(sum(elos) / len(elos), 1)
+            if latencies:
+                avg_latency_elo = round(sum(latencies) / len(latencies), 1)
+
+        cb = cb_by_name.get(model_id.lower())
+        usage = usage_by_model.get(model_id, {})
+        cost_30d = usage.get("cost_usd")
+
+        cost_per_success = None
+        if wins > 0 and cost_30d is not None:
+            cost_per_success = round(cost_30d / wins, 6)
+
+        avg_latency_ms = None
+        if cb and cb.get("avg_latency_ms") is not None:
+            avg_latency_ms = cb["avg_latency_ms"]
+        elif avg_latency_elo is not None:
+            avg_latency_ms = avg_latency_elo
+        elif m.get("ttft_ms"):
+            avg_latency_ms = m["ttft_ms"]
+
+        enriched.append({
+            **m,
+            "elo_score": elo_score,
+            "avg_latency_ms": avg_latency_ms,
+            "cost_usd_30d": cost_30d,
+            "calls_30d": usage.get("calls"),
+            "calls_total": calls_total_by_model.get(model_id, 0),
+            "cost_per_success": cost_per_success,
+            "circuit_breaker_status": cb.get("state") if cb else None,
+            "is_wired": model_id.lower() in wired_names,
+            # True/False/None — None = on ne sait pas (aucun inventaire, ou provider
+            # muet au dernier passage). Ne JAMAIS assimiler None à False.
+            "offered_by_api": _offert(m.get("provider_id", ""), model_id, instantane),
+        })
+
+    from core.model_inventory import resume
+    return {"models": enriched, "count": len(enriched), "inventaire": resume(instantane)}
+
+
+def _offert(provider_id: str, model_id: str, instantane) -> bool | None:
+    """Enveloppe tolérante : l'absence d'inventaire ne doit pas casser le registre."""
+    try:
+        from core.model_inventory import offert_par_api
+        return offert_par_api(provider_id, model_id, instantane)
+    except Exception:
+        return None
+
+
+@router.get("/api/models/inventory")
+def get_model_inventory():
+    """
+    [#T243] Bilan du dernier inventaire, sans la liste complète des modèles.
+
+    Endpoint distinct de `/api/models/registry` à dessein : ce dernier alimente une
+    clé React Query partagée par quatre vues, dont le contrat ne doit pas changer.
+    """
+    from core.model_inventory import charger, resume
+    return {"inventaire": resume(charger())}
+
+
+@router.post("/api/models/inventory/refresh")
+async def refresh_model_inventory():
+    """
+    [#T243] Interroge les endpoints de listing de tous les providers et réécrit
+    l'instantané lu par `/api/models/registry`.
+
+    Une douzaine d'appels réseau : exécuté dans un thread pour ne pas bloquer la
+    boucle asyncio (même discipline que le hot-path LLM migré en D5).
+
+    ⚠️ Le résultat dit ce que chaque API **annonce**, pas ce qu'elle **sert** : un
+    alias encore fonctionnel peut être absent du listing (cas vérifié de
+    `deepseek-chat`). À traiter comme un indice, jamais comme une preuve de mort.
+    """
+    import asyncio
+
+    from core.model_inventory import rafraichir, resume
+
+    try:
+        instantane = await asyncio.to_thread(rafraichir)
+    except Exception as e:
+        logger.error(f"[INVENTAIRE] Échec du rafraîchissement : {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Rafraîchissement impossible : {e}"
+        ) from e
+    return {"status": "ok", "inventaire": resume(instantane)}
+
+
+class BulkStatusBody(BaseModel):
+    """Corps de `POST /api/models/bulk-status`."""
+
+    ids: list[str] = Field(..., min_length=1, max_length=500)
+    status: str
+
+
+@router.post("/api/models/bulk-status")
+def bulk_set_models_status(body: BulkStatusBody):
+    """
+    [#T243] Active ou désactive PLUSIEURS modèles en un appel.
+
+    L'interrupteur unitaire (`/api/models/{id}/toggle`) existe depuis #T158 mais
+    n'avait jamais servi : sur 94 modèles actifs en production, aucun n'était
+    désactivé. La cause n'était pas l'absence de bouton mais l'absence d'action en
+    lot — personne ne bascule 84 modèles un par un. D'où cette route.
+
+    Volontairement `status` explicite plutôt qu'une bascule : appliquer un toggle à
+    une sélection hétérogène inverserait chaque modèle par rapport à SON état, ce qui
+    n'est jamais l'intention quand on coche « désactiver ces 40 modèles ».
+
+    Les identifiants inconnus sont signalés dans `introuvables` sans faire échouer le
+    lot : une sélection issue d'une liste rafraîchie entre-temps ne doit pas être
+    entièrement perdue pour un modèle disparu.
+    """
+    from core.models_db import get_model, set_model_status
+
+    if body.status not in ("active", "inactive"):
+        raise HTTPException(
+            status_code=422,
+            detail="status doit valoir 'active' ou 'inactive'.",
+        )
+
+    modifies: list[str] = []
+    inchanges: list[str] = []
+    introuvables: list[str] = []
+    echecs: list[str] = []
+
+    for model_id in dict.fromkeys(body.ids):  # dédoublonne en gardant l'ordre
+        model = get_model(model_id)
+        if model is None:
+            introuvables.append(model_id)
+            continue
+        if model.get("status") == body.status:
+            inchanges.append(model_id)
+            continue
+        if set_model_status(model_id, body.status):
+            modifies.append(model_id)
+        else:
+            echecs.append(model_id)
+
+    if echecs:
+        logger.error("[BULK-STATUS] Échec d'écriture pour : %s", ", ".join(echecs))
+
+    logger.info(
+        "[BULK-STATUS] statut='%s' — %d modifié(s), %d inchangé(s), %d introuvable(s), %d échec(s).",
+        body.status, len(modifies), len(inchanges), len(introuvables), len(echecs),
+    )
+    return {
+        "status": "ok" if not echecs else "partiel",
+        "applique": body.status,
+        "modifies": modifies,
+        "inchanges": inchanges,
+        "introuvables": introuvables,
+        "echecs": echecs,
+    }
+
+
+@router.post("/api/models/{model_id}/toggle")
+def toggle_model(model_id: str):
+    """
+    [#T158] Bascule le statut actif/inactif d'un modèle (UPDATE ciblé).
+    status='inactive' suffit à retirer le modèle du routage par tier (#T185).
+    """
+    from core.models_db import get_model, set_model_status
+    model = get_model(model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail=f"Modèle '{model_id}' introuvable.")
+    new_status = "inactive" if model.get("status") == "active" else "active"
+    if not set_model_status(model_id, new_status):
+        raise HTTPException(status_code=500, detail="Échec de l'écriture en base.")
+    return {"enabled": new_status == "active", "status": new_status}
+
+
+@router.post("/api/models/{model_id}/routing-tier")
+def update_model_routing_tier(model_id: str, body: dict):
+    """
+    [#T185/#T186] Change le routing_tier (leger/moyen/fort ou null) d'un modèle
+    depuis l'IHM — UPDATE ciblé qui ne touche à aucun autre champ.
+    """
+    from core.models_db import get_model, set_model_routing_tier
+    if get_model(model_id) is None:
+        raise HTTPException(status_code=404, detail=f"Modèle '{model_id}' introuvable.")
+    routing_tier = body.get("routing_tier")
+    try:
+        if not set_model_routing_tier(model_id, routing_tier):
+            raise HTTPException(status_code=500, detail="Échec de l'écriture en base.")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"status": "ok", "model_id": model_id, "routing_tier": routing_tier}
+
+
+@router.post("/api/models/{model_id}/ping")
+async def ping_model(model_id: str):
+    """
+    [#T158] Test de vivacité réel d'un modèle : mini-génération chronométrée via
+    le gateway (donc avec Circuit Breaker). Les modèles du catalogue non câblés
+    dans le gateway (#T186) répondent ok=false avec un message explicite.
+    """
+    import time as _time
+
+    from core.llm_gateway import LLMGateway
+
+    gateway = LLMGateway()
+    try:
+        provider = gateway.get_provider(model_id)
+    except ValueError:
+        return {
+            "ok": False,
+            "latency_ms": 0,
+            "error": "Modèle au catalogue mais non câblé dans le gateway (cf. #T186).",
+        }
+
+    start = _time.perf_counter()
+    try:
+        import asyncio as _asyncio
+        await _asyncio.wait_for(
+            provider.generate_async(
+                system_prompt="Réponds uniquement : pong",
+                user_prompt="ping",
+                session_id="hmi_ping",
+            ),
+            timeout=20.0,
+        )
+        return {"ok": True, "latency_ms": round((_time.perf_counter() - start) * 1000)}
+    except Exception as e:
+        return {
+            "ok": False,
+            "latency_ms": round((_time.perf_counter() - start) * 1000),
+            "error": str(e)[:200],
+        }
+
+
 @router.get("/api/models/{model_id}")
 def get_model_detail(model_id: str):
     """Retourne les détails d'un modèle spécifique."""
@@ -152,6 +474,9 @@ def get_keys_status():
         "OPENROUTER_API_KEY": bool(os.environ.get("OPENROUTER_API_KEY")),
         "MISTRAL_API_KEY": bool(os.environ.get("MISTRAL_API_KEY")),
         "COHERE_API_KEY": bool(os.environ.get("COHERE_API_KEY")),
+        # Diagnostic de présence de la clé HASS_TOKEN (T239) — volontairement
+        # hors accesseur get_ha_token() : la sémantique est « cette clé précise
+        # existe-t-elle », pas « donne-moi le token ».
         "HASS_TOKEN": bool(os.environ.get("HASS_TOKEN")),
     }
     return {"keys": api_keys, "configured_count": sum(api_keys.values())}

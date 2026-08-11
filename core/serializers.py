@@ -1,4 +1,12 @@
-from core.state import GlobalState, TaskPayload, StateUpdate
+"""
+core/serializers.py — Convertisseurs GlobalState/StateUpdate/TaskPayload → dict JSON-safe.
+
+Copie défensive des listes/queues pour éviter un RuntimeError si la collection
+est modifiée pendant la sérialisation. Utilisé par api/routes/agents.py et
+api/routes/streaming.py pour exposer l'état du moteur en HTTP/SSE.
+"""
+from core.state import GlobalState, StateUpdate, TaskPayload
+
 
 def task_payload_to_dict(p: TaskPayload) -> dict:
     if not p: return None

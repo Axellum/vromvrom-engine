@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,28 @@ def mark_provider_failed(provider: str) -> None:
 def _in_cooldown(provider: str) -> bool:
     ts = _provider_cooldown.get(provider, 0.0)
     return (time.time() - ts) < _PROVIDER_COOLDOWN_SECONDS
+
+
+# [#T248] Interrupteur d'hôte : les providers CLI (abonnements Antigravity/Claude)
+# n'ont de sens que sur une machine où le binaire existe et est trusté (le PC).
+# Sur le Deck, l'absence est structurelle — les proposer au round-robin ne peut
+# qu'échouer et consumer des cooldowns. MOTEUR_DISABLE_CLI_PROVIDERS=1 dans le
+# .env de l'hôte les exclut explicitement de la cascade.
+def _cli_providers_disabled() -> bool:
+    return os.getenv("MOTEUR_DISABLE_CLI_PROVIDERS", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _binary_present(names: tuple[str, ...], windows_appdata_candidates: tuple[str, ...] = ()) -> bool:
+    """
+    [#T248] Détection cross-plateforme d'un binaire CLI : chemins absolus
+    Windows (AppData) seulement sous Windows, sinon recherche PATH générique.
+    Les chemins AppData n'existent jamais sous Linux — les tester ailleurs
+    qu'en Windows n'ajoute que du bruit.
+    """
+    import shutil
+    if sys.platform == "win32" and any(os.path.exists(p) for p in windows_appdata_candidates):
+        return True
+    return any(shutil.which(name) for name in names)
 
 
 # Index de rotation round-robin module-level (BudgetGuard() est réinstancié
@@ -189,16 +212,18 @@ class BudgetGuard:
         sur cette machine. N'atteste PAS que le dialogue de confiance du
         workspace est accepté : un échec réel à l'exécution est absorbé par
         mark_provider_failed() (cooldown), pas par ce test préalable.
+
+        [#T248] Détection cross-plateforme (_binary_present) : les chemins
+        AppData ne sont testés que sous Windows.
         """
-        import shutil
         user_home = os.path.expanduser("~")
-        candidates = [
-            os.path.join(user_home, "AppData", "Local", "Programs", "Antigravity IDE", "bin", "antigravity-ide.cmd"),
-            os.path.join(user_home, "AppData", "Local", "Programs", "Antigravity", "bin", "antigravity.cmd"),
-        ]
-        if any(os.path.exists(p) for p in candidates):
-            return True
-        return any(shutil.which(name) for name in ("antigravity-ide", "antigravity-ide.cmd", "antigravity", "antigravity.exe"))
+        return _binary_present(
+            ("antigravity-ide", "antigravity-ide.cmd", "antigravity", "antigravity.exe"),
+            windows_appdata_candidates=(
+                os.path.join(user_home, "AppData", "Local", "Programs", "Antigravity IDE", "bin", "antigravity-ide.cmd"),
+                os.path.join(user_home, "AppData", "Local", "Programs", "Antigravity", "bin", "antigravity.cmd"),
+            ),
+        )
 
     def _check_claude_cli_availability(self) -> bool:
         """
@@ -207,8 +232,7 @@ class BudgetGuard:
         _check_gemini_cli_availability() : présence du binaire seulement, pas
         du dialogue de confiance du workspace.
         """
-        import shutil
-        return shutil.which("claude") is not None
+        return _binary_present(("claude", "claude.cmd"))
 
     async def get_available_provider(self) -> str | None:
         """
@@ -284,10 +308,15 @@ class BudgetGuard:
         # 1. Rotation round-robin parmi les API cloud gratuites/abonnements
         # réellement disponibles (clé présente / binaire trouvé / pas en
         # cooldown / quota non dépassé pour gemini-free).
+        # [#T248] Les providers CLI sont exclus quand l'hôte les désactive
+        # (MOTEUR_DISABLE_CLI_PROVIDERS) — profil Deck sans CLI.
+        cli_disabled = _cli_providers_disabled()
+        if cli_disabled:
+            logger.debug("[BudgetGuard] Providers CLI désactivés par MOTEUR_DISABLE_CLI_PROVIDERS — exclus du round-robin.")
         cloud_candidates: list[str] = []
-        if not _in_cooldown("gemini-cli-abo") and self._check_gemini_cli_availability():
+        if not cli_disabled and not _in_cooldown("gemini-cli-abo") and self._check_gemini_cli_availability():
             cloud_candidates.append("gemini-cli-abo")
-        if not _in_cooldown("claude-cli-abo") and self._check_claude_cli_availability():
+        if not cli_disabled and not _in_cooldown("claude-cli-abo") and self._check_claude_cli_availability():
             cloud_candidates.append("claude-cli-abo")
         if not _in_cooldown("cerebras-free") and os.getenv("CEREBRAS_API_KEY"):
             cloud_candidates.append("cerebras-free")

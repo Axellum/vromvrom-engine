@@ -111,6 +111,7 @@ class TestWorkerDaemon(unittest.TestCase):
     def test_execute_task_returns_structured_response(self):
         """L'exécution doit retourner un dict structuré (succès ou erreur)."""
         import asyncio
+
         from core.worker_daemon import WorkerDaemon
         daemon = WorkerDaemon(name="test-daemon", port=8780)
 

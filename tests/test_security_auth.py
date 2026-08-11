@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 tests/test_security_auth.py — Tests de sécurité de CARACTÉRISATION (item 0.3 du
 plan de remédiation, cf. docs/plan_remediation_2026-06-18.md).
@@ -86,32 +85,50 @@ def _route_has_require_auth(route) -> bool:
     return bool(found)
 
 
+def _websocket_route_has_auth(route) -> bool:
+    """Détecte require_websocket_auth dans l'arbre de dépendances d'une route WebSocket (récursif)."""
+    found = []
+
+    def walk(dep):
+        call = getattr(dep, "call", None)
+        if call is not None and getattr(call, "__name__", "") in ("require_websocket_auth", "require_auth"):
+            found.append(True)
+        for sub in getattr(dep, "dependencies", []):
+            walk(sub)
+
+    walk(route.dependant)
+    return bool(found)
+
+
 def _unprotected_sensitive_routes():
+    from fastapi.routing import APIRoute, APIWebSocketRoute
+
     from gui_server import app
-    from fastapi.routing import APIRoute
 
     unprotected = []
     for r in app.routes:
-        if not isinstance(r, APIRoute):
-            continue
-        if not r.path.startswith("/api"):
-            continue
-        if r.path in _PUBLIC_PATHS:
-            continue
-        if not _route_has_require_auth(r):
-            methods = ",".join(sorted(m for m in r.methods if m != "HEAD"))
-            unprotected.append(f"{methods} {r.path}")
+        if isinstance(r, APIRoute):
+            if not r.path.startswith("/api"):
+                continue
+            if r.path in _PUBLIC_PATHS:
+                continue
+            if not _route_has_require_auth(r):
+                methods = ",".join(sorted(m for m in r.methods if m != "HEAD"))
+                unprotected.append(f"{methods} {r.path}")
+        elif isinstance(r, APIWebSocketRoute):
+            if not _websocket_route_has_auth(r):
+                unprotected.append(f"WS {r.path}")
     return sorted(set(unprotected))
 
 
 def test_sensitive_api_routes_require_auth():
-    """[1.1] Toute route /api sensible doit dépendre de require_auth (fail-closed).
+    """[1.1] Toute route /api sensible et route /ws doit dépendre de require_auth ou require_websocket_auth (fail-closed).
 
-    Garde-fou actif depuis le câblage de require_auth au montage des routers.
+    Garde-fou actif depuis le câblage de require_auth et require_websocket_auth.
     """
     unprotected = _unprotected_sensitive_routes()
     assert not unprotected, (
-        f"{len(unprotected)} route(s) /api sensibles sans require_auth "
+        f"{len(unprotected)} route(s) sensible(s) ou WS sans authentification "
         f"(fail-closed) :\n  - " + "\n  - ".join(unprotected)
     )
 
@@ -123,6 +140,7 @@ def test_protected_route_returns_401_without_token(monkeypatch):
     effet de bord). On cible une route GET de données.
     """
     from fastapi.testclient import TestClient
+
     from core import auth
 
     monkeypatch.setenv("MOTEUR_API_KEY", "test-secret-key-0.3")
@@ -146,6 +164,7 @@ def test_query_token_rejected_post_t65(monkeypatch):
     des tickets éphémères POST /api/auth/ticket → ?ticket=<ticket>.
     """
     from fastapi.testclient import TestClient
+
     from core import auth
 
     monkeypatch.setenv("MOTEUR_API_KEY", "test-secret-key-qp")
@@ -211,6 +230,7 @@ def test_no_hardcoded_whatsapp_token():
 def test_cors_not_wildcard_with_credentials():
     """[1.2] Jamais allow_origins=['*'] ET allow_credentials=True simultanément."""
     from starlette.middleware.cors import CORSMiddleware
+
     from gui_server import app
 
     for mw in app.user_middleware:

@@ -14,12 +14,12 @@ Héritage :
   (comme HACommandAgent)
 """
 
-import os
 import logging
+import os
 
 from agents.executor import ExecutorAgent
-from core.state import TaskPayload, StateUpdate
 from core.llm_gateway import LLMGateway
+from core.state import StateUpdate, TaskPayload
 from tools.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class AntigravityAgent(ExecutorAgent):
         # Si pas de registry fourni, on en crée un vide (mode dégradé sans outils)
         if tool_registry is None:
             tool_registry = ToolRegistry()
-        
+
         super().__init__(
             llm_gateway=llm_gateway,
             tool_registry=tool_registry,
@@ -50,9 +50,9 @@ class AntigravityAgent(ExecutorAgent):
         )
         # Override du nom et du system prompt hérité d'ExecutorAgent
         self.name = "antigravity_agent"
-        
-        import sys
+
         import os
+        import sys
         is_windows = (sys.platform == 'win32' or os.name == 'nt')
         if is_windows:
             os_rule = "5. COMPATIBILITÉ WINDOWS : N'utilise jamais de commandes Unix (ls, grep, cat) via le terminal. Utilise à la place les outils de manipulation de fichiers de Python ('read_file', 'write_file') ou des commandes Windows natives."
@@ -84,7 +84,7 @@ CONSIGNES :
         # Chargement conditionnel des directives LVGL Premium
         objective_lower = payload.task_objective.lower()
         lvgl_keywords = ["lvgl", "ecran", "écran", "ui", "design", "layout", "widget", "dashboard"]
-        
+
         if any(kw in objective_lower for kw in lvgl_keywords):
             lvgl_context = self._load_lvgl_templates()
             if lvgl_context:
@@ -105,7 +105,7 @@ CONSIGNES :
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             templates_path = os.path.join(project_root, "docs", "LVGL_PREMIUM_TEMPLATES.md")
             if os.path.exists(templates_path):
-                with open(templates_path, "r", encoding="utf-8") as f:
+                with open(templates_path, encoding="utf-8") as f:
                     return "\n--- DIRECTIVES DESIGN LVGL PREMIUM ---\n" + f.read()
         except Exception as le:
             logger.warning(f"Impossible de charger les templates LVGL : {le}")

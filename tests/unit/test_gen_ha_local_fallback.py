@@ -49,7 +49,7 @@ def test_volet_actions_use_script_with_action_data():
 
 def test_light_intent_has_entity_target_and_speech():
     _, intents = build_fallback(_load_commands())
-    salon_on = intents["Tab5CoreLightLivingRoomOn"]
+    salon_on = intents["Tab5CoreLightSalonOn"]
     assert salon_on["action"][0]["target"]["entity_id"] == "light.living_room"
     assert salon_on["speech"]["text"] == "Lumière allumée."
 

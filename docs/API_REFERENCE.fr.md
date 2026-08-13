@@ -47,7 +47,7 @@ Voici un aperçu des routes principales spécifiques au moteur :
 - `POST /api/ha/control` : Exécute un service (ex: allumer une lumière).
   ```json
   {
-    "entity_id": "light.salon",
+    "entity_id": "light.living_room",
     "service": "turn_on",
     "service_data": {"brightness": 255}
   }

@@ -6,7 +6,7 @@ Mesuré en PRODUCTION le 12/08 sur une vraie commande vocale d'Axel
 
     09:18:59,950  Match fuzzy 0.88 : « dessant le volet du salon »
                   ≈ « descend le volet du salon » → {'action': 'close'}
-    09:18:59,951  Zero-LLM HA → script.tab5_volet_action()
+    09:18:59,951  Zero-LLM HA → script.blind_action()
     09:19:09,100  Zero-LLM HA échec : Server disconnected        ← 9,1 s
     09:19:09,377  « Je ne peux pas descendre le volet du salon depuis ici. »
 
@@ -76,7 +76,7 @@ async def test_action_rejouable_repart_sur_une_connexion_neuve(monkeypatch):
     monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
 
     ok, texte = await es.execute_ha_service(
-        "script.tab5_volet_action", "cover.volet_salon",
+        "script.blind_action", "cover.volet_salon",
         service_data={"action": "close"},
     )
 
@@ -93,7 +93,7 @@ async def test_action_non_rejouable_echoue_franchement(monkeypatch):
     monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
 
     with pytest.raises(aiohttp.ServerDisconnectedError):
-        await es.execute_ha_service("light.toggle", "light.salon")
+        await es.execute_ha_service("light.toggle", "light.living_room")
 
     assert session.tentatives == 1, "toggle a été rejoué — risque de double commande physique"
 
@@ -107,7 +107,7 @@ async def test_deux_coupures_de_suite_ne_boucle_pas(monkeypatch):
 
     with pytest.raises(aiohttp.ServerDisconnectedError):
         await es.execute_ha_service(
-            "script.tab5_volet_action", "cover.volet_salon",
+            "script.blind_action", "cover.volet_salon",
             service_data={"action": "close"},
         )
 
@@ -117,7 +117,7 @@ async def test_deux_coupures_de_suite_ne_boucle_pas(monkeypatch):
 def test_liste_blanche_des_actions_rejouables():
     """L'idempotence de l'effet PHYSIQUE est le seul critère."""
     for rejouable in ("light.turn_on", "cover.close_cover", "cover.open_cover",
-                      "climate.set_temperature", "script.tab5_volet_action"):
+                      "climate.set_temperature", "script.blind_action"):
         assert _est_action_rejouable(rejouable), rejouable
     for interdit in ("light.toggle", "cover.toggle", "script.un_script_inconnu",
                      "vacuum.start", "lock.unlock"):
@@ -127,7 +127,7 @@ def test_liste_blanche_des_actions_rejouables():
 # ── (b) Une commande reconnue ne retombe plus dans la conversation ───────────
 
 class _Cmd:
-    service = "script.tab5_volet_action"
+    service = "script.blind_action"
     entity_id = "cover.volet_salon"
     service_data = {"action": "close"}
 

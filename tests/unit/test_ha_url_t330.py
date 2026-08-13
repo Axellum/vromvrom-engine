@@ -143,7 +143,7 @@ async def test_search_ha_entities_sans_url(sans_url_ha):
 @pytest.mark.asyncio
 async def test_execute_ha_action_sans_url(sans_url_ha):
     from core.mcp_tools.homeassistant import execute_ha_action
-    message = await execute_ha_action("light.salon", "light.turn_on")
+    message = await execute_ha_action("light.living_room", "light.turn_on")
     assert "URL Home Assistant non configurée" in message
     assert "HASS_URL/HA_URL" in message
 

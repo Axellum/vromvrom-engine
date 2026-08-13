@@ -73,7 +73,7 @@ def test_validate_service_data_jinja_ssti_nested_lists():
 
 
 @pytest.mark.parametrize("value", [
-    "light.salon", "light.salon_principal", "binary_sensor.porte_1",
+    "light.living_room", "light.living_room_principal", "binary_sensor.porte_1",
     "climate.chambre", "switch.prise_bureau",
 ])
 def test_valid_entity_ids(value):
@@ -81,9 +81,9 @@ def test_valid_entity_ids(value):
 
 
 @pytest.mark.parametrize("value", [
-    "", "light", "light.", ".salon", "light.salon/../x",
-    "light.salon;rm -rf", "Light.Salon", "light salon",
-    "../../secret", "light.salon\n",
+    "", "light", "light.", ".salon", "light.living_room/../x",
+    "light.living_room;rm -rf", "Light.Salon", "light salon",
+    "../../secret", "light.living_room\n",
 ])
 def test_invalid_entity_ids(value):
     assert not is_valid_ha_entity_id(value)

@@ -11,28 +11,28 @@ PRIVATE = Path(r"H:\AuxFilsDesIdees\moteur_agents")
 OSS = Path(r"H:\vromvrom-engine-oss")
 
 IP_REPLACEMENTS = [
-    ("192.168.0.16", "${HA_HOST:-192.168.1.x}"),
-    ("192.168.0.43", "${DECK_HOST:-192.168.1.x}"),
-    ("192.168.0.139", "${DECK_HOST_WIFI:-192.168.1.x}"),
-    ("192.168.0.84", "${LM_STUDIO_HOST:-192.168.1.x}"),
-    ("192.168.0.155", "${PC_HOST:-192.168.1.x}"),
-    ("192.168.0.159", "${PC_HOST_ALT:-192.168.1.x}"),
-    ("192.168.0.88", "${TAB5_HOST:-192.168.1.x}"),
-    ("192.168.0.74", "${MINITAB_HOST:-192.168.1.x}"),
-    ("192.168.0.254", "${GATEWAY_HOST:-192.168.1.x}"),
-    ("192.168.0.20", "${ZIGBEE_HOST:-192.168.1.x}"),
+    ("${HA_HOST:-192.168.1.x}", "${HA_HOST:-192.168.1.x}"),
+    ("${DECK_HOST:-192.168.1.x}", "${DECK_HOST:-192.168.1.x}"),
+    ("${DECK_HOST_WIFI:-192.168.1.x}", "${DECK_HOST_WIFI:-192.168.1.x}"),
+    ("${LM_STUDIO_HOST:-192.168.1.x}", "${LM_STUDIO_HOST:-192.168.1.x}"),
+    ("${PC_HOST:-192.168.1.x}", "${PC_HOST:-192.168.1.x}"),
+    ("${PC_HOST_ALT:-192.168.1.x}", "${PC_HOST_ALT:-192.168.1.x}"),
+    ("${TAB5_HOST:-192.168.1.x}", "${TAB5_HOST:-192.168.1.x}"),
+    ("${MINITAB_HOST:-192.168.1.x}", "${MINITAB_HOST:-192.168.1.x}"),
+    ("${GATEWAY_HOST:-192.168.1.x}", "${GATEWAY_HOST:-192.168.1.x}"),
+    ("${ZIGBEE_HOST:-192.168.1.x}", "${ZIGBEE_HOST:-192.168.1.x}"),
 ]
 
 ENTITY_REPLACEMENTS = [
-    ("light.salon", "light.living_room"),
-    ("light.h6008_2", "light.bedroom"),
-    ("light.h6008", "light.bedside"),
-    ("light.h600c", "light.hallway"),
+    ("light.living_room", "light.living_room"),
+    ("light.bedroom", "light.bedroom"),
+    ("light.bedside", "light.bedside"),
+    ("light.hallway", "light.hallway"),
     ("light.sonoff_1000f18da8", "light.kitchen"),
-    ("cover.volet_serre_rideau", "cover.living_room_blind"),
+    ("cover.living_room_blind", "cover.living_room_blind"),
     ("input_boolean.volet_serre_mouvement", "input_boolean.blind_moving"),
-    ("climate.salon_daikinap71273_clim", "climate.living_room"),
-    ("script.tab5_volet_action", "script.blind_action"),
+    ("climate.living_room", "climate.living_room"),
+    ("script.blind_action", "script.blind_action"),
     (
         "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
         "switch.example_wake_word",
@@ -113,12 +113,12 @@ def patch_vocal_tts_cache(text: str) -> str:
 def patch_ha_vocal_fallback(text: str) -> str:
     text = apply_replacements(text, ips=False, entities=True, paths=False)
     text = text.replace(
-        '- Si la pièce est « salon » et action allumer → light.salon + light.turn_on.\n'
-        '- Si la pièce est « chambre » et action éteindre → light.h6008_2 + light.turn_off.\n',
+        '- Si la pièce est « salon » et action allumer → light.living_room + light.turn_on.\n'
+        '- Si la pièce est « chambre » et action éteindre → light.bedroom + light.turn_off.\n',
         '- Si la pièce est « salon » et action allumer → light.living_room + light.turn_on.\n'
         '- Si la pièce est « chambre » et action éteindre → light.bedroom + light.turn_off.\n',
     )
-    text = text.replace('{"service":"light.turn_on","entity_id":"light.salon"}', '{"service":"light.turn_on","entity_id":"light.living_room"}')
+    text = text.replace('{"service":"light.turn_on","entity_id":"light.living_room"}', '{"service":"light.turn_on","entity_id":"light.living_room"}')
     return text
 
 

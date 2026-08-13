@@ -22,7 +22,7 @@ async def test_ha_direct():
         "Authorization": f"Bearer {HASS_TOKEN}",
         "Content-Type": "application/json"
     }
-    payload = {"entity_id": "light.salon"}
+    payload = {"entity_id": "light.living_room"}
 
     start_time = time.time()
     try:

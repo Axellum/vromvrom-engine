@@ -164,13 +164,13 @@ async def execute_ha_action(
     Idéal pour allumer/éteindre une lumière, régler un thermostat, déclencher une scène.
 
     Exemples d'appel :
-        execute_ha_action("light.salon", "light.turn_on", '{"brightness": 200}')
+        execute_ha_action("light.living_room", "light.turn_on", '{"brightness": 200}')
         execute_ha_action("climate.chambre", "climate.set_temperature", '{"temperature": 21}')
         execute_ha_action("scene.cinema", "scene.turn_on")
         execute_ha_action("switch.prise_bureau", "switch.toggle")
 
     Args:
-        entity_id: Identifiant complet de l'entité HA (ex: "light.salon_principal").
+        entity_id: Identifiant complet de l'entité HA (ex: "light.living_room_principal").
         service: Service HA à appeler (ex: "light.turn_on", "climate.set_temperature").
         service_data: JSON string des données du service (optionnel). Défaut: "{}".
     """
@@ -204,7 +204,7 @@ async def execute_ha_action(
         validate_service_data,
     )
     if not is_valid_ha_entity_id(entity_id):
-        return f"❌ entity_id invalide : {entity_id!r} (attendu : domaine.objet, ex: light.salon)."
+        return f"❌ entity_id invalide : {entity_id!r} (attendu : domaine.objet, ex: light.living_room)."
     if not is_valid_ha_domain(domain):
         return f"❌ domaine HA invalide : {domain!r}."
     if not is_valid_ha_service_name(svc_name):

@@ -40,7 +40,7 @@ def test_climate_command_accepts_stt_variant_cline():
     m = match_ha_climate_command("mets la cline du salon a 22")
     assert m is not None
     assert m.service == "climate.set_temperature"
-    assert m.entity_id == "climate.salon_daikinap71273_clim"
+    assert m.entity_id == "climate.living_room"
     assert m.service_data["temperature"] == 22
 
 
@@ -81,7 +81,7 @@ async def test_set_temperature_with_mode_splits_in_two_calls(monkeypatch):
 
     ok, text = await es.execute_ha_service(
         "climate.set_temperature",
-        "climate.salon_daikinap71273_clim",
+        "climate.living_room",
         service_data={"temperature": 22, "hvac_mode": "cool"},
     )
     assert ok
@@ -103,7 +103,7 @@ async def test_set_temperature_without_mode_single_call(monkeypatch):
 
     ok, _ = await es.execute_ha_service(
         "climate.set_temperature",
-        "climate.salon_daikinap71273_clim",
+        "climate.living_room",
         service_data={"temperature": 20},
     )
     assert ok

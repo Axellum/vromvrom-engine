@@ -47,14 +47,14 @@ _VOLET_OFF_MARKERS = frozenset({"descend", "descends", "baisse", "ferme", "ferme
 _VOLET_ON_MARKERS = frozenset({"monte", "ouvre", "ouvrir", "leve"})
 # Écho TTS / phrases d'état — ne pas interpréter comme commande
 _VOLET_STATUS_MARKERS = frozenset({"sont", "est", "ete", "etait", "etaient", "seront", "deja", "maintenant"})
-_VOLET_COVER_ENTITY = "cover.volet_serre_rideau"
-_VOLET_SCRIPT = "script.tab5_volet_action"
+_VOLET_COVER_ENTITY = "cover.living_room_blind"
+_VOLET_SCRIPT = "script.blind_action"
 _VOLET_MOVING_ENTITY = "input_boolean.volet_serre_mouvement"
 _VOLET_STOP_WORDS = frozenset({"stop", "stoppe", "arrete", "arret", "arreter"})
 # Table pièce → entité clim (extensible : ajouter une ligne suffit pour une 2e clim).
 # La détection reste zéro-LLM et choisit l'entité selon la pièce citée, défaut = salon.
 _CLIMATE_ENTITIES: dict[str, str] = {
-    "salon": "climate.salon_daikinap71273_clim",
+    "salon": "climate.living_room",
 }
 _CLIMATE_DEFAULT_ENTITY = _CLIMATE_ENTITIES["salon"]
 _CLIMATE_ENTITY = _CLIMATE_DEFAULT_ENTITY  # Rétro-compat (références existantes)
@@ -91,11 +91,11 @@ _CLIMATE_TEMP_WORDS_RE = re.compile(
 # lieu d'un set_temperature portant hvac_mode — plus compatible (certains Daikin
 # rejettent hvac_mode dans set_temperature).
 _CLIMATE_SPLIT_HVAC_AND_TEMP = True
-_SALON_LIGHT_GROUP = "light.salon"
+_SALON_LIGHT_GROUP = "light.living_room"
 _SALON_LIGHT_MEMBERS = (
     "light.sonoff_1001601d46",
-    "light.h600c",
-    "light.h6008",
+    "light.hallway",
+    "light.bedside",
 )
 
 
@@ -108,7 +108,7 @@ class HACommandMatch:
 
 
 def _volet_script(action: str, phrase: str) -> HACommandMatch:
-    """Toutes les commandes volet passent par script.tab5_volet_action (suivi écran HA)."""
+    """Toutes les commandes volet passent par script.blind_action (suivi écran HA)."""
     return HACommandMatch(
         service=_VOLET_SCRIPT,
         entity_id="",
@@ -118,7 +118,7 @@ def _volet_script(action: str, phrase: str) -> HACommandMatch:
 
 
 def ensure_volet_via_script(match: HACommandMatch) -> HACommandMatch:
-    """Convertit cover.volet_serre_rideau → script avec suivi mouvement."""
+    """Convertit cover.living_room_blind → script avec suivi mouvement."""
     if match.service == _VOLET_SCRIPT:
         return match
     if match.entity_id != _VOLET_COVER_ENTITY:
@@ -187,13 +187,13 @@ def load_ha_commands() -> list[dict[str, Any]]:
 
 # Pièce → (entity_id, services on/off)
 _ROOM_ENTITIES: dict[str, tuple[str, dict[str, str]]] = {
-    "salon": ("light.salon", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "chambre": ("light.h6008_2", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "chevet": ("light.h6008", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "salon": ("light.living_room", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "chambre": ("light.bedroom", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "chevet": ("light.bedside", {"on": "light.turn_on", "off": "light.turn_off"}),
     "cuisine": ("light.sonoff_1000f18da8", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "serre": ("cover.volet_serre_rideau", {"on": "cover.open_cover", "off": "cover.close_cover"}),
-    "volet serre": ("cover.volet_serre_rideau", {"on": "cover.open_cover", "off": "cover.close_cover"}),
-    "clim salon": ("climate.salon_daikinap71273_clim", {"on": "climate.turn_on", "off": "climate.turn_off"}),
+    "serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
+    "volet serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
+    "clim salon": ("climate.living_room", {"on": "climate.turn_on", "off": "climate.turn_off"}),
 }
 
 
@@ -301,7 +301,7 @@ def match_ha_climate_command(prompt: str) -> HACommandMatch | None:
 def match_ha_room_keywords(prompt: str) -> HACommandMatch | None:
     """
     Match pièce + action quand STT est trop bruité pour ha_commands exact/fuzzy.
-    Ex: « et tel les lumières du salon » → éteindre light.salon
+    Ex: « et tel les lumières du salon » → éteindre light.living_room
     """
     norm = normalize_ha_command_prompt(prompt)
     if not norm:
@@ -670,7 +670,7 @@ async def execute_ha_service(
     service_data = volet_match.service_data
 
     if ha_service == _VOLET_SCRIPT and not (service_data or {}).get("action"):
-        logger.warning("[HA EXEC] script.tab5_volet_action sans action — refus")
+        logger.warning("[HA EXEC] script.blind_action sans action — refus")
         return False, "Je n'ai pas pu exécuter la commande volet."
 
     ha_token, ha_url = _read_ha_credentials()
@@ -760,7 +760,7 @@ async def execute_ha_service(
             ha_service, payload, resp_status, resp_text[:120],
         )
 
-    # Fallback : groupe light.salon → membres individuels
+    # Fallback : groupe light.living_room → membres individuels
     if ha_entity == _SALON_LIGHT_GROUP and "turn_" in ha_service:
         action = ha_service.split(".", 1)[-1]
         any_ok = False

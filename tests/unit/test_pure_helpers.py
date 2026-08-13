@@ -61,9 +61,9 @@ def test_sanitizer_masks_api_key():
 def test_sanitizer_masks_email_and_private_ip():
     from tools.sanitizer import OutputSanitizer
     s = OutputSanitizer()
-    out = s.sanitize("contact test.user@example.com sur 192.168.1.10")
+    out = s.sanitize("contact test.user@example.com sur 192.168.1.x")
     assert "test.user@example.com" not in out
-    assert "192.168.1.10" not in out
+    assert "192.168.1.x" not in out
 
 
 def test_sanitizer_disabled_is_passthrough():

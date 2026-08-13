@@ -141,12 +141,16 @@ async def _extract_findings(corpus: str, tier: str, max_output_tokens: int = 200
     logger.info(f"[AUDITOR] Modèle résolu pour l'audit (tier={tier}) : {model_name}")
 
     user_prompt = f"## Extrait de code à auditer\n\n{corpus}"
-    response = await provider.generate_async(
-        system_prompt=_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        max_tokens=max_output_tokens,
-        temperature=0.2,
-    )
+    # [#T308] Boucle de l'auditeur autonome : tourne en permanence, consomme, et
+    # n'est pas un agent au sens de `BaseAgent` — son étiquette doit être posée ici.
+    from core.agent_trace import agent_courant
+    with agent_courant("auditor"):
+        response = await provider.generate_async(
+            system_prompt=_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            max_tokens=max_output_tokens,
+            temperature=0.2,
+        )
 
     cost = _estimate_cost_usd(model_name, len(_SYSTEM_PROMPT) + len(user_prompt), len(response or ""))
 

@@ -127,7 +127,7 @@ class TestMemoryDBV9:
 
         # 2. Créer une entité dans le graphe
         temp_memory_db.upsert_graph_entity(
-            name="switch.example_wake_word",
+            name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
             entity_type="HA_Entity",
             observations=["Vrai commutateur du wake word Tab5 V2"]
         )
@@ -135,13 +135,13 @@ class TestMemoryDBV9:
         # 3. Créer la liaison
         ok = temp_memory_db.link_fact_to_entity(
             fact_id=fact_id,
-            entity_name="switch.example_wake_word"
+            entity_name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
         )
         assert ok is True
 
         # 4. Rechercher les faits connectés à l'entité
         facts = temp_memory_db.get_connected_facts_for_entity(
-            entity_name="switch.example_wake_word"
+            entity_name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
         )
         assert len(facts) == 1
         assert facts[0]["id"] == fact_id
@@ -150,7 +150,7 @@ class TestMemoryDBV9:
         # 5. Rechercher les entités connectées au fait
         entities = temp_memory_db.get_connected_entities_for_fact(fact_id=fact_id)
         assert len(entities) == 1
-        assert entities[0]["name"] == "switch.example_wake_word"
+        assert entities[0]["name"] == "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
 
     @pytest.mark.asyncio
     async def test_async_graph_rag_linkage(self, temp_memory_db):

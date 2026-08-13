@@ -419,13 +419,20 @@ def get_all_models() -> list[dict[str, Any]]:
         return []
 
 
-def set_model_status(model_id: str, status: str) -> bool:
+def set_model_status(
+    model_id: str, status: str, *, revendique_par_sonde: bool = False
+) -> bool:
     """
     [#T158] Met à jour UNIQUEMENT le statut d'un modèle (active/inactive).
 
     UPDATE ciblé volontairement distinct d'upsert_model : l'INSERT OR REPLACE
     de ce dernier remet à leur valeur par défaut tous les champs non fournis
     (routing_tier compris) — inadapté à un simple interrupteur.
+
+    [#T333] `revendique_par_sonde=True` : la sonde revendique (ou libère) le
+    modèle. Sinon (toggle IHM / bulk) on efface `desactive_par_sonde` — sinon un
+    humain qui laisse un modèle inactif après une extinction auto le verrait
+    rallumé au prochain ping réussi.
     """
     if status not in ("active", "inactive"):
         raise ValueError(f"Statut invalide : {status!r} (attendu 'active' ou 'inactive')")
@@ -434,7 +441,24 @@ def set_model_status(model_id: str, status: str) -> bool:
             cur = conn.execute(
                 "UPDATE models SET status = ? WHERE id = ?", (status, model_id)
             )
-            return cur.rowcount > 0
+            if cur.rowcount <= 0:
+                return False
+        # Lazy import : models_db ↔ model_health_probe.
+        try:
+            from core.model_health_probe import _ecrire_sante
+            if revendique_par_sonde:
+                _ecrire_sante(
+                    model_id,
+                    desactive_par_sonde=1 if status == "inactive" else 0,
+                )
+            else:
+                _ecrire_sante(model_id, desactive_par_sonde=0)
+        except Exception as exc:
+            logger.debug(
+                "[ModelsDB] Maj desactive_par_sonde ignorée pour %s : %s",
+                model_id, exc,
+            )
+        return True
     except Exception as e:
         logger.error(f"[ModelsDB] Erreur set_model_status({model_id}, {status}): {e}")
         return False

@@ -16,6 +16,7 @@ Héritage :
 
 import logging
 import os
+import re
 
 from agents.executor import ExecutorAgent
 from core.llm_gateway import LLMGateway
@@ -23,6 +24,12 @@ from core.state import StateUpdate, TaskPayload
 from tools.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# [#T317] Comparés en MOTS ENTIERS (cf. `_objectif_concerne_lvgl`). « ui » ne peut
+# pas rester une sous-chaîne : il est présent dans « qui », « aujourd'hui », « celui »…
+_MOTS_CLES_LVGL = frozenset({
+    "lvgl", "ecran", "écran", "ui", "design", "layout", "widget", "dashboard",
+})
 
 
 class AntigravityAgent(ExecutorAgent):
@@ -82,10 +89,7 @@ CONSIGNES :
         automatiquement injectées dans le contexte avant la boucle ReAct.
         """
         # Chargement conditionnel des directives LVGL Premium
-        objective_lower = payload.task_objective.lower()
-        lvgl_keywords = ["lvgl", "ecran", "écran", "ui", "design", "layout", "widget", "dashboard"]
-
-        if any(kw in objective_lower for kw in lvgl_keywords):
+        if self._objectif_concerne_lvgl(payload.task_objective):
             lvgl_context = self._load_lvgl_templates()
             if lvgl_context:
                 payload.relevant_context = (
@@ -95,6 +99,28 @@ CONSIGNES :
 
         # Délégation à la boucle ReAct d'ExecutorAgent
         return await super().invoke(payload)
+
+    @staticmethod
+    def _objectif_concerne_lvgl(objectif: str) -> bool:
+        """
+        [#T317] Détecte un objectif de design LVGL/UI — par MOT ENTIER, pas en sous-chaîne.
+
+        La détection cherchait ses mots-clés avec `kw in objective_lower`. Or « ui » est
+        une sous-chaîne d'une bonne partie du français courant : « qui », « aujourd'hui »,
+        « celui », « lui », « puis », « suis », « depuis », « produit »… La quasi-totalité
+        des objectifs déclenchaient donc l'injection des templates LVGL.
+
+        Sans conséquence visible aujourd'hui — `docs/LVGL_PREMIUM_TEMPLATES.md` a été
+        supprimé du dépôt, donc `_load_lvgl_templates()` rend une chaîne vide et
+        l'injection est un no-op. Le jour où ce fichier revient, chaque tâche contenant
+        « qui » se met à payer un contexte de design qu'elle n'a pas demandé. C'est
+        exactement le mécanisme qui poussait la cascade vers le tier fort payant (#T295).
+
+        Découvert le 12/08/2026 en cherchant l'origine d'un prompt de 289 966 tokens
+        (ce n'était pas la cause — cf. #T314 — mais le défaut, lui, est réel).
+        """
+        mots = set(re.findall(r"[a-z0-9_àâéèêëîïôöùûüç]+", (objectif or "").lower()))
+        return bool(mots & _MOTS_CLES_LVGL)
 
     def _load_lvgl_templates(self) -> str:
         """

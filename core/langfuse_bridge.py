@@ -8,7 +8,7 @@ toutes les méthodes sont des no-op silencieux (mode dégradé).
 Variables d'environnement requises (optionnelles) :
     LANGFUSE_PUBLIC_KEY — Clé publique du projet Langfuse
     LANGFUSE_SECRET_KEY — Clé secrète du projet Langfuse
-    LANGFUSE_HOST       — URL du serveur Langfuse (ex: http://${LM_STUDIO_HOST:-192.168.1.x}:3000)
+    LANGFUSE_HOST       — URL du serveur Langfuse (ex: http://192.168.1.x:3000)
 """
 
 import logging
@@ -56,7 +56,7 @@ class LangfuseBridge:
         # Tentative d'initialisation
         public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
         secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
-        host = os.environ.get("LANGFUSE_HOST", "http://${LM_STUDIO_HOST:-192.168.1.x}:3000")
+        host = os.environ.get("LANGFUSE_HOST", "http://192.168.1.x:3000")
 
         if not public_key or not secret_key:
             logger.info(

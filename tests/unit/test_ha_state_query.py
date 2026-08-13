@@ -22,13 +22,13 @@ def test_command_imperative_is_not_state_query():
 def test_light_state_question_detected():
     q = match_ha_state_query("la lumiere du salon est allumee ?")
     assert q is not None and q.kind == "light"
-    assert q.entity_id == "light.living_room"
+    assert q.entity_id == "light.salon"
 
 
 def test_climate_state_question_detected():
     q = match_ha_state_query("est-ce que la clim est allumee")
     assert q is not None and q.kind == "climate"
-    assert q.entity_id == "climate.living_room"
+    assert q.entity_id == "climate.salon_daikinap71273_clim"
 
 
 def test_volet_state_question_detected():

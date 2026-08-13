@@ -33,6 +33,8 @@ Valeur None = appel LLM hors agent : routeur, classificateur, collecteur de
 quotas, script direct. C'est une absence légitime, pas un défaut.
 """
 
+import functools
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
 
 _AGENT_COURANT: ContextVar[str | None] = ContextVar("agent_courant", default=None)
@@ -56,3 +58,47 @@ def restaurer_agent_courant(jeton: Token) -> None:
 def lire_agent_courant() -> str | None:
     """[T296] Nom de l'agent dont dépend l'appel LLM en cours, None hors agent."""
     return _AGENT_COURANT.get()
+
+
+@contextmanager
+def agent_courant(nom: str):
+    """
+    [T308] Étiquette les appels LLM d'un bloc, et rend l'étiquette précédente en sortant.
+
+    Pour les consommateurs qui ne sont pas des agents et n'ont donc pas l'enveloppe
+    de `BaseAgent.invoke()` : boucles de fond (dreamer, auditeur), outils vocaux,
+    front de code, outils MCP. Sans ça leur consommation est bien facturée, mais
+    anonyme — et sur le Deck ces boucles tournent 24h/24.
+
+    La restauration compte : `run_vocal_tool_loop` est appelée DEPUIS le fast-path,
+    qui a déjà posé la sienne. Sans le `finally`, le reste du fast-path finirait
+    étiqueté « vocal_tools ». Une étiquette fausse est pire qu'une absente (#T294).
+
+    ⚠️ L'étiquette ne franchit PAS `loop.run_in_executor()` — seulement
+    `asyncio.to_thread()`. Vérifié et documenté par #T301 ; si l'appel LLM du bloc
+    part dans un thread, vérifier par quel pont il passe.
+    """
+    jeton = poser_agent_courant(nom)
+    try:
+        yield
+    finally:
+        restaurer_agent_courant(jeton)
+
+
+def etiqueter_agent(nom: str):
+    """
+    [T308] Décorateur pour une coroutine dont TOUT le travail appartient au même
+    consommateur (`run_vocal_tool_loop`, `resolve_ha_via_llm`, …).
+
+    Équivaut à envelopper le corps dans `agent_courant(nom)`, sans réindenter une
+    fonction existante — donc sans risque d'élargir ou rétrécir un bloc par
+    accident. Préférer le context manager quand seul un fragment de la fonction
+    appelle le LLM.
+    """
+    def _decorateur(fonction):
+        @functools.wraps(fonction)
+        async def _enveloppe(*args, **kwargs):
+            with agent_courant(nom):
+                return await fonction(*args, **kwargs)
+        return _enveloppe
+    return _decorateur

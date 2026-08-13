@@ -35,6 +35,49 @@ from core.llm_timeouts import get_timeout
 
 logger = logging.getLogger(__name__)
 
+# Au-delà, l'extrait est tronqué : un corps d'erreur d'API tient en quelques lignes,
+# et certains renvoient le prompt en écho — inutile d'en inonder le journal.
+_MAX_CORPS_ERREUR = 500
+
+
+def lever_pour_statut(response, *, provider: str = "?", modele: str = "?") -> None:
+    """
+    [#T309] `raise_for_status()` qui n'avale plus l'explication de l'API.
+
+    `requests` lève une `HTTPError` dont le message se limite au code et à l'URL —
+    « 400 Client Error: Bad Request for url: … ». Le corps de la réponse, qui dit
+    POURQUOI la requête est refusée (champ inconnu, rôle invalide, quota…), était
+    perdu à chaque fois. Sur un 400, la différence est celle entre un ticket
+    « Cerebras refuse » et un correctif.
+
+    Mesuré le 11/08 en exerçant la boucle d'outils vocaux : un HTTP 400 a ouvert le
+    circuit breaker de `gpt-oss-120b` sans qu'aucune trace ne dise ce que l'API
+    reprochait — impossible de diagnostiquer autrement qu'en devinant.
+    """
+    # Objet réponse non standard (double de test, provider exotique) : on ne tente
+    # rien de plus que le comportement d'origine. Journaliser n'est jamais une raison
+    # de changer ce que l'appelant reçoit.
+    try:
+        code = int(response.status_code)
+    except (TypeError, ValueError, AttributeError):
+        response.raise_for_status()
+        return
+
+    if code < 400:
+        return
+    try:
+        corps = (response.text or "").strip()
+    except Exception:
+        corps = ""
+    extrait = corps[:_MAX_CORPS_ERREUR]
+    if len(corps) > _MAX_CORPS_ERREUR:
+        extrait += f"… (+{len(corps) - _MAX_CORPS_ERREUR} car.)"
+    logger.error(
+        f"[{provider}] HTTP {response.status_code} sur {modele} — "
+        f"réponse de l'API : {extrait or '(corps vide)'}"
+    )
+    response.raise_for_status()
+
 
 def filtrer_champs_prives(messages: list) -> list:
     """
@@ -297,7 +340,7 @@ class OpenAICompatibleProvider(LLMProvider):
         response = _http.post(
             self.base_url, headers=self.headers, json=payload, timeout=self.timeout,
         )
-        response.raise_for_status()
+        lever_pour_statut(response, provider=self.provider_name, modele=self.model)
 
         resp_json = response.json()
         self._record_usage(resp_json.get("usage"), session_id=kwargs.get("session_id"))
@@ -349,7 +392,7 @@ class OpenAICompatibleProvider(LLMProvider):
         response = await _client.post(
             self.base_url, headers=self.headers, json=payload, timeout=_timeout,
         )
-        response.raise_for_status()
+        lever_pour_statut(response, provider=self.provider_name, modele=self.model)
 
         resp_json = response.json()
         # L'enregistrement d'usage est une écriture SQLite locale rapide : on la
@@ -393,7 +436,7 @@ class OpenAICompatibleProvider(LLMProvider):
         response = _http.post(
             self.base_url, headers=self.headers, json=payload, timeout=self.timeout,
         )
-        response.raise_for_status()
+        lever_pour_statut(response, provider=self.provider_name, modele=self.model)
 
         resp_json = response.json()
         self._record_usage(resp_json.get("usage"), session_id=kwargs.get("session_id"))
@@ -457,7 +500,7 @@ class OpenAICompatibleProvider(LLMProvider):
             self.base_url, headers=self.headers, json=payload,
             timeout=self.timeout, stream=True,
         )
-        response.raise_for_status()
+        lever_pour_statut(response, provider=self.provider_name, modele=self.model)
 
         total_tokens = ""
         real_usage = None
@@ -587,11 +630,11 @@ OPENAI_COMPAT_PROVIDERS = {
         "description": "Ollama Local PC — Inférence locale ultra-rapide sur RTX 5070 Ti",
     },
     "ollama_pc": {
-        # Même IP LAN que LMStudioProvider (${LM_STUDIO_HOST:-192.168.1.x}, carte "Ethernet 4") — contrairement
+        # Même IP LAN que LMStudioProvider (192.168.1.x, carte "Ethernet 4") — contrairement
         # à ollama_local (127.0.0.1), joignable depuis le Deck en prod. Prérequis côté PC :
         # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (ou au moins .84) + pare-feu Windows ouvert
         # sur 11434 pour le LAN, sinon connect timeout (repli cloud silencieux, pas d'erreur bruyante).
-        "base_url": "http://${LM_STUDIO_HOST:-192.168.1.x}:11434/v1/chat/completions",
+        "base_url": "http://192.168.1.x:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "domotique-qwen7b:q4",
         "description": "Ollama PC via LAN — joignable depuis le Deck (RTX 5070 Ti, fine-tune domotique)",

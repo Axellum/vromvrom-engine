@@ -59,8 +59,12 @@ def test_claude_instructions_wrapper():
         print(f"System Prompt après wrapping:\n{base_provider.last_system_prompt}")
 
         assert "Prompt Système Original" in base_provider.last_system_prompt
-        assert "CONVENTIONS DE PROJET (CLAUDE.md)" in base_provider.last_system_prompt
-        assert "VM Freebox" in base_provider.last_system_prompt or "Use pytest" in base_provider.last_system_prompt
+        assert "CONVENTIONS DE PROJET" in base_provider.last_system_prompt
+        assert (
+            "Commentaires de code en français" in base_provider.last_system_prompt
+            or "Use pytest" in base_provider.last_system_prompt
+            or "VM Freebox" in base_provider.last_system_prompt
+        )
         print("✅ Test ClaudeInstructionsWrapper réussi.")
 
     finally:

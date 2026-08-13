@@ -9,16 +9,18 @@ import os
 import random
 import shutil
 import subprocess
+import threading
 import time
 from typing import Any
 
 import requests
 
 from core.llm_timeouts import get_timeout
+from core.openai_compat_provider import lever_pour_statut
 
 from ..circuit_breaker import CircuitBreaker
 from ..fallback_trace import marquer_modele_repondu
-from .base import LLMProvider, run_cli_command
+from .base import LLMProvider, run_cli_command, tuer_arbre_process
 
 try:
     from core.otel import llm_span, set_span_tokens
@@ -46,7 +48,8 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-#: [T287] Drapeau d'appel qui demande les conventions projet (CLAUDE.md).
+#: [T287] Drapeau d'appel qui demande les conventions projet.
+#: Fichier injectable = `docs/travail/CONVENTIONS.md` (repli `CLAUDE.md`).
 #: Absent ou False = aucune injection. Il est CONSOMMÉ par le wrapper et ne
 #: descend jamais dans le payload envoyé au provider.
 KWARG_CONVENTIONS = "conventions_projet"
@@ -80,7 +83,7 @@ class ClaudeInstructionsWrapper(LLMProvider):
         self._last_loaded = 0.0
 
     def _get_claude_instructions(self) -> str:
-        """Lit et met en cache le fichier CLAUDE.md pour éviter les lectures disques répétées."""
+        """Lit CONVENTIONS.md (puis CLAUDE.md en repli), cache 10 s."""
         now = time.time()
         if self._cached_instructions is not None and now - self._last_loaded < 10.0:
             return self._cached_instructions
@@ -88,10 +91,13 @@ class ClaudeInstructionsWrapper(LLMProvider):
         self._cached_instructions = ""
         self._last_loaded = now
 
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         possible_paths = [
+            os.path.join(os.getcwd(), "docs", "travail", "CONVENTIONS.md"),
+            os.path.join(repo_root, "docs", "travail", "CONVENTIONS.md"),
             os.path.join(os.getcwd(), "CLAUDE.md"),
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "CLAUDE.md"),
-            "CLAUDE.md"
+            os.path.join(repo_root, "CLAUDE.md"),
+            "CLAUDE.md",
         ]
 
         for path in possible_paths:
@@ -100,12 +106,13 @@ class ClaudeInstructionsWrapper(LLMProvider):
                     with open(path, encoding="utf-8") as f:
                         content = f.read().strip()
                         if content:
+                            source = "CONVENTIONS.md" if path.endswith("CONVENTIONS.md") else "CLAUDE.md"
                             self._cached_instructions = (
-                                "\n\n=== CONVENTIONS DE PROJET (CLAUDE.md) ===\n" + content
+                                f"\n\n=== CONVENTIONS DE PROJET ({source}) ===\n" + content
                             )
                             break
                 except Exception as e:
-                    logger.warning(f"[ClaudeInstructionsWrapper] Erreur lors de la lecture de CLAUDE.md: {e}")
+                    logger.warning(f"[ClaudeInstructionsWrapper] Lecture conventions impossible ({path}) : {e}")
 
         return self._cached_instructions
 
@@ -178,7 +185,7 @@ class ClaudeInstructionsWrapper(LLMProvider):
 class LMStudioProvider(LLMProvider):
     """Provider pour l'exécution locale (Garantie de confidentialité, coût 0)."""
 
-    def __init__(self, base_url: str = "http://${LM_STUDIO_HOST:-192.168.1.x}:1234/v1/chat/completions"):
+    def __init__(self, base_url: str = "http://192.168.1.x:1234/v1/chat/completions"):
         self.base_url = base_url
         self.headers = {"Content-Type": "application/json"}
 
@@ -203,7 +210,7 @@ class LMStudioProvider(LLMProvider):
         logger.debug(f"Appel API LM Studio ({self.base_url})")
         _http = SharedHTTPPool.get_session() if _USE_HTTP_POOL else requests
         response = _http.post(self.base_url, headers=self.headers, json=payload, timeout=get_timeout("lmstudio"))
-        response.raise_for_status()
+        lever_pour_statut(response, provider=getattr(self, 'provider_name', 'deepseek'), modele=getattr(self, 'model', '?'))
 
         resp_json = response.json()
         usage = resp_json.get("usage")
@@ -230,7 +237,7 @@ class LMStudioProvider(LLMProvider):
         logger.debug("Appel API LM Studio (generate_structured)")
         _http = SharedHTTPPool.get_session() if _USE_HTTP_POOL else requests
         response = _http.post(self.base_url, headers=self.headers, json=payload, timeout=get_timeout("lmstudio"))
-        response.raise_for_status()
+        lever_pour_statut(response, provider=getattr(self, 'provider_name', 'deepseek'), modele=getattr(self, 'model', '?'))
 
         resp_json = response.json()
         usage = resp_json.get("usage")
@@ -252,11 +259,11 @@ class OllamaDeckProvider(LLMProvider):
     Compatible API OpenAI (format identique à LMStudioProvider).
     """
 
-    DECK_HOSTS = ["${DECK_HOST:-192.168.1.x}", "${DECK_HOST_WIFI:-192.168.1.x}"]  # Ethernet prioritaire, Wi-Fi fallback
+    DECK_HOSTS = ["192.168.1.x", "192.168.1.x"]  # Ethernet prioritaire, Wi-Fi fallback
 
     def __init__(
         self,
-        host: str = "${DECK_HOST:-192.168.1.x}",
+        host: str = "192.168.1.x",
         port: int = 11434,
         model_name: str = "phi3:mini",
     ):
@@ -310,7 +317,7 @@ class OllamaDeckProvider(LLMProvider):
                 json=payload,
                 timeout=(self._connect_timeout, self._infer_timeout),
             )
-            response.raise_for_status()
+            lever_pour_statut(response, provider=getattr(self, 'provider_name', 'deepseek'), modele=getattr(self, 'model', '?'))
         except requests.exceptions.ConnectTimeout:
             raise RuntimeError("[OllamaDeck] Timeout de connexion — le Deck est hors ligne ou Ollama n'est pas démarré")
         except requests.exceptions.ConnectionError as e:
@@ -350,7 +357,7 @@ class OllamaDeckProvider(LLMProvider):
                 json=payload,
                 timeout=(self._connect_timeout, self._infer_timeout),
             )
-            response.raise_for_status()
+            lever_pour_statut(response, provider=getattr(self, 'provider_name', 'deepseek'), modele=getattr(self, 'model', '?'))
         except (requests.exceptions.ConnectTimeout, requests.exceptions.ConnectionError) as e:
             raise RuntimeError(f"[OllamaDeck] Connexion échouée : {e}")
 
@@ -377,6 +384,40 @@ class OllamaDeckProvider(LLMProvider):
                 return {}
 
 
+class _AppelCLIAnnulable:
+    """
+    [#T314] Passerelle entre la coroutine — qui reçoit l'annulation — et le
+    thread, qui seul détient le process. Les deux vivent dans des fils
+    d'exécution différents, d'où le verrou.
+
+    Elle traite aussi la course qui rendrait le correctif inutile une fois sur
+    dix : si l'annulation survient AVANT que le thread ait lancé le process,
+    il n'y a rien à tuer à cet instant — mais le lancement, lui, va arriver.
+    L'intention d'annuler est donc mémorisée, et c'est le lancement qui se tue
+    lui-même.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._proc = None
+        self._annule = False
+
+    def publier(self, proc) -> None:
+        """Appelé depuis le thread, dès que le process existe."""
+        with self._lock:
+            if not self._annule:
+                self._proc = proc
+                return
+        tuer_arbre_process(proc)
+
+    def annuler(self) -> bool:
+        """Appelé depuis la coroutine. True si un process vivant a été tué."""
+        with self._lock:
+            self._annule = True
+            proc = self._proc
+        return tuer_arbre_process(proc) if proc is not None else False
+
+
 class ClaudeCLIProvider(LLMProvider):
     """
     Provider pour exécuter Claude Code en mode non-interactif via son CLI npm global.
@@ -396,6 +437,9 @@ class ClaudeCLIProvider(LLMProvider):
 
     def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
         prompt = f"{system_prompt}\n\n{user_prompt}".strip()
+        # [#T314] Publié par generate_async pour rendre l'appel tuable. Absent
+        # sur le chemin purement synchrone, où il n'y a personne pour annuler.
+        process_sink = kwargs.pop("_process_sink", None)
 
         cmd = [
             self.cmd_path, "-p", "--dangerously-skip-permissions",
@@ -439,7 +483,8 @@ class ClaudeCLIProvider(LLMProvider):
                         encoding="utf-8",
                         errors="replace",
                         timeout=get_timeout("claude_cli"),
-                        stdin=pf
+                        stdin=pf,
+                        process_sink=process_sink,
                     )
                 try:
                     os.remove(prompt_file)
@@ -453,7 +498,8 @@ class ClaudeCLIProvider(LLMProvider):
                     encoding="utf-8",
                     errors="replace",
                     timeout=get_timeout("claude_cli"),
-                    stdin=subprocess.DEVNULL
+                    stdin=subprocess.DEVNULL,
+                    process_sink=process_sink,
                 )
 
             stdout_raw = result.stdout.strip()
@@ -521,6 +567,51 @@ class ClaudeCLIProvider(LLMProvider):
 
         return response_text
 
+
+    async def generate_async(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
+        """
+        [#T314] Variante async ANNULABLE : si la tâche appelante est tuée
+        (watchdog DAG, timeout de session), le process `claude` est tué avec
+        elle au lieu de continuer à consommer des tokens dans le vide.
+
+        Sans cette surcharge, l'implémentation héritée `asyncio.to_thread(
+        self.generate, …)` rendait la main à l'annulation mais laissait vivre le
+        thread ET son subprocess : mesuré le 12/08, le watchdog tue la session à
+        `00:04:57` et la CLI répond quand même à `00:05:38` — 289 966 tokens
+        d'entrée, **$0,6665 pour une sortie que plus personne n'attend**, soit la
+        totalité du coût de la campagne.
+        """
+        surveillant = _AppelCLIAnnulable()
+        try:
+            return await asyncio.to_thread(
+                self.generate, system_prompt, user_prompt,
+                _process_sink=surveillant.publier, **kwargs,
+            )
+        except asyncio.CancelledError:
+            if surveillant.annuler():
+                logger.warning(
+                    "[Claude Code CLI] [#T314] Tâche annulée → process CLI tué "
+                    "(l'appel aurait continué à facturer)."
+                )
+            raise
+
+    async def generate_structured_async(
+        self, system_prompt: str, user_prompt: str, schema: dict[str, Any], **kwargs
+    ) -> dict[str, Any]:
+        """[#T314] Même garantie d'annulation que generate_async, chemin structuré (Planner)."""
+        surveillant = _AppelCLIAnnulable()
+        try:
+            return await asyncio.to_thread(
+                self.generate_structured, system_prompt, user_prompt, schema,
+                _process_sink=surveillant.publier, **kwargs,
+            )
+        except asyncio.CancelledError:
+            if surveillant.annuler():
+                logger.warning(
+                    "[Claude Code CLI] [#T314] Tâche annulée → process CLI tué "
+                    "(appel structuré)."
+                )
+            raise
 
     def generate_structured(self, system_prompt: str, user_prompt: str, schema: dict[str, Any], **kwargs) -> dict[str, Any]:
         sys_prompt = system_prompt + "\nTu DOIS répondre UNIQUEMENT au format JSON strict, sans bloc markdown, sans explication."

@@ -60,6 +60,34 @@ class TestPromptLoader:
         # Les caractères de traversée sont retirés : le fichier reste dans le dossier.
         assert os.path.dirname(prompt_file_path("../evil")) == str(tmp_path)
 
+    def test_defaut_depot_charge_planner(self, monkeypatch):
+        """Sans MOTEUR_PROMPTS_DIR, le chargeur pointe sur prompts/agents/ du dépôt."""
+        monkeypatch.delenv("MOTEUR_PROMPTS_DIR", raising=False)
+        from core import prompt_loader
+        prompt_loader._CACHE.clear()
+        dossier = prompt_loader.get_prompts_dir()
+        assert dossier.replace("\\", "/").endswith("prompts/agents")
+        texte = prompt_loader.load_agent_prompt("planner", "DEFAUT")
+        assert "PlannerAgent" in texte
+        assert texte != "DEFAUT"
+
+    def test_executor_relit_le_markdown_sans_redemarrer(self, tmp_path, monkeypatch):
+        """Bugbot PR #291 : PUT IHM doit prendre effet au prochain invoke, sans restart."""
+        monkeypatch.setenv("MOTEUR_PROMPTS_DIR", str(tmp_path))
+        from unittest.mock import MagicMock
+        from core.prompt_loader import save_agent_prompt
+        from agents.executor import ExecutorAgent
+
+        agent = ExecutorAgent(MagicMock(), MagicMock())
+        save_agent_prompt("executor", "PROMPT NEUF EXECUTOR\n{{OS_RULES}}")
+        texte = agent._prompt_systeme_actuel()
+        assert "PROMPT NEUF EXECUTOR" in texte
+        assert "{{OS_RULES}}" not in texte
+
+        agent.name = "ha_agent"
+        save_agent_prompt("ha_agent", "PROMPT NEUF HA")
+        assert agent._prompt_systeme_actuel() == "PROMPT NEUF HA"
+
 
 # ──────────────────────────────────────────────────────────────────
 # #T194 — override de force de workload
@@ -199,7 +227,7 @@ class TestAgentsCrud:
         assert "Prompt reviewer de test." in md.read_text(encoding="utf-8")
 
     def test_put_prompt_agent_non_editable_refuse(self, client, isolated_config):
-        res = client.put("/api/agents/executor", json={"system_prompt": "x"})
+        res = client.put("/api/agents/antigravity_agent", json={"system_prompt": "x"})
         assert res.status_code == 422
 
 

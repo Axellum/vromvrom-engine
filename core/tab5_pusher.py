@@ -22,17 +22,16 @@ Date : 2026-06-06
 """
 
 import logging
-import os
 
 import aiohttp
 
 from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
 from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
 
 logger = logging.getLogger(__name__)
 
 # ── Configuration ──
-DEFAULT_HA_URL = "http://${HA_HOST:-192.168.1.x}:8123"
 DEFAULT_TIMEOUT = 3  # secondes
 
 # ── Entités HA cibles ──
@@ -57,15 +56,17 @@ class Tab5Pusher:
     ):
         """
         Args:
-            ha_url:   URL HA (défaut : http://${HA_HOST:-192.168.1.x}:8123)
+            ha_url:   URL HA (défaut : env HASS_URL, repli HA_URL)
             ha_token: Token Bearer HA (défaut : env HASS_TOKEN, repli HA_TOKEN)
         """
-        self.ha_url   = ha_url   or os.environ.get("HA_URL", DEFAULT_HA_URL)
+        self.ha_url   = ha_url   or get_ha_url()
         self.ha_token = ha_token or get_ha_token()
         self._session: aiohttp.ClientSession | None = None
 
         if not self.ha_token:
             logger.warning("[TAB5 PUSHER] Token HA manquant (HASS_TOKEN/HA_TOKEN) — les push échoueront silencieusement")
+        if not self.ha_url:
+            logger.warning("[TAB5 PUSHER] URL HA manquante (HASS_URL/HA_URL) — les push échoueront silencieusement")
 
     # ──────────────────────────────────────────────────────────────
     # Internals

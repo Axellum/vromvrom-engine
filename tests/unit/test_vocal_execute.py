@@ -133,14 +133,14 @@ async def test_ha_shortcut_executes_and_returns_command(temp_runtime_db, monkeyp
 
     async def _match(_prompt):
         return HACommandMatch(
-            service="script.blind_action",
+            service="script.tab5_volet_action",
             entity_id="",
             matched_phrase="volet:close",
             service_data={"action": "close"},
         )
 
     async def _exec(service, entity, service_data=None, **_kw):
-        assert service == "script.blind_action"
+        assert service == "script.tab5_volet_action"
         assert service_data == {"action": "close"}
         return True, "Volet fermé."
 
@@ -174,7 +174,7 @@ async def test_ha_shortcut_bypasses_global_lock(temp_runtime_db, monkeypatch):
 
     async def _match(_prompt):
         return HACommandMatch(
-            service="light.turn_on", entity_id="light.living_room",
+            service="light.turn_on", entity_id="light.salon",
             matched_phrase="allume le salon", service_data=None,
         )
 

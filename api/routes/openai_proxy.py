@@ -105,6 +105,12 @@ class ChatCompletionRequest(BaseModel):
     presence_penalty: float | None = None
     stop: Any | None = None
     n: int | None = 1
+    # [#T306] Champ moteur (non-OpenAI) : les clients du proxy (Cline,
+    # Continue, OpenCode…) peuvent l'envoyer pour rattacher leur dépense à une
+    # session ; sans lui, la ligne token_usage part avec session_id NULL — et
+    # avant ce champ, pydantic AVAALAIT silencieusement la clé (extra fields
+    # ignorés par défaut), l'attribution était structurellement impossible.
+    session_id: str | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -394,7 +400,7 @@ def _make_stream_chunk(model: str, delta_content: str, finish_reason: str | None
 
 async def _streamer_texte(provider, model_name: str, system_prompt: str, transcript: str,
                           messages_provider: list[dict], temperature: float | None,
-                          max_tokens: int | None):
+                          max_tokens: int | None, session_id: str | None = None):
     """
     Générateur SSE token-par-token (texte uniquement) pour `stream=true`.
 
@@ -417,6 +423,7 @@ async def _streamer_texte(provider, model_name: str, system_prompt: str, transcr
             messages=messages_provider,
             temperature=temperature,
             max_tokens=max_tokens,
+            session_id=session_id,
         )):
             token = (item or {}).get("token") or ""
             if token:
@@ -526,6 +533,7 @@ async def chat_completions(request: ChatCompletionRequest):
                     transcript, messages_provider,
                     temperature=request.temperature,
                     max_tokens=request.max_tokens,
+                    session_id=request.session_id,
                 ),
                 media_type="text/event-stream",
             )
@@ -533,19 +541,21 @@ async def chat_completions(request: ChatCompletionRequest):
         # ── Chemin bufferisé : non-streaming, ou outils en streaming ──
         logger.info("[OPENAI_PROXY] Chemin bufferisé (non-streaming ou outils en streaming)")
 
-        # Appel LLM dans un thread non-bloquant. `messages` porte la conversation
-        # avec ses rôles ; `system_prompt`/`transcript` restent le repli pour les
-        # providers qui ne consomment pas `messages` (CLI notamment), et servent
-        # aussi de clé au cache sémantique du FallbackProvider.
-        brut = await asyncio.to_thread(
-            provider.generate,
-            system_prompt or "Tu es un assistant IA expert.",
-            transcript,
-            messages=messages_provider,
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            **options_outils,
-        )
+        # [#T306] La dépense du proxy doit être rattachée : session_id (si le
+        # client l'envoie) et étiquette d'agent (Cline/Continue consomment hors
+        # de tout agent — même motif que coding_front #T308).
+        from core.agent_trace import agent_courant
+        with agent_courant("proxy_v1"):
+            brut = await asyncio.to_thread(
+                provider.generate,
+                system_prompt or "Tu es un assistant IA expert.",
+                transcript,
+                messages=messages_provider,
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                session_id=request.session_id,
+                **options_outils,
+            )
 
         response_text, tool_calls = _extraire_reponse(brut)
         finish_reason = "tool_calls" if tool_calls else "stop"

@@ -208,16 +208,18 @@ async def get_elo_scores():
 @router.get("/api/metrics/cost-per-success")
 async def get_cost_per_success_endpoint():
     """
-    [#T116] Coût USD par tâche réussie, agrégé par provider — croise le coût
-    cumulé par modèle (token_usage) avec le nombre de tâches réussies par
-    modèle (model_elo_scores.wins). Voir `core.elo_scorer.get_cost_per_successful_task`.
+    [#T116][#T325] Coût USD par tâche réussie, agrégé par session — croise
+    `token_usage.session_id` avec `sessions.status` (et non plus
+    `model_elo_scores.wins` : cette colonne porte les succès des TIERS,
+    `token_usage.model` des ids de modèles, l'intersection est vide).
+    Voir `core.elo_scorer.get_cost_per_successful_task`.
     """
     try:
         from core.elo_scorer import get_cost_per_successful_task
-        return {"providers": get_cost_per_successful_task()}
+        return {"cost_per_success": get_cost_per_successful_task()}
     except Exception as e:
         logger.warning(f"[METRICS] Erreur cost-per-success : {e}")
-        return {"providers": {}}
+        return {"cost_per_success": {}}
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -246,10 +248,35 @@ class BenchmarkRequest(BaseModel):
 
 def _observed_performance(since_ts: float) -> list:
     """
-    Performance réellement observée par modèle, croisée depuis trois sources.
+    Performance réellement observée par modèle, croisée depuis deux sources.
 
     Rien n'est inventé : un champ absent en base reste `None` côté API, et l'IHM
     affiche « — » plutôt qu'un zéro trompeur.
+
+    [#T300] Une TROISIÈME source existait ici — `routing_decisions`, pour la latence
+    et le taux de succès. Elle a été retirée, et il ne faut pas la rétablir :
+
+    - elle groupait sur `resolved_model`, colonne **vide sur 68/68 lignes** et vide
+      par conception (le routage résout un TIER, pas un modèle — voir la docstring
+      de `core/routing_metrics.record_routing_decision`, #T296). La source ne
+      rendait donc jamais rien, et c'est la seule raison pour laquelle elle était
+      inoffensive ;
+    - sa latence est celle du ROUTAGE, pas d'un appel de modèle : mesuré le 11/08,
+      de 0,4 ms à 187 659 ms selon que le slow-path LLM de classification est
+      invoqué. L'ancien code l'écrasait par-dessus la latence Elo avec le
+      commentaire « mesure directe, elle prime » — c'eût été présenter le temps
+      passé à CHOISIR un modèle comme le temps mis par ce modèle à répondre ;
+    - son taux de succès venait de `routing_decisions.success`, colonne déclarée
+      `DEFAULT 1` et **jamais écrite** : `record_routing_decision()` n'a même pas
+      ce paramètre. Elle vaut 1 sur 68/68 lignes. Tout taux calculé dessus vaut
+      100 % par construction.
+
+    Autrement dit, réparer `resolved_model` sans toucher au reste aurait fait
+    apparaître d'un coup des latences fausses et 100 % de succès partout — le
+    motif « compteur qui ment » de #T294, en pire, parce que le chiffre aurait
+    été plausible. La latence par modèle n'a aujourd'hui AUCUNE source vraie
+    (`model_elo_scores.avg_latency_ms` est renseignée sur 0 ligne sur 31) : elle
+    reste donc `None`, et l'IHM affiche « — ». C'est un trou assumé, pas un oubli.
     """
     observed: dict[str, dict] = {}
 
@@ -298,27 +325,11 @@ def _observed_performance(since_ts: float) -> list:
         entry["win_rate"] = round((row["wins"] or 0) / matches * 100, 1) if matches else None
         entry["avg_latency_ms"] = round(row["latency"], 1) if row["latency"] is not None else None
 
-    # 3. Latence et succès mesurés au routage (routing_decisions).
-    for row in _rows_or_empty(_safe_query(
-        _ROUTING_DB,
-        "SELECT resolved_model, AVG(latency_ms) AS latency, COUNT(*) AS n, "
-        "SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS ok "
-        "FROM routing_decisions WHERE timestamp > ? AND resolved_model IS NOT NULL "
-        "GROUP BY resolved_model",
-        (since_ts,),
-    )):
-        model = row["resolved_model"]
-        if not model:
-            continue
-        entry = observed.setdefault(model, {
-            "model": model, "calls": 0, "total_tokens": 0, "cost_usd": 0.0,
-            "avg_cost_per_call_usd": None, "elo": None, "matches": None, "win_rate": None,
-        })
-        n = row["n"] or 0
-        # La latence de routage est une mesure directe : elle prime sur la moyenne Elo.
-        if row["latency"] is not None:
-            entry["avg_latency_ms"] = round(row["latency"], 1)
-        entry["success_rate"] = round((row["ok"] or 0) / n * 100, 1) if n else None
+    # [#T300] Pas de troisième source : voir la docstring. `routing_decisions` ne
+    # mesure ni la latence d'un modèle ni son taux de succès, et l'y chercher a
+    # produit deux champs faux pendant tout ce temps — masqués par une colonne de
+    # groupement vide. `success_rate` et `avg_latency_ms` restent donc à None tant
+    # qu'une source honnête n'existe pas (latence par appel LLM : non persistée).
 
     return sorted(observed.values(), key=lambda e: (e.get("calls") or 0), reverse=True)
 
@@ -651,12 +662,30 @@ def _get_routing_stats(since_ts: float) -> dict:
         (since_ts,),
     )
 
-    # Répartition fast-path vs slow-path
+    # Répartition fast-path vs slow-path.
+    #
+    # [#T321] La colonne qui porte cette information est `fast_path_used` (0/1),
+    # PAS `routing_type`. Ce dernier existe bien, mais ne vaut jamais
+    # 'fast_path' : ses valeurs réelles en prod sont 'casual_chat', 'ha_direct',
+    # 'ha_deterministic', 'default', 'executor_direct', 'sysadmin_direct',
+    # 'planner_pour_approbation'. La comparaison rendait donc TOUJOURS 0, et la
+    # vue Observabilité affichait 100 % de slow-path — alors que 44 % des
+    # décisions empruntent le fast-path (mesuré le 12/08 : 27 sur 61 en 7 jours,
+    # 259 sur 501 au total).
+    #
+    # Défaut cousin de #T294, mais hors de sa portée : la requête est
+    # syntaxiquement VALIDE, donc `_safe_query` ne peut rien signaler. Un 0 issu
+    # d'une valeur qui n'existe pas est indiscernable d'un vrai 0 — sauf en
+    # regardant la donnée.
+    #
+    # COALESCE : les lignes sans `fast_path_used` comptent comme slow-path, ce
+    # qui garantit fast_path + slow_path == total (un `NULL != 1` en SQL rend
+    # NULL, donc ni l'un ni l'autre, et les deux compteurs ne bouclaient plus).
     path_stats = _safe_query(
         _ROUTING_DB,
         "SELECT "
-        "SUM(CASE WHEN routing_type = 'fast_path' THEN 1 ELSE 0 END) as fast_path, "
-        "SUM(CASE WHEN routing_type != 'fast_path' THEN 1 ELSE 0 END) as slow_path, "
+        "SUM(CASE WHEN fast_path_used = 1 THEN 1 ELSE 0 END) as fast_path, "
+        "SUM(CASE WHEN COALESCE(fast_path_used, 0) != 1 THEN 1 ELSE 0 END) as slow_path, "
         "COUNT(*) as total "
         "FROM routing_decisions WHERE timestamp > ?",
         (since_ts,),

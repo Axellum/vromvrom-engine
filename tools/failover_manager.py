@@ -41,7 +41,7 @@ class FailoverManager:
     cohérent sur la disponibilité du Deck dans le Moteur.
 
     Usage :
-        mgr = FailoverManager(mqtt_host="${DECK_HOST:-192.168.1.x}")
+        mgr = FailoverManager(mqtt_host="192.168.1.x")
         await mgr.start()
         status = await mgr.get_deck_status()
         await mgr.stop()
@@ -57,7 +57,7 @@ class FailoverManager:
 
     def __init__(
         self,
-        mqtt_host: str = "${PC_HOST:-192.168.1.x}",  # PC écoute en tant que broker
+        mqtt_host: str = "192.168.1.x",  # PC écoute en tant que broker
         mqtt_port: int = 1883,
         client_id: str = "moteur_failover_manager",
     ):

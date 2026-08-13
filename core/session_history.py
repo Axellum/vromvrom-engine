@@ -7,8 +7,10 @@ dans SQLite pour permettre la consultation historique et le replay depuis l'IHM.
 Créé dans le cadre de l'audit V5.5 (Axe U2 — Historique des sessions).
 """
 
+import asyncio
 import json
 import logging
+import os
 import re
 import sqlite3
 import threading
@@ -22,6 +24,18 @@ from core.runtime_db import get_connection, get_db_path
 _DB_PATH = get_db_path()
 
 _db_lock = threading.Lock()
+
+# [#T298] Ancienneté à partir de laquelle une session 'running' est candidate au
+# nettoyage, et absence de signe de vie au-delà de laquelle elle est déclarée
+# morte. Même seuil pour les deux : une session vivante exécute des étapes
+# d'agent régulièrement (chaque étape écrit un heartbeat via BaseAgent.invoke),
+# donc son last_activity est toujours bien plus récent qu'une heure.
+ZOMBIE_SESSION_MAX_AGE_SECONDS = 3600  # running depuis > 1h
+
+# Intervalle de la boucle de nettoyage périodique (motif quota_collector, #T298)
+ZOMBIE_SWEEP_INTERVAL_ENV = "ZOMBIE_SWEEP_INTERVAL_SECONDS"
+ZOMBIE_SWEEP_INTERVAL_DEFAULT = 600  # 10 min : délai de détection raisonnable 24/7
+ZOMBIE_SWEEP_INTERVAL_MIN = 60       # Borne basse : ne pas marteler la BDD
 
 
 def _get_connection() -> sqlite3.Connection:
@@ -38,18 +52,49 @@ def record_session_start(
     try:
         with _db_lock:
             conn = _get_connection()
+            now = time.time()
             conn.execute(
                 """
                 INSERT OR REPLACE INTO sessions
-                (session_id, objective, status, started_at, starting_agent)
-                VALUES (?, ?, 'running', ?, ?)
+                (session_id, objective, status, started_at, starting_agent, last_activity)
+                VALUES (?, ?, 'running', ?, ?, ?)
                 """,
-                (session_id, objective, time.time(), starting_agent),
+                (session_id, objective, now, starting_agent, now),
             )
             conn.commit()
             conn.close()
     except Exception as e:
         logger.warning(f"[SESSION HISTORY] Erreur enregistrement start : {e}")
+
+
+def record_session_activity(session_id: str, ts: float | None = None) -> None:
+    """
+    Heartbeat de vivacité d'une session [#T298].
+
+    Écrit par le chemin d'exécution RÉEL : chaque étape d'agent (BaseAgent.invoke)
+    rafraîchit last_activity tant que la session est 'running'. Le nettoyage des
+    zombies exige donc un heartbeat ancien en PLUS de l'ancienneté de démarrage :
+    une session longue mais vivante n'est jamais marquée en erreur.
+
+    Args:
+        session_id: Identifiant de session.
+        ts: Horodatage UNIX injectable (tests, temps simulé) ; None = maintenant.
+    """
+    try:
+        with _db_lock:
+            conn = _get_connection()
+            conn.execute(
+                "UPDATE sessions SET last_activity = ? "
+                "WHERE session_id = ? AND status = 'running'",
+                (ts if ts is not None else time.time(), session_id),
+            )
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        # Non bloquant par conception : un heartbeat qui échoue ne doit jamais
+        # faire échouer une étape d'agent (la table peut manquer sur les bases
+        # de test, ou la session avoir été purgée entre-temps).
+        logger.debug(f"[SESSION HISTORY] Heartbeat ignoré ({session_id[:16]}…) : {e}")
 
 
 def record_session_end(
@@ -1175,29 +1220,45 @@ def cleanup_old_snapshots(retention_days: int = 90):
 # [B10-Fix] Nettoyage des sessions zombies (running depuis >1h)
 # ──────────────────────────────────────────────────────────────────
 
-def cleanup_zombie_sessions() -> int:
+def cleanup_zombie_sessions(now: float | None = None) -> int:
     """
-    Marque comme 'error' les sessions restées en statut 'running' depuis plus d'une heure.
-    
-    Une session zombie est une session dont le statut est 'running' mais qui a démarré
-    il y a plus de 3600 secondes (1h). Cela peut arriver si le moteur plante ou si
-    une session n'est pas correctement finalisée.
-    
+    Marque comme 'error' les sessions zombies [#T298].
+
+    Une session est zombie si elle cumule DEUX conditions :
+    - statut 'running' depuis plus de ZOMBIE_SESSION_MAX_AGE_SECONDS (1h) ;
+    - AUCUN signe de vie (last_activity) depuis autant de temps — ou pas de
+      heartbeat du tout (session antérieure au déploiement du heartbeat, ou
+      chemin d'exécution tué avant le premier heartbeat).
+
+    Le critère d'ancienneté seul ne suffit pas : un DAG multi-tâches peut
+    légitimement durer plus d'une heure. La colonne last_activity, rafraîchie
+    par le chemin d'exécution réel à chaque étape d'agent (BaseAgent.invoke),
+    est la preuve que le moteur travaille encore : une session vivante a
+    toujours un heartbeat bien plus récent qu'une heure.
+
+    Args:
+        now: Horodatage UNIX de référence (tests, temps simulé) ;
+            None = time.time().
+
     Returns:
         Nombre de sessions zombies nettoyées.
     """
     try:
+        reference = now if now is not None else time.time()
+        cutoff = reference - ZOMBIE_SESSION_MAX_AGE_SECONDS
         with _db_lock:
             conn = _get_connection()
             cursor = conn.execute(
                 """
                 UPDATE sessions SET
                     status = 'error',
-                    ended_at = strftime('%s', 'now'),
+                    ended_at = ?,
                     error_message = 'Session zombie - nettoyée automatiquement (running depuis >1h)'
                 WHERE status = 'running'
-                  AND started_at < strftime('%s', 'now') - 3600
-                """
+                  AND started_at < ?
+                  AND (last_activity IS NULL OR last_activity < ?)
+                """,
+                (reference, cutoff, cutoff),
             )
             affected = cursor.rowcount
             conn.commit()
@@ -1209,3 +1270,54 @@ def cleanup_zombie_sessions() -> int:
     except Exception as e:
         logger.warning(f"[SESSION HISTORY] Erreur cleanup_zombie_sessions : {e}")
         return 0
+
+
+def get_zombie_sweep_interval() -> int:
+    """Intervalle (secondes) de la boucle de nettoyage des zombies.
+
+    Même motif que core/quota_collector.get_quota_refresh_interval : variable
+    ZOMBIE_SWEEP_INTERVAL_SECONDS (défaut 600 s = 10 min). Une valeur invalide
+    retombe sur le défaut ; une valeur trop basse est bornée au minimum.
+    """
+    raw = os.environ.get(ZOMBIE_SWEEP_INTERVAL_ENV, str(ZOMBIE_SWEEP_INTERVAL_DEFAULT))
+    try:
+        interval = int(raw)
+    except ValueError:
+        logger.warning(
+            f"[SESSION HISTORY] {ZOMBIE_SWEEP_INTERVAL_ENV} invalide ({raw!r}), "
+            f"défaut {ZOMBIE_SWEEP_INTERVAL_DEFAULT}s."
+        )
+        interval = ZOMBIE_SWEEP_INTERVAL_DEFAULT
+    return max(interval, ZOMBIE_SWEEP_INTERVAL_MIN)
+
+
+async def zombie_sweep_loop(interval_seconds: int | None = None) -> None:
+    """Boucle de fond : nettoie périodiquement les sessions zombies [#T298].
+
+    Lancée au démarrage par gui_server (même motif que quota_refresh_loop —
+    asyncio.create_task + boucle while True / await asyncio.sleep, pas de nouvel
+    ordonnanceur). Le nettoyage au démarrage reste assuré par gui_server : cette
+    boucle couvre la vie du serveur, où un redémarrage ne viendra jamais
+    rattraper les sessions interrompues (processus tué, exception hors du chemin
+    de finalisation, coupure réseau).
+
+    Une erreur de nettoyage est journalisée et la boucle continue : un échec
+    ponctuel de la BDD ne doit pas tuer la maintenance.
+
+    Args:
+        interval_seconds: intervalle forcé (tests, horloge simulée) ;
+            None = lire ZOMBIE_SWEEP_INTERVAL_SECONDS (défaut 600 s).
+    """
+    interval = get_zombie_sweep_interval() if interval_seconds is None else interval_seconds
+    logger.info(f"[SESSION HISTORY] Boucle de nettoyage des zombies démarrée (intervalle={interval}s).")
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            nettoyees = cleanup_zombie_sessions()
+            if nettoyees > 0:
+                logger.warning(
+                    f"[SESSION HISTORY] {nettoyees} session(s) zombie(s) nettoyée(s) "
+                    "par la boucle périodique."
+                )
+        except Exception as e:
+            logger.warning(f"[SESSION HISTORY] Erreur nettoyage zombies (la boucle continue) : {e}")

@@ -1,4 +1,12 @@
-# Architecture du tab5-engine — V11
+# Architecture du tab5-engine
+
+> **Carte vivante** : [`travail/PLAN.md`](travail/PLAN.md) (groupes + couloirs).
+> Ce fichier est un cliché de juin 2026 (V11) — utile pour l'historique, pas pour décider où coder aujourd'hui.
+> Objectifs / board : [`travail/INDEX.md`](travail/INDEX.md).
+
+---
+
+# Architecture du tab5-engine — V11 (cliché 2026-06-12)
 
 > **Dernière mise à jour** : 2026-06-12  
 > **Version code** : V11 (Circuit Breaker V12 intégré)  
@@ -423,9 +431,9 @@ sequenceDiagram
 
 | Service | Usage | Module |
 |---------|-------|--------|
-| LM Studio (${LM_STUDIO_HOST:-192.168.1.x}:1234) | Inférence locale (RTX 5070Ti) | `LMStudioProvider` |
-| Ollama Deck (${DECK_HOST:-192.168.1.x}/139:11434) | Inférence Edge (Steam Deck RDNA2) | `OllamaDeckProvider` |
-| Home Assistant (192.168.x.x:8123) | Domotique REST API | `ha_agent.py`, `tab5_pusher.py` |
+| LM Studio (192.168.1.x:1234) | Inférence locale (RTX 5070Ti) | `LMStudioProvider` |
+| Ollama Deck (192.168.1.x/139:11434) | Inférence Edge (Steam Deck RDNA2) | `OllamaDeckProvider` |
+| Home Assistant (192.168.1.x:8123) | Domotique REST API | `ha_agent.py`, `tab5_pusher.py` |
 | Gemini API | LLM Cloud + embeddings + grounding | `gemini_native.py`, `GeminiProvider` |
 | Anthropic (Claude CLI) | LLM Cloud via CLI local | `ClaudeCLIProvider` |
 | ChromaDB (local) | Vectorstore persistant | `memory/chroma_memory.py` |

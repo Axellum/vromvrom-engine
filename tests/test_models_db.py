@@ -7,15 +7,58 @@ Usage :
     python -X utf8 -m pytest tests/test_models_db.py -v
 """
 
+import contextlib
+import io
 import os
 import sys
+import threading
+from unittest.mock import patch
+
+import pytest
 
 # Ajouter le dossier racine du moteur au PATH
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import core.models_db as models_db  # noqa: E402
+
+# seed_models_db appelle load_dotenv() au niveau module (ligne 23), ce qui
+# injecterait les secrets du .env dans le process de test. On neutralise cet
+# appel le temps de l'import — le seed n'en a pas besoin (seuls les statuts
+# active/missing des clés API en dépendent, sans importance ici).
+with patch("dotenv.load_dotenv"):  # noqa: E402
+    sys.modules.pop("seed_models_db", None)  # noqa: E402
+    import seed_models_db as _seed_module  # noqa: E402
+
 
 class TestModelsDB:
     """Tests du module core/models_db.py."""
+
+    @pytest.fixture(autouse=True)
+    def _catalogue_seede(self, tmp_path, monkeypatch):
+        """Isole models_registry.db dans tmp_path et y rejoue le seed canonique.
+
+        [#T297] Ce test d'intégration supposait qu'un models_registry.db de
+        production (peuplé par seed_models_db.py) existait sur le poste : il
+        échouait dans tout worktree neuf. Désormais le test isole la base dans
+        tmp_path et y rejoue le seed via le code de production
+        (seed_models_db.seed_* → core.models_db.upsert_*), exactement comme le
+        ferait `python seed_models_db.py` sur une base neuve.
+        """
+        monkeypatch.setattr(models_db, "_DB_PATH", str(tmp_path / "models_registry.db"))
+        monkeypatch.setattr(models_db, "_thread_local", threading.local())
+        # Vider le cache de routing_score : sinon un test précédent (autre base)
+        # pourrait servir des scores stale pendant le TTL de 60 s.
+        monkeypatch.setattr(models_db, "_routing_score_cache", {})
+
+        # Le seed est verbeux (print à chaque ligne) — on supprime le bruit.
+        with contextlib.redirect_stdout(io.StringIO()):
+            _seed_module.seed_providers()
+            _seed_module.seed_models()
+            _seed_module.seed_api_keys()
+            _seed_module.seed_benchmarks()
+            _seed_module.seed_subscriptions()
+            _seed_module.seed_routing_rules()
+            _seed_module.seed_access_channels()
 
     def test_import(self):
         """Le module s'importe sans erreur."""
@@ -25,9 +68,8 @@ class TestModelsDB:
         assert callable(get_routing_score)
 
     def test_db_exists(self):
-        """La BDD models_registry.db existe après le seed."""
-        db_path = os.path.join(os.path.dirname(__file__), "..", "models_registry.db")
-        assert os.path.exists(db_path), "models_registry.db introuvable — exécuter seed_models_db.py d'abord"
+        """La BDD models_registry.db existe après le seed (base isolée)."""
+        assert os.path.exists(models_db._DB_PATH), "models_registry.db introuvable après le seed"
 
     def test_db_stats(self):
         """Les statistiques de la BDD sont cohérentes."""

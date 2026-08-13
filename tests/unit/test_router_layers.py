@@ -20,7 +20,7 @@ def _router():
         "analysis": {"keywords": ["audit"], "weight": 1.2},
     }
     r._ha_commands = [
-        {"service": "light.turn_on", "entity_id": "light.living_room", "phrases": ["allume la lumiere"]},
+        {"service": "light.turn_on", "entity_id": "light.salon", "phrases": ["allume la lumiere"]},
     ]
     return r
 

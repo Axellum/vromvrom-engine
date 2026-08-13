@@ -173,21 +173,46 @@ async def _run_sync_discussion(
 
 
 async def _try_zero_llm_ha_command(user_prompt: str) -> str | None:
-    """Commandes domotiques déterministes (même chemin que mode Domotique)."""
+    """
+    Commandes domotiques déterministes (même chemin que mode Domotique).
+
+    [#T323] Retourne None UNIQUEMENT quand la demande n'est pas une commande
+    domotique — c'est le seul cas où la cascade doit continuer. Dès qu'une
+    commande est RECONNUE, cette fonction répond, y compris pour dire qu'elle a
+    échoué : elle n'attrape plus l'échec « vers le haut ».
+
+    Motif, mesuré en prod le 12/08 sur une vraie commande d'Axel : « descend le
+    volet du salon » était reconnu (fuzzy 0.88 → close), l'appel HA échouait sur
+    `Server disconnected`, l'exception remontait, la cascade repartait vers le
+    chat — et le modèle, ignorant tout de ce qui venait de se passer, répondait
+    « Je ne peux pas descendre le volet du salon depuis ici. Vous pouvez le
+    faire avec… ». Le volet n'avait pas bougé et l'utilisateur recevait un refus
+    de compétence au lieu d'une panne. Un mensonge plausible coûte plus cher
+    qu'une erreur : il envoie chercher au mauvais endroit.
+    """
     from services.execute_service import execute_ha_service, resolve_ha_command_for_execute
 
     ha_cmd = await resolve_ha_command_for_execute(user_prompt)
     if not ha_cmd:
-        return None
+        return None  # pas une commande domotique → la cascade continue
     logger.info(
         "[VOCAL_HOST] Zero-LLM HA → %s(%s)",
         ha_cmd.service, ha_cmd.entity_id,
     )
-    ok, text = await execute_ha_service(
-        ha_cmd.service,
-        ha_cmd.entity_id,
-        service_data=ha_cmd.service_data,
-    )
+    try:
+        ok, text = await execute_ha_service(
+            ha_cmd.service,
+            ha_cmd.entity_id,
+            service_data=ha_cmd.service_data,
+        )
+    except Exception as exc:
+        # La commande était comprise : on annonce la panne au lieu de laisser un
+        # LLM inventer une excuse. Le message reste court, il part en TTS.
+        logger.warning(
+            "[VOCAL_HOST] [#T323] Commande '%s(%s)' RECONNUE mais non exécutée : %s",
+            ha_cmd.service, ha_cmd.entity_id, exc,
+        )
+        return "Je n'ai pas pu joindre Home Assistant, la commande n'a pas été exécutée."
     if ok and text:
         return text
     return "Je n'ai pas pu exécuter cette commande."

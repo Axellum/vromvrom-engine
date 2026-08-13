@@ -38,6 +38,16 @@ def _sans_accents(texte: str) -> str:
 MAX_TOOL_RETRIES = 2
 # Délai de base entre les retries (secondes)
 BASE_RETRY_DELAY = 1.0
+# [#T341] Borne haute d'appels d'outil par TOUR de boucle ReAct (et non par
+# session : le ToolRegistry plafonne déjà à 150 appels/session par outil via
+# `_TOOL_RATE_LIMITS["default"]` — ce correctif s'articule en amont de ce
+# dernier filet, il ne le remplace pas). Mesuré le 12/08, session
+# `chat_aa88ff7bed` : une réponse de modèle contenait 2 181 tool_calls pour
+# 2 tours (1 500 en une seconde) pour une question domotique. La dizaine est
+# l'ordre de grandeur légitime observé dans les traces (lire 3 entités,
+# écrire 2 fichiers) ; 20 laisse de la marge aux plans multi-étapes sans
+# jamais approcher du millier.
+MAX_TOOL_CALLS_PER_TURN = 20
 
 class ExecutorAgent(BaseAgent):
     """
@@ -57,21 +67,33 @@ class ExecutorAgent(BaseAgent):
 3. SÉCURITÉ DU SYSTÈME : Ne tente pas de modifier les répertoires système protégés. Tout fichier créé ou modifié doit l'être uniquement dans le workspace (/config).
 4. CHEMINS : Le workspace principal est '/config'. Le tab5-engine (code Python) est dans '/config/moteur-master/'. Les fichiers core/ sont donc dans '/config/moteur-master/core/'. Utilise TOUJOURS des chemins absolus."""
 
-        prompt = f"""Tu es l'ExecutorAgent. Ton but est d'accomplir la tâche technique demandée en utilisant tes outils.
-CRITIQUE : Analyse attentivement la section 'RÉSULTATS PHASES PRÉCÉDENTES' dans le contexte.
-Si la tâche consiste à écrire ou synthétiser des données (par exemple, fusionner des contenus de fichiers) et que les contenus de ces fichiers ont DÉJÀ été lus et figurent dans la section 'RÉSULTATS PHASES PRÉCÉDENTES', tu ne dois pas les relire.
-Utilise DIRECTEMENT ces contenus du contexte et appelle uniquement 'write_file' pour enregistrer le résultat final. Ne fais aucun appel à 'read_file' dans ce cas.
-
-CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
-1. PRIVILÉGIE LES OUTILS MCP : Si des outils MCP (commençant par 'mcp_') sont enregistrés et correspondent à ta tâche (par exemple pour Home Assistant ou SQLite), tu DOIS les utiliser en priorité absolue plutôt que de lancer des commandes shell ou de développer des scripts personnalisés.
-{os_rules}
-5. SOIS PÉDAGOGUE : Explique brièvement en français les opérations effectuées.
-6. VÉRIFICATION OBLIGATOIRE : Après toute modification d'un fichier .py via 'write_file', appelle 'run_tests' sur le fichier de test correspondant (ou 'tests/' si aucun fichier ciblé n'est identifiable) AVANT de conclure. Si les tests échouent, corrige et relance-les avant de terminer la tâche."""
+        from core.prompt_loader import load_agent_prompt
+        default_prompt = (
+            "Tu es l'ExecutorAgent. Ton but est d'accomplir la tâche technique demandée en utilisant tes outils.\n"
+            "CRITIQUE : Analyse attentivement la section 'RÉSULTATS PHASES PRÉCÉDENTES' dans le contexte.\n"
+            "Si la tâche consiste à écrire ou synthétiser des données (par exemple, fusionner des contenus de fichiers) "
+            "et que les contenus de ces fichiers ont DÉJÀ été lus et figurent dans la section 'RÉSULTATS PHASES PRÉCÉDENTES', "
+            "tu ne dois pas les relire.\n"
+            "Utilise DIRECTEMENT ces contenus du contexte et appelle uniquement 'write_file' pour enregistrer le résultat final. "
+            "Ne fais aucun appel à 'read_file' dans ce cas.\n\n"
+            "CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :\n"
+            "1. PRIVILÉGIE LES OUTILS MCP : Si des outils MCP (commençant par 'mcp_') sont enregistrés et correspondent à ta tâche "
+            "(par exemple pour Home Assistant ou SQLite), tu DOIS les utiliser en priorité absolue plutôt que de lancer des "
+            "commandes shell ou de développer des scripts personnalisés.\n"
+            "{{OS_RULES}}\n"
+            "5. SOIS PÉDAGOGUE : Explique brièvement en français les opérations effectuées.\n"
+            "6. VÉRIFICATION OBLIGATOIRE : Après toute modification d'un fichier .py via 'write_file', appelle 'run_tests' "
+            "sur le fichier de test correspondant (ou 'tests/' si aucun fichier ciblé n'est identifiable) AVANT de conclure. "
+            "Si les tests échouent, corrige et relance-les avant de terminer la tâche."
+        )
+        prompt = load_agent_prompt("executor", default_prompt).replace("{{OS_RULES}}", os_rules)
 
         super().__init__(
             name="executor",
             system_prompt=prompt
         )
+        # Conservé pour interpoler {{OS_RULES}} à chaque invoke (relecture Markdown).
+        self._os_rules = os_rules
         self.gateway = llm_gateway
         self.tool_registry = tool_registry
         self.provider_name = provider_name
@@ -93,6 +115,20 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
             self._sandbox = SandboxWrapper(tool_registry, dry_run=True)
             self.tool_registry = self._sandbox
             logger.info(f"[{self.name}] Mode Sandbox activé : les outils destructeurs généreront des diffs preview.")
+
+    def _prompt_systeme_actuel(self) -> str:
+        """Relit le Markdown à chaque appel — un PUT IHM ne doit pas exiger un restart.
+
+        `self.name` distingue executor et ha_agent (ce dernier écrase le nom
+        après super().__init__). Le cache mtime de prompt_loader suffit :
+        fichier inchangé = pas d'I/O disque.
+        """
+        from core.prompt_loader import load_agent_prompt
+        texte = load_agent_prompt(self.name, self.system_prompt)
+        os_rules = getattr(self, "_os_rules", "")
+        if os_rules and "{{OS_RULES}}" in texte:
+            texte = texte.replace("{{OS_RULES}}", os_rules)
+        return texte
 
     # ──────────────────────────────────────────────────────────────────
     # [#T274] « Aucun outil appelé » : quand est-ce vraiment une faute ?
@@ -218,14 +254,15 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
         tools_schemas = self.tool_registry.get_all_schemas(payload.task_objective, agent_name=self.name)
 
         logger.info(f"[{self.name}] Analyse de la requête et décision...")
-        logger.info(f"[{self.name}] System Prompt: {self.system_prompt}")
+        prompt_systeme = self._prompt_systeme_actuel()
+        logger.info(f"[{self.name}] System Prompt: {prompt_systeme}")
         logger.info(f"[{self.name}] User Prompt: {user_prompt}")
 
         session_id = payload.metadata.get("session_id")
 
         # Initialisation de l'historique des messages pour la boucle ReAct multi-turn
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": prompt_systeme},
             {"role": "user", "content": user_prompt}
         ]
 
@@ -354,9 +391,27 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
                     logger.error(f"[{self.name}] [LOCAL-REVIEW-CORRECTION] Échec de la boucle corrective suite à erreur d'outil : {last_tool_error}")
                     break
 
-        # Si des outils ont été exécutés, on retourne les résultats des outils combinés
-        # Sinon on retourne la réponse texte finale.
-        result_data = "\n".join(last_results) if last_results else final_text_response
+        # [#T311] La réponse rédigée par le modèle prime sur l'écho brut des outils.
+        #
+        # Cette ligne retournait le dump des résultats d'outils dès qu'un seul outil
+        # avait tourné, et jetait `final_text_response` — c'est-à-dire la seule chose
+        # que l'utilisateur avait demandée. Mesuré le 11/08 sur « Qu'est-ce que j'ai
+        # de prévu demain ? » : l'executor appelait bien `get_calendar_events`,
+        # rédigeait sa réponse au tour 5 (131 tokens de complétion, aucun appel
+        # d'outil = sortie de boucle par `break`), et l'utilisateur recevait
+        # « Résultat 'get_calendar_events' : 📅 15 événement(s) à venir… » — la liste
+        # brute de tout le calendrier, sans le filtre « demain » qu'il avait demandé.
+        # Même symptôme sur les scénarios mail, système et analyse comparative.
+        #
+        # La boucle ReAct ne pose `final_text_response` que lorsque le modèle répond
+        # SANS appeler d'outil (cf. `_execute_react_loop`, étape 3) : sa présence
+        # signifie donc « le modèle a fini et a rédigé ». Quand elle est vide (tours
+        # épuisés), l'écho brut reste le seul contenu disponible et on le garde.
+        # La trace des outils n'est jamais perdue : elle part dans les métadonnées.
+        if final_text_response and final_text_response.strip():
+            result_data = final_text_response
+        else:
+            result_data = "\n".join(last_results)
 
         # Ajout des informations sandbox au résultat si actif
         sandbox_info = {}
@@ -368,6 +423,10 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
         metadata = {"sandbox": sandbox_info} if sandbox_info else {}
         if 'local_review_feedback' in locals() and local_review_feedback:
             metadata["local_review"] = local_review_feedback
+        # [#T311] La trace brute des outils reste consultable (IHM, debug, audit)
+        # même quand la réponse rendue est la synthèse du modèle.
+        if last_results:
+            metadata["tool_trace"] = last_results
 
         return StateUpdate(
             agent_name=self.name,
@@ -401,15 +460,14 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
             logger.info(f"[{self.name}]{prefix} Lancement du tour {turn + 1}/{max_turns} de la boucle ReAct...")
 
             response = await provider.generate_async(
-                system_prompt=self.system_prompt,
+                system_prompt=self._prompt_systeme_actuel(),
                 user_prompt=user_prompt,
                 tools=tools_schemas,
                 session_id=session_id,
                 messages=messages,
                 use_search_grounding=use_search_grounding,
-                # [T287] L'Executor écrit du code : il reçoit les conventions du
-                # projet (CLAUDE.md). Elles ne partent plus sur les chemins chat
-                # et vocal, qui n'en ont pas l'usage et les payaient en tokens.
+                # [T287] L'Executor écrit du code : il reçoit CONVENTIONS.md.
+                # Elles ne partent plus sur les chemins chat et vocal.
                 conventions_projet=True,
             )
 
@@ -424,6 +482,23 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
                 messages.append(assistant_message)
 
                 turn_results = []
+                # [#T341] Borne et déduplication des appels d'un même tour.
+                # Mesuré le 12/08 : 2 181 `tool_calls` (1 500 en une seconde)
+                # pour une seule question. Le ToolRegistry plafonnait bien (150
+                # exécutions réelles), mais les 2 031 échecs rate_limit étaient
+                # renvoyés au modèle et la boucle continuait. Deux garde-fous :
+                # 1) déduplication sur (nom, arguments EXACTS) — jamais le nom
+                #    seul : get_state('salon') puis get_state('chambre') sont
+                #    deux appels légitimes ;
+                # 2) borne haute MAX_TOOL_CALLS_PER_TURN pour les appels
+                #    distincts en rafale.
+                # Chaque appel écarté reçoit quand même un message `tool`
+                # (l'API exige une réponse pour CHAQUE tool_call du message
+                # assistant) : le modèle sait ce qui a été écarté et pourquoi —
+                # jamais de troncature silencieuse.
+                vus_dans_le_tour: set[tuple] = set()
+                nb_ecartes = 0
+                nb_doublons = 0
                 for tool_call in tool_calls:
                     func_name = tool_call["function"]["name"]
                     tool_call_id = tool_call.get("id", "call_123")
@@ -433,6 +508,46 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
                     except Exception as e:
                         res = f"Erreur de décodage des arguments JSON : {e}"
                         kwargs = {}
+
+                    # Clé de déduplication : arguments normalisés (l'ordre des
+                    # clés JSON ne doit pas créer de faux doublons), chaîne
+                    # brute si le JSON est invalide.
+                    try:
+                        cle_appel = (func_name, json.dumps(kwargs, sort_keys=True, default=str))
+                    except Exception:
+                        cle_appel = (func_name, kwargs_str)
+
+                    if cle_appel in vus_dans_le_tour:
+                        nb_doublons += 1
+                        raison = (
+                            f"doublon exact de {func_name}("
+                            f"{json.dumps(kwargs, ensure_ascii=False)}), déjà exécuté "
+                            "avec exactement les mêmes arguments dans ce tour"
+                        )
+                    elif len(vus_dans_le_tour) >= MAX_TOOL_CALLS_PER_TURN:
+                        raison = f"borne de {MAX_TOOL_CALLS_PER_TURN} appels d'outil par tour atteinte"
+                    else:
+                        raison = None
+
+                    if raison:
+                        nb_ecartes += 1
+                        logger.warning(
+                            f"[{self.name}]{prefix} Appel d'outil écarté ({raison}) : {func_name}"
+                        )
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "name": func_name,
+                            "content": (
+                                f"⚠️ Appel d'outil non exécuté : {raison}. "
+                                f"{nb_ecartes} appel(s) écarté(s) au total ce tour. "
+                                "Termine le tour ; relance au tour suivant les appels "
+                                "encore nécessaires."
+                            )
+                        })
+                        continue
+
+                    vus_dans_le_tour.add(cle_appel)
 
                     logger.info(f"[{self.name}]{prefix} Appel d'outil détecté : {func_name}")
 
@@ -465,6 +580,13 @@ CONSIGNES DE SÉCURITÉ ET DE COMPATIBILITÉ CRITIQUES :
                             "content": res_str
                         }
                         messages.append(tool_message)
+
+                if nb_ecartes:
+                    logger.warning(
+                        f"[{self.name}]{prefix} {nb_ecartes} appel(s) d'outil écarté(s) ce tour "
+                        f"({nb_doublons} doublon(s), {nb_ecartes - nb_doublons} au-delà de la "
+                        f"borne de {MAX_TOOL_CALLS_PER_TURN})"
+                    )
 
                 last_results.extend(turn_results)
                 continue

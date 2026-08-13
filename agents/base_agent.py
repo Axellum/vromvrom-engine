@@ -51,6 +51,19 @@ class BaseAgent(ABC):
         @functools.wraps(fonction)
         async def invoke_trace(self, payload, *args, **kwargs_appel):
             jeton = poser_agent_courant(getattr(self, "name", cls.__name__))
+            # [#T298] Heartbeat de vivacité : chaque étape d'agent réelle prouve
+            # que la session est encore vivante, donc le nettoyage des zombies ne
+            # doit pas y toucher. Posé ici, sur la classe de base, comme le trace
+            # #T296 : tous les call-sites (engine, dag_runner, healing,
+            # review_loop, swarm_dispatcher) passent par cette enveloppe — aucun
+            # chemin d'exécution ne peut l'oublier. Non bloquant par conception.
+            try:
+                _sid = (payload.metadata or {}).get("session_id")
+                if _sid:
+                    from core.session_history import record_session_activity
+                    record_session_activity(_sid)
+            except Exception:
+                pass
             try:
                 return await fonction(self, payload, *args, **kwargs_appel)
             finally:

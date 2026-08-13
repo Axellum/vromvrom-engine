@@ -168,17 +168,17 @@ class ContextSelfHealer:
 
         # Ajouter les IPs de l'infrastructure (DHCP statiques / PC / HA) pour éviter les faux positifs
         known_infra_ips = {
-            "${LM_STUDIO_HOST:-192.168.1.x}",  # Host PC de dev (LM Studio)
-            "${PC_HOST:-192.168.1.x}", # PC Ethernet primaire
-            "${PC_HOST_ALT:-192.168.1.x}", # PC Ethernet secondaire
-            "${TAB5_HOST:-192.168.1.x}",  # M5Stack Tab5 V2 (DHCP lease)
-            "${MINITAB_HOST:-192.168.1.x}",  # MicHA AtomS3R (DHCP lease)
+            "192.168.1.x",  # Host PC de dev (LM Studio)
+            "192.168.1.x", # PC Ethernet primaire
+            "192.168.1.x", # PC Ethernet secondaire
+            "192.168.1.x",  # M5Stack Tab5 V2 (DHCP lease)
+            "192.168.1.x",  # MicHA AtomS3R (DHCP lease)
             "192.168.1.10",  # HA VM Local IP (NGINX proxy)
-            "${HA_HOST:-192.168.1.x}",  # VM Freebox (Worker Sentinelle)
-            "${GATEWAY_HOST:-192.168.1.x}", # Passerelle Freebox Delta
-            "${DECK_HOST:-192.168.1.x}",  # Steam Deck (Prod Moteur / Failover HA)
-            "${DECK_HOST_WIFI:-192.168.1.x}", # Failover IP secondaire
-            "${ZIGBEE_HOST:-192.168.1.x}",  # Coordinateur Zigbee SMLIGHT SLZB-06MU
+            "192.168.1.x",  # VM Freebox (Worker Sentinelle)
+            "192.168.1.x", # Passerelle Freebox Delta
+            "192.168.1.x",  # Steam Deck (Prod Moteur / Failover HA)
+            "192.168.1.x", # Failover IP secondaire
+            "192.168.1.x",  # Coordinateur Zigbee SMLIGHT SLZB-06MU
         }
         all_known_ips = esphome_ips | workers_ips | known_infra_ips
 

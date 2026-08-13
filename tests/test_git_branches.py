@@ -120,16 +120,23 @@ def run_git_tests():
     # Assertions après échec
     _, final_branch_fail, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo_path)
     assert final_branch_fail == orig_branch_before_all, f"Devrait être revenus sur {orig_branch_before_all}"
-    assert not os.path.exists(agent_file), "Le fichier écrit par l'agent n'aurait pas dû être fusionné ni exister dans l'arbre de travail final"
+    # [#T318] Le fichier de l'agent n'est PAS fusionné (rien n'est commité sur
+    # échec), mais il reste sur le disque : `git clean -fd` a été retiré du
+    # rollback — il supprimait sans distinction les fichiers non suivis d'un
+    # humain travaillant dans le même dépôt (perte de données du 12/08).
+    assert not _run_git(["log", "--oneline", "-1", "--", "temp_agent_edit_test.txt"], cwd=repo_path)[1], \
+        "Le fichier écrit par l'agent n'aurait pas dû être fusionné dans l'historique"
     assert os.path.exists(user_file), "Le fichier utilisateur stashed aurait dû être restauré après le rollback"
 
     with open(user_file, encoding="utf-8") as f:
         user_content_final = f.read()
     assert user_content_final == "Modification utilisateur importante", "Le fichier utilisateur doit rester intact"
 
-    # Nettoyage final du fichier utilisateur temporaire
-    if os.path.exists(user_file):
-        os.remove(user_file)
+    # Nettoyage final des fichiers temporaires ([#T318] le fichier de l'agent
+    # survit désormais au rollback, c'est au test de le retirer)
+    for f in [user_file, agent_file]:
+        if os.path.exists(f):
+            os.remove(f)
 
     logger.info("TEST 2 RÉUSSI AVEC SUCCÈS !")
     logger.info("=== ALL GIT BRANCH SANDBOX TESTS PASSED ===")

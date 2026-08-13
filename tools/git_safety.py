@@ -54,6 +54,29 @@ def is_canonical_repo(repo_path: str = ".") -> bool:
     code, remote_url, _ = _run_git(["remote", "get-url", "origin"], cwd=repo_path)
     return code == 0 and EXPECTED_REMOTE_SUBSTR in remote_url
 
+def est_worktree_lie(repo_path: str = ".") -> bool:
+    """
+    [#T318] Le dépôt à repo_path est-il un *worktree lié* (`git worktree add`) ?
+
+    Détection : dans un worktree lié, `--git-dir` pointe vers
+    `<principal>/.git/worktrees/<nom>` alors que `--git-common-dir` pointe vers
+    `<principal>/.git`. Dans un dépôt ordinaire, les deux désignent le même
+    dossier.
+
+    Enjeu : un worktree est par nature un espace de travail HUMAIN (c'est sa
+    seule raison d'être), et la branche parente y est structurellement
+    inaccessible — elle est déjà utilisée par un autre worktree. Toute tentative
+    d'isolation Git y est donc à la fois inutile et destructrice.
+    """
+    code_dir, git_dir, _ = _run_git(["rev-parse", "--git-dir"], cwd=repo_path)
+    code_common, common_dir, _ = _run_git(["rev-parse", "--git-common-dir"], cwd=repo_path)
+    if code_dir != 0 or code_common != 0 or not git_dir or not common_dir:
+        return False
+    # Les deux chemins peuvent être relatifs au dépôt : résolution avant comparaison.
+    absolu = lambda p: os.path.realpath(os.path.join(repo_path, p))  # noqa: E731
+    return absolu(git_dir) != absolu(common_dir)
+
+
 def _require_canonical_repo(repo_path: str) -> str:
     """
     Retourne une chaîne d'erreur (préfixée "Erreur") si repo_path n'est pas un
@@ -116,6 +139,20 @@ def git_rollback_checkpoint(repo_path: str = ".") -> str:
     if guard_err:
         return guard_err
 
+    # [#T318] Un worktree lié est un espace de travail humain : `reset --hard`
+    # suivi de `clean -fd` y détruirait sans distinction des fichiers qu'aucun
+    # commit ni reflog ne pourrait rendre. L'outil refuse plutôt que de deviner.
+    if est_worktree_lie(repo_path):
+        logger.error(
+            f"[GIT SAFETY] [#T318] Rollback REFUSÉ dans le worktree lié '{repo_path}' "
+            "(reset --hard + clean -fd y détruiraient du travail humain non commité)."
+        )
+        return (
+            "Erreur : rollback refusé — le dépôt de travail est un worktree Git lié, "
+            "où le nettoyage détruirait du travail non commité (#T318). "
+            "Lancer le moteur depuis un clone dédié pour disposer du rollback."
+        )
+
     # 1. Annuler toutes les modifications locales (fichiers suivis)
     code, stdout, stderr = _run_git(["reset", "--hard", "HEAD"], cwd=repo_path)
     if code != 0:
@@ -171,6 +208,25 @@ def git_prepare_agent_branch(session_id: str, repo_path: str = ".", prefix: str 
     if guard_err:
         return guard_err
 
+    # [#T318] Refus net dans un worktree lié — AVANT tout stash, tout checkout.
+    # Incident du 12/08 : le moteur tournait depuis un worktree ; le stash a
+    # retiré `tools/comptes.py` et son test (12 tests verts, non commités) du
+    # disque, puis la finalisation a échoué sur `checkout master` (branche déjà
+    # utilisée par le dépôt principal) et n'a jamais dépilé le stash. Les
+    # fichiers étaient introuvables. Mieux vaut renoncer à l'isolation Git —
+    # l'appelant continue sans elle — que détruire du travail humain.
+    if est_worktree_lie(repo_path):
+        logger.warning(
+            f"[GIT SAFETY] [#T318] '{repo_path}' est un worktree Git lié : isolation "
+            "par branche éphémère REFUSÉE (ni stash, ni checkout, ni nettoyage). "
+            "L'agent travaille en place. Pour retrouver l'isolation, lancer le "
+            "moteur depuis un clone dédié."
+        )
+        return (
+            "Erreur : dépôt de travail = worktree Git lié. Isolation par branche "
+            "refusée pour ne pas détruire de travail non commité (#T318)."
+        )
+
     # 1. Sauvegarder l'état actuel de l'utilisateur s'il y a des modifications
     code, status_out, _ = _run_git(["status", "--porcelain"], cwd=repo_path)
     user_stash_created = False
@@ -204,6 +260,17 @@ def git_prepare_agent_branch(session_id: str, repo_path: str = ".", prefix: str 
         if user_stash_created:
             _run_git(["stash", "pop"], cwd=repo_path)
         return f"Erreur lors de la création de la branche : {err or stdout}"
+
+    # [#T318] Mémoriser la branche de DÉPART dans la config locale du dépôt.
+    # Avant ce correctif, `orig_branch` était calculée ici puis jamais utilisée :
+    # la finalisation revenait sur 'main' — sinon 'master' — EN DUR. Conséquence
+    # mesurée le 12/08 : le travail d'un agent lancé depuis une branche de
+    # feature était fusionné dans `master` local, pas dans la branche courante.
+    if orig_branch and orig_branch != "HEAD":
+        _run_git(
+            ["config", "--local", f"branch.{branch_name}.agentOrigin", orig_branch],
+            cwd=repo_path,
+        )
 
     return branch_name
 
@@ -294,12 +361,82 @@ def git_generate_semantic_commit_msg(repo_path: str = ".", session_id: str = "")
 
     return full_msg
 
+def _restaurer_stash_utilisateur(session_id: str, repo_path: str) -> tuple[bool, str]:
+    """
+    [#T318] Dépile le stash créé au démarrage de la session pour le compte de
+    l'utilisateur. Retourne (succès, fragment de statut) — fragment vide si
+    aucun stash ne correspond à cette session.
+
+    Extrait de `git_finalize_agent_branch` parce que cette étape doit s'exécuter
+    sur TOUS ses chemins de sortie. Avant ce correctif, un `return` précoce
+    (échec du retour sur la branche parente) la sautait purement et simplement :
+    le travail non commité de l'utilisateur restait enfermé dans un stash, donc
+    absent du disque, sans que rien ne le signale.
+    """
+    code, stdout, _ = _run_git(["stash", "list"], cwd=repo_path)
+    if code != 0 or not stdout:
+        return True, ""
+
+    for idx, line in enumerate(stdout.splitlines()):
+        if f"user_pre_agent_{session_id}" not in line:
+            continue
+        logger.info(f"[GIT SAFETY] Restauration du stash utilisateur (index {idx})...")
+        pop_code, pop_out, pop_err = _run_git(
+            ["stash", "pop", f"stash@{{{idx}}}"], cwd=repo_path
+        )
+        if pop_code != 0:
+            # [#T278] Un `stash pop` en échec laisse le stash INTACT dans la
+            # pile (git ne le dépile que si l'application réussit). Avant ce
+            # correctif, une simple phrase ajoutée au message de succès
+            # (« Fusion effectuée avec succès. Attention : conflit… ») laissait
+            # croire que tout allait bien — la config de prod pouvait rester
+            # enfermée dans un stash jamais dépilé (incident du 11/08).
+            # Le statut retourné porte donc l'échec et nomme l'identifiant
+            # exact du stash resté intact pour une récupération manuelle.
+            logger.error(
+                f"[GIT SAFETY] Échec de la restauration du stash utilisateur "
+                f"(stash@{{{idx}}}, laissé intact) : {pop_err or pop_out}"
+            )
+            return False, (
+                f"ÉCHEC de la restauration de vos modifications locales : le "
+                f"stash stash@{{{idx}}} est resté intact dans la pile. "
+                f"Récupération manuelle : git stash apply stash@{{{idx}}}"
+            )
+        return True, " Vos modifications locales ont été restaurées."
+
+    return True, ""
+
+
+def _branche_de_depart(branch_name: str, repo_path: str) -> list[str]:
+    """
+    [#T318] Ordre des branches à essayer pour le retour après finalisation :
+    d'abord celle mémorisée au moment de la préparation, puis les valeurs
+    historiques ('main', 'master') en repli — une branche éphémère créée par
+    une version antérieure du moteur n'a pas de `agentOrigin` en config.
+    """
+    candidats: list[str] = []
+    code, origine, _ = _run_git(
+        ["config", "--local", "--get", f"branch.{branch_name}.agentOrigin"],
+        cwd=repo_path,
+    )
+    if code == 0 and origine:
+        candidats.append(origine)
+    for repli in ("main", "master"):
+        if repli not in candidats:
+            candidats.append(repli)
+    return candidats
+
+
 def git_finalize_agent_branch(branch_name: str, success: bool, session_id: str, repo_path: str = ".") -> str:
     """
     Finalise le travail de l'agent.
-    - Si SUCCÈS : merge la branche éphémère vers sa branche d'origine (main).
+    - Si SUCCÈS : merge la branche éphémère vers sa branche de départ.
     - Si ÉCHEC : détruit la branche éphémère (rollback).
     Dans tous les cas, restaure le stash utilisateur s'il existe.
+
+    [#T318] Deux garanties tenues quoi qu'il arrive : le stash utilisateur est
+    dépilé sur tous les chemins de sortie, et le retour se fait sur la branche
+    d'où la session est réellement partie — plus sur 'main'/'master' en dur.
     """
     guard_err = _require_canonical_repo(repo_path)
     if guard_err:
@@ -318,16 +455,50 @@ def git_finalize_agent_branch(branch_name: str, success: bool, session_id: str, 
             commit_msg = git_generate_semantic_commit_msg(repo_path, session_id)
             _run_git(["commit", "-m", commit_msg], cwd=repo_path)
 
-    # 2. Revenir sur 'main'
-    target_branch = "main"
-    logger.info(f"[GIT SAFETY] Retour sur la branche principale '{target_branch}'")
-    code, stdout, err = _run_git(["checkout", target_branch], cwd=repo_path)
-    if code != 0:
-        # Si 'main' n'existe pas ou erreur, tenter 'master'
-        target_branch = "master"
-        code, stdout, err = _run_git(["checkout", target_branch], cwd=repo_path)
-        if code != 0:
-            return f"Erreur lors du retour à la branche principale : {err or stdout}"
+    # [#T318] En cas d'échec, annuler les modifications AVANT de quitter la
+    # branche éphémère. L'ordre inverse (l'ancien) était fautif : `git checkout`
+    # emporte les modifications non commitées sur la branche de destination, si
+    # bien que le `reset --hard` suivant s'appliquait à la branche de
+    # l'UTILISATEUR. C'est ce qui a annulé la modification de
+    # `tools/registry_setup.py` le 12/08.
+    if not success:
+        logger.warning(
+            f"[GIT SAFETY] Échec détecté. Annulation des changements sur '{branch_name}'."
+        )
+        _run_git(["reset", "--hard", "HEAD"], cwd=repo_path)
+        # [#T318] Plus de `git clean -fd` ici. Un fichier non suivi laissé en
+        # place est une gêne ; un fichier non suivi supprimé est une perte
+        # irréversible — ni dans l'index, ni dans le reflog. Et rien ne
+        # distingue un résidu de l'agent d'un fichier qu'un humain vient
+        # d'écrire dans le même dépôt.
+        code_res, restants, _ = _run_git(
+            ["ls-files", "--others", "--exclude-standard"], cwd=repo_path
+        )
+        if code_res == 0 and restants:
+            logger.info(
+                "[GIT SAFETY] [#T318] Fichiers non suivis laissés en place "
+                f"(non supprimés, à trier à la main) : {restants.splitlines()}"
+            )
+
+    # 2. Revenir sur la branche de départ de la session
+    target_branch = ""
+    err = stdout = ""
+    for candidat in _branche_de_depart(branch_name, repo_path):
+        logger.info(f"[GIT SAFETY] Retour sur la branche de départ '{candidat}'")
+        code, stdout, err = _run_git(["checkout", candidat], cwd=repo_path)
+        if code == 0:
+            target_branch = candidat
+            break
+
+    if not target_branch:
+        # [#T318] Sortie en erreur, mais SANS court-circuiter la restauration du
+        # stash : c'est précisément ce `return` sec qui faisait disparaître le
+        # travail non commité de l'utilisateur.
+        statut_err = f"Erreur lors du retour à la branche principale : {err or stdout}"
+        ok_stash, msg_stash = _restaurer_stash_utilisateur(session_id, repo_path)
+        if msg_stash:
+            statut_err = msg_stash if not ok_stash else statut_err + msg_stash
+        return statut_err
 
     merge_status = ""
     if success:
@@ -343,45 +514,28 @@ def git_finalize_agent_branch(branch_name: str, success: bool, session_id: str, 
             # Supprimer la branche locale éphémère
             _run_git(["branch", "-d", branch_name], cwd=repo_path)
     else:
-        logger.warning(f"[GIT SAFETY] Échec détecté. Annulation des changements et abandon de la branche '{branch_name}'.")
-        # Annuler toutes les modifications locales sur la branche éphémère avant de la quitter
-        _run_git(["reset", "--hard", "HEAD"], cwd=repo_path)
-        _run_git(["clean", "-fd"], cwd=repo_path)
-        # Forcer le retour et la suppression de la branche
-        _run_git(["checkout", target_branch], cwd=repo_path)
+        # [#T318] L'annulation a déjà eu lieu plus haut, sur la branche éphémère
+        # elle-même. Il ne reste qu'à supprimer la référence — son contenu reste
+        # récupérable par le reflog pendant la durée de rétention de Git.
         _run_git(["branch", "-D", branch_name], cwd=repo_path)
         merge_status = "Rollback effectué (branche éphémère détruite)."
 
+    # [#T318] La clé de config qui mémorisait la branche de départ n'a plus
+    # d'objet une fois la branche éphémère finalisée : `git branch -d/-D` ne
+    # nettoie pas les sections `branch.<nom>.*` posées à la main.
+    _run_git(
+        ["config", "--local", "--unset", f"branch.{branch_name}.agentOrigin"],
+        cwd=repo_path,
+    )
+
 
     # 3. Restaurer le stash utilisateur s'il existe
-    code, stdout, _ = _run_git(["stash", "list"], cwd=repo_path)
-    if code == 0 and stdout:
-        lines = stdout.splitlines()
-        for idx, line in enumerate(lines):
-            if f"user_pre_agent_{session_id}" in line:
-                logger.info(f"[GIT SAFETY] Restauration du stash utilisateur (index {idx})...")
-                pop_code, pop_out, pop_err = _run_git(["stash", "pop", f"stash@{{{idx}}}"], cwd=repo_path)
-                if pop_code != 0:
-                    # [#T278] Un `stash pop` en échec laisse le stash INTACT dans la
-                    # pile (git ne le dépile que si l'application réussit). Avant ce
-                    # correctif, une simple phrase ajoutée au message de succès
-                    # (« Fusion effectuée avec succès. Attention : conflit… ») laissait
-                    # croire que tout allait bien — la config de prod pouvait rester
-                    # enfermée dans un stash jamais dépilé (incident du 11/08).
-                    # Le statut retourné porte donc l'échec et nomme l'identifiant
-                    # exact du stash resté intact pour une récupération manuelle.
-                    logger.error(
-                        f"[GIT SAFETY] Échec de la restauration du stash utilisateur "
-                        f"(stash@{{{idx}}}, laissé intact) : {pop_err or pop_out}"
-                    )
-                    merge_status = (
-                        f"ÉCHEC de la restauration de vos modifications locales : le "
-                        f"stash stash@{{{idx}}} est resté intact dans la pile. "
-                        f"Récupération manuelle : git stash apply stash@{{{idx}}}"
-                    )
-                else:
-                    merge_status += " Vos modifications locales ont été restaurées."
-                break
+    ok_stash, msg_stash = _restaurer_stash_utilisateur(session_id, repo_path)
+    if msg_stash:
+        # Un échec de restauration REMPLACE le message de succès (il ne s'y
+        # ajoute pas) : le travail de l'utilisateur prime sur le sort de la
+        # branche de l'agent. Cf. [#T278].
+        merge_status = msg_stash if not ok_stash else merge_status + msg_stash
 
     return merge_status
 

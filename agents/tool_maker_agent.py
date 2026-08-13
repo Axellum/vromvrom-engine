@@ -180,8 +180,8 @@ class ToolMakerAgent(BaseAgent):
     """
 
     def __init__(self, llm_gateway=None, **kwargs):
-        # [#T188] Prompt externalisé en Markdown (contexte_ia/03_Software/prompts_agents/
-        # tool_maker.md) ; la chaîne ci-dessous reste le repli si le fichier est absent.
+        # [#T188/#T340] Prompt externalisé (prompts/agents/tool_maker.md) ;
+        # la chaîne ci-dessous reste le repli si le fichier est absent.
         from core.prompt_loader import load_agent_prompt
         super().__init__(
             name="tool_maker",

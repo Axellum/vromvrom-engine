@@ -21,6 +21,7 @@ from datetime import datetime
 
 from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
 from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
 
 # Ajouter le dossier racine du moteur au PATH
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -39,10 +40,14 @@ logger = logging.getLogger("ha_entity_ingest")
 async def ingest_ha_entities():
     """Récupère les entités de Home Assistant et les insère dans le graphe SQLite."""
     ha_token = get_ha_token()
-    ha_url = os.environ.get("HASS_URL", "http://${HA_HOST:-192.168.1.x}:8123")
+    ha_url = get_ha_url()
 
     if not ha_token:
         logger.error("Token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN) dans l'environnement / .env. Abandon.")
+        return False
+
+    if not ha_url:
+        logger.error("URL Home Assistant non configurée (HASS_URL/HA_URL) dans l'environnement / .env. Abandon.")
         return False
 
     logger.info(f"Connexion à Home Assistant sur : {ha_url} ...")
@@ -79,7 +84,7 @@ async def ingest_ha_entities():
     for entity in entities:
         entity_id = entity.get("entity_id", "")
         if "tab5" in entity_id.lower() or entity_id in (
-            "switch.example_wake_word",
+            "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
             "sensor.m5stack_tab5_home_assistant_hmi_tab5_core_temp",
             "media_player.m5stack_tab5_home_assistant_hmi_tab5_media_player"
         ):

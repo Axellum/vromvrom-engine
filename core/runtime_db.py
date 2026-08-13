@@ -145,10 +145,14 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             task_count INTEGER DEFAULT 0,
             error_message TEXT,
             result_summary TEXT,
-            metadata TEXT
+            metadata TEXT,
+            last_activity REAL
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC)")
+    # [#T298] Migration additive : heartbeat de vivacité des sessions sur les
+    # bases existantes (les sessions créées avant n'ont pas de last_activity).
+    _ensure_columns(conn, "sessions", {"last_activity": "REAL"})
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS quota_snapshots (
@@ -288,6 +292,46 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_routing_timestamp ON routing_decisions(timestamp DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_routing_category ON routing_decisions(dominant_category)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_routing_session ON routing_decisions(session_id)")
+
+    # ─── SANTÉ DES MODÈLES (#T333) ───
+    # État de la sonde de vivacité. Séparé de `models_registry.db` à dessein :
+    # le catalogue décrit ce qui EXISTE, cette table observe ce qui RÉPOND.
+    #
+    # `desactive_par_sonde` est le champ qui rend la réactivation automatique
+    # sûre : un modèle qu'Axel a désactivé à la main n'a pas la même signification
+    # qu'un modèle éteint pour cause de panne, et la sonde ne doit jamais annuler
+    # une décision humaine en la prenant pour une des siennes.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS model_health (
+            model_id TEXT PRIMARY KEY,
+            dernier_test REAL,
+            dernier_succes REAL,
+            echecs_consecutifs INTEGER DEFAULT 0,
+            succes_consecutifs INTEGER DEFAULT 0,
+            desactive_par_sonde INTEGER DEFAULT 0,
+            derniere_erreur TEXT,
+            latence_ms REAL
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_model_health_sonde "
+        "ON model_health(desactive_par_sonde)"
+    )
+
+    # [#T334] Hystérésis de l'alerte soldes/quotas (core/quota_alert.py) :
+    # une ligne unique (id=1) portant l'état — en_alerte et les compteurs de
+    # confirmation/sortie — pour qu'un solde qui reste bas dix cycles produise
+    # UNE alerte, pas dix.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS quota_alertes (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            en_alerte INTEGER DEFAULT 0,
+            cycles_sous_seuil INTEGER DEFAULT 0,
+            cycles_au_dessus INTEGER DEFAULT 0,
+            derniere_alerte_ts REAL,
+            dernier_cycle_ts REAL
+        )
+    """)
 
     # ─── PARTIE CHECKPOINTS (Ex-checkpoints.db) ───
     conn.execute("""

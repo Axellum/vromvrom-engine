@@ -135,9 +135,12 @@ async def run_coding_task(
     try:
         # [T287] Front de codage : conventions du projet demandées explicitement.
         # Elles ne sont plus injectées d'office sur tous les appels du moteur.
-        response = await provider.generate_async(
-            CODING_SYSTEM_PROMPT, user_prompt, conventions_projet=True
-        )
+        # [#T308] Front de code : consomme hors de tout agent, donc s'étiquette ici.
+        from core.agent_trace import agent_courant
+        with agent_courant("coding_front"):
+            response = await provider.generate_async(
+                CODING_SYSTEM_PROMPT, user_prompt, conventions_projet=True
+            )
         usable = isinstance(response, str) and len(response.strip()) >= MIN_USABLE_RESPONSE_CHARS
     except Exception as e:
         logger.warning(f"[CODING-FRONT] Échec de toute la cascade du tier '{tier}' : {e}")
@@ -152,9 +155,10 @@ async def run_coding_task(
         logger.warning(
             f"[CODING-FRONT] ⬆️ Escalade automatique moyen→fort ({model_name})"
         )
-        response = await provider.generate_async(
-            CODING_SYSTEM_PROMPT, user_prompt, conventions_projet=True
-        )
+        with agent_courant("coding_front"):
+            response = await provider.generate_async(
+                CODING_SYSTEM_PROMPT, user_prompt, conventions_projet=True
+            )
     else:
         tier_final = tier
         if not usable:

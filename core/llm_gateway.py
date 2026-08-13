@@ -424,7 +424,7 @@ class LLMGateway:
             "domotique-qwen7b:q4": _make_compat("ollama_local", "domotique-qwen7b:q4", "ollama"),
             "qwen2.5-coder:7b": _make_compat("ollama_local", "qwen2.5-coder:7b", "ollama"),
             "deepseek-r1:8b": _make_compat("ollama_local", "deepseek-r1:8b", "ollama"),
-            # Variante joignable en LAN (${LM_STUDIO_HOST:-192.168.1.x}) depuis le Deck — cf. commentaire
+            # Variante joignable en LAN (192.168.1.x) depuis le Deck — cf. commentaire
             # dans OPENAI_COMPAT_PROVIDERS["ollama_pc"]. Utilisée par le fast path vocal
             # (FAST_PATH_PROVIDERS) pour du local-first même quand le moteur tourne sur le Deck.
             # Timeout dédié (connect 2s, read 15s) — PAS la famille "lmstudio" (120s de read) :
@@ -452,7 +452,7 @@ class LLMGateway:
 
             "local": LMStudioProvider(),
             # === STEAM DECK EDGE AI (Ollama RDNA2) ===
-            # Endpoint réseau local : http://${DECK_HOST:-192.168.1.x}:11434
+            # Endpoint réseau local : http://192.168.1.x:11434
             # Disponibilité vérifiée dynamiquement via ping_available()
             # Tiers recommandés : parsing_logs, yaml_format, resume_court
             "deck_ollama":       OllamaDeckProvider(),                              # phi3:mini par défaut

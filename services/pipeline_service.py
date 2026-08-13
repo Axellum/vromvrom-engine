@@ -120,6 +120,21 @@ async def run_fast_path(
     Raises:
         RuntimeError : Si tous les providers fast path ont échoué
     """
+    # [#T301] Le fast-path n'est pas un agent : il appelle le gateway directement,
+    # donc l'enveloppe de `BaseAgent.invoke()` (#T296) ne s'applique pas et
+    # `token_usage.agent_name` restait NULL. Mesuré en exerçant la prod le 11/08 :
+    # une requête réelle « casual_chat » écrit sa ligne de consommation sans aucune
+    # étiquette, alors que la route se déclare elle-même `agents_used = ["fast_path"]`.
+    # C'est le chemin DOMINANT du moteur (vocal : 6 appelants, dont vocal_jobs et
+    # vocal_host), donc sans ça la colonne reste vide là où le moteur sert vraiment.
+    #
+    # Pose sans restauration, comme `core/llm/fallback_trace.py` (#T288) : chaque
+    # requête s'exécute dans sa propre tâche asyncio, qui démarre avec une copie du
+    # contexte et meurt avec la requête. Vérifié : aucun des 6 appelants n'invoque
+    # le fast-path depuis un agent, il n'y a donc pas de contexte parent à rendre.
+    from core.agent_trace import poser_agent_courant
+    poser_agent_courant("fast_path")
+
     token_tracker.init_session(session_id, user_prompt)
 
     system_prompt = FAST_PATH_SYSTEM_PROMPT
@@ -163,7 +178,6 @@ async def run_fast_path(
 
     # ── Tentatives sur les providers rapides ──
     response_text = None
-    loop = asyncio.get_event_loop()
 
     # [#T194] Le modèle/tier choisi dans l'IHM passe en tête de cascade ; la
     # liste statique FAST_PATH_PROVIDERS reste le filet de sécurité derrière.
@@ -207,13 +221,16 @@ async def run_fast_path(
                     break
 
             logger.info(f"[FAST_PATH] Tentative → {pname}")
-            response_text = await loop.run_in_executor(
-                None,
-                lambda p=fast_provider: p.generate(
-                    system_prompt,
-                    user_prompt,
-                    session_id=session_id,
-                )
+            # [#T301] `asyncio.to_thread` et NON `loop.run_in_executor` : les deux
+            # déportent dans l'executor par défaut, mais seul `to_thread` propage la
+            # ContextVar (vérifié : run_in_executor -> None, to_thread -> valeur).
+            # Sans ça, l'étiquette d'agent posée juste au-dessus n'atteint jamais
+            # `record_usage()`, qui s'exécute dans le thread du provider.
+            response_text = await asyncio.to_thread(
+                fast_provider.generate,
+                system_prompt,
+                user_prompt,
+                session_id=session_id,
             )
             # generate() peut renvoyer un message tool_calls si tools passés ailleurs
             if isinstance(response_text, dict):
@@ -437,6 +454,41 @@ def _normaliser_payload_initial(initial_payload: Any) -> TaskPayload:
     )
 
 
+def detecter_echec_sans_resultat(
+    history_dicts: list[dict[str, Any]],
+    results: list[dict[str, Any]],
+) -> str | None:
+    """
+    [#T328] La session a-t-elle échoué sans rien produire ? Retourne le message
+    d'erreur à remonter, ou None si la session peut être annoncée comme réussie.
+
+    Critère : au moins une tâche en erreur ET aucun résultat exploitable. Une
+    session dont une partie a réussi reste un succès (partiel) — on ne
+    transforme pas un demi-résultat en échec, on refuse seulement d'appeler
+    « terminée » une session qui n'a rien rendu.
+
+    Motif : les trois sorties du pipeline mentaient de concert — statut de base
+    « success » en dur, `status: "completed"` en dur, et « ✅ Tâche terminée. »
+    en repli de réponse vide. Mesuré le 12/08 sur `chat_683ea8b2cd` : l'outil
+    échoue, le journal écrit `phase: failed`, l'utilisateur lit « ✅ Tâche
+    terminée. » après 60,9 s. Double dégât — l'utilisateur croit sa demande
+    satisfaite, et la base enregistre un succès qui gonfle les statistiques
+    (cf. #T325, 88 « tâches réussies » sans coût ni résultat).
+    """
+    if results:
+        return None
+    echecs = [
+        h for h in history_dicts
+        if h.get("status") == "error" or h.get("error_message")
+    ]
+    if not echecs:
+        return None
+    return next(
+        (h.get("error_message") for h in reversed(echecs) if h.get("error_message")),
+        "aucun détail disponible",
+    )
+
+
 async def run_full_pipeline(
     user_prompt: str,
     session_id: str,
@@ -573,6 +625,44 @@ async def run_full_pipeline(
                 "⏸️ Le plan contient des tâches à risque et attend votre approbation. "
                 "L'exécution reprendra exactement sur ce plan une fois approuvé."
             ),
+            "history": history_dicts,
+            "agents_used": agents_used,
+            "engine_state": global_state_to_dict(final_state),
+        }
+
+    # [#T328] Une session qui n'a produit AUCUN résultat alors que des tâches ont
+    # échoué n'est pas un succès. Avant ce correctif, les trois sorties mentaient
+    # de concert : `record_session_end(..., "success")` en dur, `status:
+    # "completed"` en dur, et « ✅ Tâche terminée. » en repli de réponse vide.
+    #
+    # Mesuré le 12/08 (session `chat_683ea8b2cd`) : « Quelle est la température
+    # actuelle dans le salon ? » → l'outil `call_api` échoue sur une connexion
+    # fermée par HA, le journal écrit `[ERROR] Erreur depuis ha_agent` et
+    # `phase: failed`… et l'utilisateur reçoit « ✅ Tâche terminée. » après 60,9 s.
+    #
+    # Double dégât : l'utilisateur croit sa demande satisfaite, ET la base
+    # enregistre un succès — c'est ainsi que des « tâches réussies » sans coût ni
+    # résultat s'accumulent dans les métriques (cf. #T325).
+    derniere_erreur = detecter_echec_sans_resultat(history_dicts, results)
+    if derniere_erreur is not None:
+        echecs = [h for h in history_dicts if h.get("status") == "error" or h.get("error_message")]
+        logger.warning(
+            "[PIPELINE] [#T328] Session %s : %d tâche(s) en erreur et aucun résultat "
+            "— signalée en échec au lieu de « Tâche terminée ».",
+            session_id, len(echecs),
+        )
+        record_session_end(
+            session_id, "error",
+            agents_invoked=agents_used,
+            task_count=len(final_state.history),
+            error_message=str(derniere_erreur)[:500],
+        )
+        await _cleanup_mcp(mcp_bridge)
+        return {
+            "status": "error",
+            "session_id": session_id,
+            "error": str(derniere_erreur),
+            "response": f"❌ La tâche n'a pas abouti : {derniere_erreur}",
             "history": history_dicts,
             "agents_used": agents_used,
             "engine_state": global_state_to_dict(final_state),

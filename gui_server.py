@@ -129,7 +129,8 @@ async def lifespan(app: FastAPI):
     # ── Initialisation du HAFuzzyMatcher (matching entités HA sans LLM) ──
     try:
         from core.ha_fuzzy_matcher import init_fuzzy_matcher
-        _ha_url = os.environ.get("HASS_URL", "https://${HA_HOST:-192.168.1.x}:8123")
+        from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
+        _ha_url = get_ha_url()
         _ha_token = get_ha_token()
         if not _ha_token:
             # Secours : lecture brute du fichier .env (T239) — hors accesseur
@@ -167,6 +168,37 @@ async def lifespan(app: FastAPI):
     from core.quota_collector import quota_refresh_loop
     asyncio.create_task(quota_refresh_loop())
     logger.info("[STARTUP] 🔄 Refresh périodique des quotas lancé.")
+
+    # [#T298] Nettoyage périodique des sessions zombies : le nettoyage au
+    # démarrage (plus haut) rattrape un arrêt brutal, mais un serveur 24/7 ne
+    # redémarre pas — sans cette boucle, une session interrompue resterait
+    # 'running' indéfiniment et fausserait les comptages (KPI Sessions, #T294).
+    # Même motif que quota_refresh_loop : boucle while True + await asyncio.sleep
+    # lancée via asyncio.create_task (intervalle ZOMBIE_SWEEP_INTERVAL_SECONDS,
+    # défaut 600 s — voir core.session_history.zombie_sweep_loop).
+    from core.session_history import zombie_sweep_loop
+    asyncio.create_task(zombie_sweep_loop())
+    logger.info("[STARTUP] 🧹 Nettoyage périodique des sessions zombies lancé.")
+
+    # [#T333] Sonde de vivacité des modèles. Même motif que quota_refresh_loop.
+    # Mesuré le 12/08 : 35 % des tentatives de cascade partaient dans le vide
+    # (clé d'abonnement refusée, modèle retiré du gratuit) sans que rien ne le
+    # signale, et « comptes » passait de 39 s à 104 s. La sonde teste par une
+    # VRAIE inférence — sur DashScope, la même clé rend 200 sur /v1/models et 401
+    # sur une complétion, donc lister ne prouve rien.
+    # Neutralisable par MODEL_HEALTH_PROBE=false ; MODEL_HEALTH_AUTO_DISABLE=false
+    # la réduit à l'observation sans toucher au routage.
+    from core.model_health_probe import boucle_sonde
+    asyncio.create_task(boucle_sonde())
+    logger.info("[STARTUP] 🩺 Sonde de vivacité des modèles lancée.")
+
+    # [#T334] Alerte soldes/quotas : lit ce que le collecteur écrit déjà
+    # (aucun appel API supplémentaire). Neutralisable par
+    # QUOTA_ALERTE_ENABLED=false ; QUOTA_ALERTE_OBSERVATION=true la réduit
+    # à l'observation sans notifier.
+    from core.quota_alert import boucle_alerte_quotas
+    asyncio.create_task(boucle_alerte_quotas())
+    logger.info("[STARTUP] 💰 Alerte soldes/quotas lancée.")
 
     from core.daemon_loop import daemon_main_loop
     asyncio.create_task(daemon_main_loop())
@@ -222,7 +254,7 @@ async def lifespan(app: FastAPI):
         try:
             from core.watchdog import create_watchdog_daemon
             _watchdog = create_watchdog_daemon({
-                "mqtt_host": os.getenv("MQTT_HOST", "${HA_HOST:-192.168.1.x}"),
+                "mqtt_host": os.getenv("MQTT_HOST", "192.168.1.x"),
                 "mqtt_port": int(os.getenv("MQTT_PORT", "1883")),
                 "mqtt_username": os.getenv("MQTT_USERNAME"),
                 "mqtt_password": os.getenv("MQTT_PASSWORD"),
@@ -296,7 +328,7 @@ Requête → Router → Planner (DAG) → Executor/Antigravity/HA Agent → Revi
 
 # Configuration CORS pilotée par l'environnement.
 # MOTEUR_CORS_ORIGINS : liste d'origines séparées par des virgules
-#   (ex. "http://${DECK_HOST:-192.168.1.x}:8000,http://localhost:8000").
+#   (ex. "http://192.168.1.x:8000,http://localhost:8000").
 # Sécurité : la combinaison allow_origins=["*"] + allow_credentials=True est
 # invalide/dangereuse (CSRF cross-origin authentifié). Si aucune origine n'est
 # définie, on retombe sur "*" SANS credentials.

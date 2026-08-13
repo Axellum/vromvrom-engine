@@ -51,7 +51,7 @@ async def _simulate_ping(returncode: int) -> bool:
 
     with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
         proc = await asyncio.create_subprocess_exec(
-            "ping", "-c", "1", "-W", "2", "${PC_HOST:-192.168.1.x}",
+            "ping", "-c", "1", "-W", "2", "192.168.1.x",
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -186,10 +186,10 @@ async def test_sqlite_sync_queues_on_failure(tmp_antigrav):
             client = paramiko.SSHClient()
             with patch.object(paramiko.SSHClient, "connect",
                               side_effect=paramiko.ssh_exception.NoValidConnectionsError(
-                                  {("${PC_HOST:-192.168.1.x}", 22): Exception("Refusé")}
+                                  {("192.168.1.x", 22): Exception("Refusé")}
                               )):
-                client.connect("${PC_HOST:-192.168.1.x}", port=22, username="deck",
-                               password="remote-host", timeout=5)
+                client.connect("192.168.1.x", port=22, username="deck",
+                               password="popydeck", timeout=5)
             return True
         except Exception:
             return False
@@ -241,7 +241,7 @@ async def test_failover_manager_processes_mqtt_events():
     msg_activated.payload = json.dumps({
         "status":    "ACTIVATED",
         "timestamp": ts,
-        "deck_ip":   "${DECK_HOST:-192.168.1.x}",
+        "deck_ip":   "192.168.1.x",
     }).encode("utf-8")
 
     mgr._on_message(None, None, msg_activated)

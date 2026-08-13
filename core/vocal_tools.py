@@ -10,10 +10,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 from typing import Any
 
+from core.agent_trace import etiqueter_agent
 from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ VOCAL_TOOLS_OPENAI: list[dict[str, Any]] = [
 
 
 def _ha_credentials() -> tuple[str, str]:
-    ha_url = os.environ.get("HA_URL") or os.environ.get("HASS_URL") or "http://${HA_HOST:-192.168.1.x}:8123"
+    ha_url = get_ha_url()
     ha_token = get_ha_token()
     return ha_url.rstrip("/"), ha_token
 
@@ -422,6 +423,7 @@ def _assistant_message_for_history(result: dict[str, Any]) -> dict[str, Any]:
     return msg
 
 
+@etiqueter_agent("vocal_tools")
 async def run_vocal_tool_loop(
     provider: Any,
     *,
@@ -433,6 +435,10 @@ async def run_vocal_tool_loop(
     """
     Boucle tool-calling (max MAX_TOOL_ROUNDS) puis réponse texte.
     Retourne None si le provider ne gère pas les outils.
+
+    [#T308] Étiquetée : la boucle consomme hors de tout agent. Le décorateur
+    RESTAURE l'étiquette précédente en sortant — indispensable ici, puisque cette
+    boucle est invoquée depuis le fast-path, qui a déjà posé la sienne (#T301).
     """
     if not provider_supports_openai_tools(provider):
         return None
@@ -469,7 +475,16 @@ async def run_vocal_tool_loop(
 
         if round_idx >= MAX_TOOL_ROUNDS:
             logger.info("[VOCAL_TOOLS] plafond tours atteint — force réponse texte")
-            messages.append(_assistant_message_for_history(result))
+            # [#T310] NE PAS rejouer ici le message assistant : il porte des
+            # `tool_calls` auxquels on ne répondra pas, puisqu'on coupe la boucle.
+            # L'API l'exige pourtant — mesuré le 11/08 sur Cerebras :
+            #   HTTP 400 « An assistant message with 'tool_calls' must be followed
+            #   by tool messages responding to each 'tool_call_id' ».
+            # Le tour de synthèse échouait donc SYSTÉMATIQUEMENT dès que le modèle
+            # redemandait un outil au tour limite, et l'échec ouvrait le circuit
+            # breaker de gpt-oss-120b — premier provider du fast-path vocal.
+            # L'historique conserve déjà les tours précédents avec leurs réponses
+            # d'outils : c'est de là que vient l'information utile à la synthèse.
             messages.append({
                 "role": "user",
                 "content": (

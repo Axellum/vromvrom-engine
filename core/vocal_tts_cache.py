@@ -21,8 +21,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PHRASES_YAML = _REPO_ROOT / "scripts" / "domotic_phrases.yaml"
 _CACHE_DIRS = (
     _REPO_ROOT / "00ProjetTab" / "audio_lib",
-    Path(r".\00ProjetTab\audio_lib"),
-    Path(r".\00ProjetTab\audio_lib"),
+    Path(r"H:\AuxFilsDesIdees\00ProjetTab\audio_lib"),
+    Path(r"E:\AuxFilsDesIdees\00ProjetTab\audio_lib"),
 )
 
 # Phrases fixes du moteur (fallback si domotic_phrases.yaml absent sur le Deck)

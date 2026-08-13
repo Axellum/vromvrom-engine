@@ -507,7 +507,9 @@ class TestLocalHealingAndReview:
 
         assert update.status == "success"
         assert tool_calls_count == 2
-        assert "Succès avec valide" in update.result_data
+        # [#T311] La synthèse du modèle prime ; l'écho d'outil reste en tool_trace.
+        assert "opération a réussi" in update.result_data
+        assert any("Succès avec valide" in t for t in update.metadata.get("tool_trace", []))
 
     @pytest.mark.asyncio
     async def test_local_react_review_cycle(self):

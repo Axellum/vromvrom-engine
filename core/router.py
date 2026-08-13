@@ -25,6 +25,7 @@ import re
 import time
 
 # Scoring Elo pour routage prédictif des LLM
+from core.agent_trace import agent_courant
 from core.elo_scorer import get_ranked_models as elo_get_ranked
 from core.intent_splitter import IntentSplitter
 from core.router_context_compressor import RouterContextCompressor
@@ -143,6 +144,13 @@ CATEGORY_TO_CONTEXT = {
     "casual_chat":     CASUAL_CHAT_CONTEXT_CATEGORIES,  # [#T173] profil utilisateur léger
     "sysadmin":        [],  # Pas de contexte spécifique
     "deck_edge":        [],  # Edge AI — routage vers Ollama Deck
+    # [#T319] Aucun contexte projet à injecter : ces trois familles interrogent des
+    # services externes (Google Workspace, APIs de facturation), pas le dépôt. Leur
+    # absence de cette table ferait retomber `context_categories` sur le défaut ;
+    # les déclarer vides est explicite et évite d'alourdir le prompt pour rien.
+    "calendar":        [],
+    "email":           [],
+    "accounts":        [],
 }
 
 
@@ -231,7 +239,7 @@ class Router:
                 "weight": 1.2
             },
             "sysadmin": {
-                "keywords": ["ssh", "deck", "steamdeck", "remote-host", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
+                "keywords": ["ssh", "deck", "steamdeck", "popydeck", "uptime", "journalctl", "syslog", "système", "linux", "free -m", "df -h", "htop", "diagnostic", "vm", "reboot", "ping", "processus", "pid", "daemon", "service", "charge cpu", "ollama", "benchmark", "inferérence locale", "edge ai", "phi3", "gemma", "llama", "rdna2"],
                 "weight": 1.5
             },
             # Catégorie deck_edge : requêtes de tâches légères à router vers Ollama sur le Deck
@@ -240,11 +248,87 @@ class Router:
                 "keywords": ["parse logs", "reformater yaml", "résumé court", "deck_ollama", "steam deck ia"],
                 "weight": 1.0
             },
+            # [#T319] Les trois familles que le classifieur LLM identifiait déjà à 95 %
+            # et que le routeur jetait faute de catégorie correspondante (cf. docstring
+            # de `_normaliser_categorie_llm`). Mots-clés choisis pour ne recouvrir aucune
+            # catégorie existante : « coût », « facture », « tarif » restent à `analysis`.
+            "calendar": {
+                "keywords": ["agenda", "calendrier", "rendez-vous", "rdv", "planning",
+                             "prévu", "prevu", "réunion", "reunion", "disponibilité",
+                             "disponibilite", "créneau", "creneau", "événement", "evenement"],
+                "weight": 1.4
+            },
+            "email": {
+                "keywords": ["mail", "mails", "email", "emails", "courriel", "courriels",
+                             "gmail", "boîte", "boite", "messagerie", "expéditeur",
+                             "expediteur", "destinataire", "pièce jointe", "piece jointe"],
+                "weight": 1.4
+            },
+            "accounts": {
+                "keywords": ["crédit", "credit", "crédits", "credits", "solde", "quota",
+                             "quotas", "abonnement", "consommation", "forfait",
+                             "plafond", "clé api", "cle api"],
+                "weight": 1.4
+            },
         }
 
     def _tokenize(self, text: str) -> list[str]:
         """Tokenisation basique pour l'analyse syntaxique."""
         return re.findall(r'[a-zA-Z0-9_àâéèêëîïôöùûüç\-]+', text.lower())
+
+    def _normaliser_categorie_llm(self, categorie: str) -> str:
+        """
+        [#T319] Ramène le libellé libre du classifieur sur le vocabulaire fermé du routeur.
+
+        Le classifieur reçoit la liste des catégories mais écrit ce qu'il veut. Mesuré le
+        12/08/2026 en l'interrogeant directement sur les demandes de la campagne :
+
+            « il me reste combien de crédit… »  → account_balance      (confiance 95 %)
+            « qu'est-ce que j'ai de prévu… »    → calendar_query       (confiance 95 %)
+            « résume-moi les mails… »           → email_summarization  (confiance 95 %)
+
+        Les trois classifications sont **justes**. Toutes les trois étaient jetées par le
+        test `llm_category in self.categories`, et la requête repartait sans catégorie —
+        donc vers le Planner, donc sur le chemin DAG, donc dans le mur HITL.
+
+        La normalisation est **conservatrice** : correspondance exacte d'abord, puis une
+        table d'alias explicite, puis un préfixe `<canonique>_*`. Rien d'approximatif :
+        une catégorie fausse envoie la requête au mauvais tier, ce qui coûte plus cher
+        qu'une catégorie absente (#T294).
+        """
+        if not categorie:
+            return ""
+        brut = categorie.strip().lower().replace("-", "_").replace(" ", "_")
+
+        # 1) Déjà dans le vocabulaire : rien à faire.
+        if brut in self.categories:
+            return brut
+
+        # 2) Alias explicites — libellés réellement observés ou proches immédiats.
+        alias = {
+            "calendar_query": "calendar", "calendar_event": "calendar",
+            "calendar_lookup": "calendar", "agenda": "calendar", "schedule": "calendar",
+            "email_summarization": "email", "email_query": "email",
+            "email_summary": "email", "mail": "email", "gmail": "email",
+            "account_balance": "accounts", "account_query": "accounts",
+            "billing": "accounts", "quota": "accounts", "credits": "accounts",
+            "file_management": "files", "filesystem": "files",
+            "code": "code_generation", "coding": "code_generation",
+            "system": "sysadmin", "system_diagnostic": "sysadmin",
+            "smalltalk": "casual_chat", "greeting": "casual_chat",
+        }
+        if brut in alias:
+            return alias[brut]
+
+        # 3) Préfixe canonique : « calendar_something » → « calendar ». On exige un
+        #    préfixe suivi de « _ » pour ne pas confondre deux catégories voisines.
+        for canonique in self.categories:
+            if brut.startswith(f"{canonique}_"):
+                return canonique
+
+        # 4) Inconnu : on rend le libellé tel quel, l'appelant le rejettera et le
+        #    journalisera comme candidat à l'ajout.
+        return brut
 
     # ──────────────────────────────────────────────────────────────────
     # [PHASE 2 - D4] Couches de classification extraites (pures, testables)
@@ -379,11 +463,22 @@ class Router:
                         "model_tier": model_tier
                     }
                     logger.info("[ROUTER] Commande simple Home Assistant → Handoff rapide vers l'HA Agent (Tier léger Gemini Flash, max 2 tours).")
-            elif dominant_category in ["files", "database", "sysadmin"]:
+            elif dominant_category in ["files", "database", "sysadmin",
+                                       "calendar", "email", "accounts"]:
+                # [#T319] `calendar`, `email` et `accounts` rejoignent ce raccourci pour
+                # exactement la même raison que `files` : ce sont des demandes de LECTURE
+                # servies par un outil unique (get_calendar_events, search_gmail,
+                # call_api). Sans catégorie, elles partaient au Planner, donc sur le
+                # chemin DAG, donc dans le mur HITL — mesuré le 12/08 sur « il me reste
+                # combien de crédit chez Anthropic et Gemini ? », bloquée en attente
+                # d'approbation sans qu'aucun outil n'ait tourné.
+                #
                 # [#T273] Le raccourci vers l'Executor saute le point d'approbation
                 # HITL (posé sur le chemin DAG). On ne l'autorise donc plus quand la
                 # requête demande d'AGIR : elle repart au Planner pour devenir un
-                # plan approuvable. La lecture, elle, garde le raccourci.
+                # plan approuvable. La lecture, elle, garde le raccourci. Cette garde
+                # s'applique telle quelle aux trois nouvelles catégories : « envoie un
+                # mail à… » repart au Planner, « résume-moi mes mails » non.
                 if garde_hitl_routage_active() and requete_demande_une_action(user_prompt):
                     # target_agent reste self.default_agent ("planner")
                     routing_type = "planner_pour_approbation"
@@ -464,6 +559,25 @@ class Router:
                 f"{rules_text}"
             )
 
+        # [#T307] Synchronisation Markdown de fin de session, en tâche de fond :
+        # le routeur ne doit JAMAIS attendre l'écriture (échec silencieux, écriture
+        # en AJOUT uniquement dans contexte_ia/historique/ — jamais dans 04_Projets).
+        # Déclenchée uniquement quand la session est connue : sans session_id, on ne
+        # résume pas « la session la plus récente » au hasard.
+        if session_id:
+            try:
+                from tools.sync_db_to_markdown import sync_db_to_markdown
+
+                if not hasattr(self, "_sync_tasks"):
+                    self._sync_tasks = []
+                _tache = asyncio.create_task(
+                    asyncio.to_thread(sync_db_to_markdown, session_id=session_id)
+                )
+                self._sync_tasks.append(_tache)
+                logger.info("[ROUTER] Sync Markdown de fin de session déclenchée en arrière-plan (#T307).")
+            except Exception as _sync_err:
+                logger.debug(f"[ROUTER] Sync Markdown non déclenchée (non bloquant) : {_sync_err}")
+
         # 2. Classification cognitive par scoring de mots-clés normalisé
         # (DÉPLACÉ AVANT le RAG pour permettre le filtrage par catégories)
         prompt_words = self._tokenize(user_prompt)
@@ -497,11 +611,16 @@ class Router:
             logger.debug(f"[ROUTER] MLRouter non disponible : {_ml_err}")
 
         if max_score < MIN_KEYWORD_SCORE_THRESHOLD and self.llm_gateway and _ml_predicted is None:
-            llm_result = await self._llm_classify(user_prompt)
+            llm_result = await self._llm_classify(user_prompt, session_id=session_id)
             if llm_result:
                 llm_category = llm_result.get("category", "")
                 llm_confidence = llm_result.get("confidence", 0.0)
                 llm_complexity = llm_result.get("complexity", "complex")
+
+                # [#T319] Le classifieur écrit un libellé LIBRE ; le routeur travaille sur
+                # un vocabulaire FERMÉ. Sans normalisation, une classification correcte à
+                # 95 % est jetée au seul motif qu'elle ne s'appelle pas pareil.
+                llm_category = self._normaliser_categorie_llm(llm_category)
 
                 if llm_confidence >= MIN_LLM_CONFIDENCE and llm_category in self.categories:
                     dominant_category = llm_category
@@ -511,6 +630,15 @@ class Router:
                     logger.info(
                         f"[ROUTER] [LLM SLOW PATH] Classification sémantique : "
                         f"{llm_category} (confiance: {llm_confidence:.0%})"
+                    )
+                elif llm_confidence >= MIN_LLM_CONFIDENCE:
+                    # [#T319] Confiance suffisante mais libellé hors vocabulaire même après
+                    # normalisation : on le journalise tel quel. C'est le signal qui dit
+                    # quelle catégorie il manque — c'est comme ça que #T319 a été trouvée.
+                    logger.info(
+                        f"[ROUTER] [LLM SLOW PATH] Catégorie '{llm_result.get('category', '')}' "
+                        f"hors vocabulaire du routeur (confiance {llm_confidence:.0%}) → "
+                        f"défaut vers Planner. Candidate à l'ajout dans self.categories."
                     )
                 else:
                     logger.info(
@@ -737,14 +865,30 @@ class Router:
 
         return payload, target_agent
 
-    async def _llm_classify(self, user_prompt: str) -> dict | None:
+    async def _llm_classify(self, user_prompt: str, session_id: str = "") -> dict | None:
         """
         Slow path : appel au LLM léger pour classification sémantique.
-        
+
         Appelé uniquement quand le scoring par mots-clés est insuffisant (max_score < 0.05).
         Utilise le tier "leger" (local LM Studio → Gemini Flash Free → ...) pour minimiser
         la latence (~200ms) et le coût (~0.001$/requête).
-        
+
+        [#T312] L'appel est étiqueté « router » et rattaché à sa session. Il ne
+        l'était pas : mesuré le 11/08 sur une campagne de 8 demandes réelles,
+        5 lignes de `token_usage` sur 39 (13 %) n'avaient NI `agent_name` NI
+        `session_id` — exactement une par demande passée par ce slow-path. C'était
+        le dernier consommateur anonyme du chemin interactif, alors qu'il tourne
+        sur toute requête dont les mots-clés ne tranchent pas.
+
+        `#T296` avait classé cette absence comme légitime (« routeur,
+        classificateur, script direct »), mais `#T308` a depuis étiqueté tous les
+        autres consommateurs hors agent pour la même raison : ils consomment
+        réellement, et anonymement. Le classifieur est le même cas.
+
+        Args:
+            user_prompt: La requête à classer.
+            session_id: Session à laquelle imputer l'appel (vide = hors session).
+
         Returns:
             Dict avec keys: category, complexity, target_agent, confidence
             None si l'appel échoue ou si le gateway n'est pas disponible.
@@ -793,21 +937,30 @@ class Router:
 
             logger.info(f"[ROUTER] [LLM SLOW PATH] Classification via tier leger ({tier_name})...")
 
-            if hasattr(provider, "generate_structured_async"):
-                result = await provider.generate_structured_async(
-                    system_prompt="Tu es un classificateur d'intentions. Réponds uniquement en JSON.",
-                    user_prompt=classification_prompt,
-                    schema={},  # Schéma libre, on parse manuellement
-                    temperature=0.0,
-                )
-            else:
-                result = await asyncio.to_thread(
-                    provider.generate_structured,
-                    system_prompt="Tu es un classificateur d'intentions. Réponds uniquement en JSON.",
-                    user_prompt=classification_prompt,
-                    schema={},
-                    temperature=0.0,
-                )
+            # [#T312] `agent_courant` étiquette la ligne de consommation, `session_id`
+            # la rattache à la demande. Le context manager restaure l'étiquette de
+            # l'appelant en sortant : le routeur est invoqué depuis des chemins déjà
+            # étiquetés, et une étiquette qui déborde ment (#T294).
+            with agent_courant("router"):
+                if hasattr(provider, "generate_structured_async"):
+                    result = await provider.generate_structured_async(
+                        system_prompt="Tu es un classificateur d'intentions. Réponds uniquement en JSON.",
+                        user_prompt=classification_prompt,
+                        schema={},  # Schéma libre, on parse manuellement
+                        temperature=0.0,
+                        session_id=session_id,
+                    )
+                else:
+                    # `to_thread` (et non `run_in_executor`) : la ContextVar ne
+                    # franchit que ce pont-là (#T301).
+                    result = await asyncio.to_thread(
+                        provider.generate_structured,
+                        system_prompt="Tu es un classificateur d'intentions. Réponds uniquement en JSON.",
+                        user_prompt=classification_prompt,
+                        schema={},
+                        temperature=0.0,
+                        session_id=session_id,
+                    )
 
             # Validation du résultat
             if isinstance(result, dict) and "category" in result:

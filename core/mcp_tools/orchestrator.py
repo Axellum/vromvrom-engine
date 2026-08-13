@@ -10,6 +10,7 @@ dans le meme process que le reste du serveur MCP - aucune fragmentation
 d'etat entre process.
 """
 import logging
+import uuid
 
 from agents.antigravity_agent import AntigravityAgent
 from agents.executor import ExecutorAgent
@@ -49,8 +50,30 @@ def get_router():
     return _router
 
 
-def setup_engine(session_id: str = "mcp_session"):
-    """Prépare les composants du moteur pour l'exécution complète."""
+def _session_execution_mcp() -> str:
+    """[#T299] Session d'exécution unique pour une requête MCP.
+
+    Une exécution de `run_tab5_agent` / `delegate_complex_reasoning` EST une
+    session réelle : objectif réel, démarrage réel, agents réels — et le schéma
+    l'exige (`dag_tasks.session_id` NOT NULL). La valeur FIXE historique
+    ("mcp_default_session"…) mélangeait toutes les exécutions dans une
+    pseudo-session : le coût de chaque requête devenait impossible à imputer,
+    le faux rattachement que le garde-fou n°1 de #T299 interdit. Un identifiant
+    par exécution (motif `bg_*` des sessions de fond) rend chaque coût
+    imputable à la requête qui l'a réellement produit.
+    """
+    return f"mcp_{uuid.uuid4().hex[:8]}"
+
+
+def setup_engine(session_id: str | None = None):
+    """Prépare les composants du moteur pour l'exécution complète.
+
+    [#T299] Sans session fournie, une session d'exécution unique est générée
+    par appel : plus de valeur fixe qui mélangeait toutes les requêtes MCP dans
+    le même pot comptable.
+    """
+    if not session_id:
+        session_id = _session_execution_mcp()
     gateway = get_gateway()
     registry = ToolRegistry()
     context_manager = ContextManager(llm_gateway=gateway)
@@ -127,7 +150,9 @@ async def run_tab5_agent(user_request: str) -> str:
         user_request: La demande détaillée pour les agents (ex: "Analyse le fichier X et propose une correction", "Crée un script python pour faire Y").
     """
     try:
-        final_state = await _run_engine_pipeline(user_request, session_id="mcp_default_session")
+        final_state = await _run_engine_pipeline(
+            user_request, session_id=_session_execution_mcp()
+        )
 
         result_summary = []
         result_summary.append("=== Trace de l'exécution ===")
@@ -546,7 +571,9 @@ async def delegate_complex_reasoning(
     try:
         logger.info(f"[DELEGATION] Lancement de la tâche déléguée : '{task_description[:100]}...'")
         final_state = await _run_engine_pipeline(
-            task_description, session_id="mcp_delegated_session", planner_tier=model_tier
+            task_description,
+            session_id=_session_execution_mcp(),
+            planner_tier=model_tier,
         )
 
         result_parts = [f"🏆 **Résolution de la tâche déléguée terminée** (planificateur: {model_tier})\n"]

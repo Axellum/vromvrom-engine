@@ -12,7 +12,7 @@ Comportement (sécurisé par défaut) :
   - HA_TLS_SERVER_HOSTNAME     → nom d'hôte à vérifier dans le certificat, quand
     `HASS_URL` vise une IP locale mais que le certificat ne couvre qu'un nom DNS
     (cas Freebox : certificat Let's Encrypt `axellum.freeboxos.fr` servi sur
-    ${HA_HOST:-192.168.1.x}:8123). Équivalent du `--resolve` de curl : on joint l'IP locale
+    192.168.1.x:8123). Équivalent du `--resolve` de curl : on joint l'IP locale
     (rapide, sans dépendance WAN) tout en validant chaîne ET nom du certificat.
 
 ⚠️ DÉPLOIEMENT : si Home Assistant est en HTTPS avec un certificat auto-signé,
@@ -32,7 +32,7 @@ _FALSY = {"0", "false", "no", "off", "non"}
 class _PinnedHostnameContext(ssl.SSLContext):
     """Contexte SSL qui vérifie le certificat contre un nom d'hôte imposé.
 
-    `HASS_URL` pointe une IP (${HA_HOST:-192.168.1.x}) alors que le certificat ne couvre
+    `HASS_URL` pointe une IP (192.168.1.x) alors que le certificat ne couvre
     qu'un nom DNS ; sans cela la vérification échoue sur « IP address mismatch ».
     Le nom présenté en SNI et vérifié est donc forcé ici, pour tous les appelants
     d'un coup — aucun site d'appel n'a à passer `server_hostname`, y compris

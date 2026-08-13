@@ -156,6 +156,19 @@ def get_models_registry():
 
     # ── Coût et volume réels sur 30 jours (token_usage) ──
     usage_by_model: dict = {}
+    # [#T325] Coût par tâche réussie : même source que `/api/metrics/cost-per-success`
+    # (token_usage.session_id × sessions.status). L'ancien calcul local
+    # `cost_30d / wins Elo` joignait deux colonnes sans intersection (l'Elo
+    # score des TIERS, token_usage porte des ids de modèles) : le registre
+    # affichait des chiffres absurdes. La somme des parts par modèle vaut le
+    # coût total de la métrique globale.
+    cout_succes_par_modele: dict = {}
+    total_success_sessions = 0
+    try:
+        from core.elo_scorer import cost_success_par_modele
+        cout_succes_par_modele, total_success_sessions = cost_success_par_modele()
+    except Exception as e:
+        logger.warning(f"[REGISTRY] Coût par succès indisponible : {e}")
     # ── Volume TOTAL depuis toujours (#T243) ──
     # 30 jours ne suffit pas à décider d'une désactivation : un modèle peut n'avoir
     # servi qu'une fois il y a deux mois. `calls_total` permet de distinguer
@@ -199,14 +212,12 @@ def get_models_registry():
 
         elo_score = None
         avg_latency_elo = None
-        wins = 0
         if domains:
             elos = [d.get("elo") for d in domains.values() if d.get("elo") is not None]
             latencies = [
                 d.get("avg_latency_ms") for d in domains.values()
                 if d.get("avg_latency_ms")
             ]
-            wins = sum(d.get("wins", 0) or 0 for d in domains.values())
             if elos:
                 elo_score = round(sum(elos) / len(elos), 1)
             if latencies:
@@ -217,8 +228,9 @@ def get_models_registry():
         cost_30d = usage.get("cost_usd")
 
         cost_per_success = None
-        if wins > 0 and cost_30d is not None:
-            cost_per_success = round(cost_30d / wins, 6)
+        cout_succes_modele = cout_succes_par_modele.get(model_id)
+        if cout_succes_modele is not None and total_success_sessions > 0:
+            cost_per_success = round(cout_succes_modele / total_success_sessions, 6)
 
         avg_latency_ms = None
         if cb and cb.get("avg_latency_ms") is not None:
@@ -421,11 +433,14 @@ async def ping_model(model_id: str):
     start = _time.perf_counter()
     try:
         import asyncio as _asyncio
+        # [#T299] Le ping n'appartient à AUCUNE session : test de vivacité
+        # ponctuel déclenché depuis l'IHM. La valeur fixe historique
+        # "hmi_ping" était un faux rattachement (garde-fou n°1) : sans
+        # session_id, la ligne part avec NULL, la seule valeur honnête.
         await _asyncio.wait_for(
             provider.generate_async(
                 system_prompt="Réponds uniquement : pong",
                 user_prompt="ping",
-                session_id="hmi_ping",
             ),
             timeout=20.0,
         )
@@ -436,6 +451,95 @@ async def ping_model(model_id: str):
             "latency_ms": round((_time.perf_counter() - start) * 1000),
             "error": str(e)[:200],
         }
+
+
+@router.get("/api/models-health")
+def get_models_health():
+    """
+    [#T333] État de la sonde de vivacité : qui répond, qui est muet, qui a été
+    éteint automatiquement.
+
+    Une sonde dont personne ne voit les résultats reproduirait le défaut qu'elle
+    corrige — les 6 modèles disjonctés du 12/08 n'étaient visibles qu'en lisant
+    le journal du serveur.
+    """
+    from core.model_health_probe import intervalle_sonde, peut_desactiver, sonde_activee
+    from core.runtime_db import get_connection
+
+    conn = get_connection()
+    lignes = conn.execute(
+        "SELECT model_id, dernier_test, dernier_succes, echecs_consecutifs, "
+        "succes_consecutifs, desactive_par_sonde, derniere_erreur, latence_ms "
+        "FROM model_health ORDER BY echecs_consecutifs DESC, model_id"
+    ).fetchall()
+
+    modeles = [
+        {
+            "model_id": ligne[0], "dernier_test": ligne[1], "dernier_succes": ligne[2],
+            "echecs_consecutifs": ligne[3], "succes_consecutifs": ligne[4],
+            "desactive_par_sonde": bool(ligne[5]), "derniere_erreur": ligne[6],
+            "latence_ms": ligne[7],
+        }
+        for ligne in lignes
+    ]
+    return {
+        "sonde": {
+            "activee": sonde_activee(),
+            "action_automatique": peut_desactiver(),
+            "intervalle_s": intervalle_sonde(),
+        },
+        "modeles": modeles,
+        "muets": [m["model_id"] for m in modeles if m["echecs_consecutifs"] > 0],
+        "eteints_par_la_sonde": [m["model_id"] for m in modeles if m["desactive_par_sonde"]],
+    }
+
+
+@router.post("/api/models-health/refresh")
+async def refresh_models_health():
+    """[#T333] Déclenche un cycle de sonde immédiat (bouton IHM / diagnostic)."""
+    from core.model_health_probe import executer_cycle
+    return await executer_cycle()
+
+
+@router.get("/api/quotas/alertes")
+def get_quotas_alertes():
+    """
+    [#T334] État de l'alerte soldes/quotas : seuils, mode, hystérésis.
+
+    Une alerte dont personne ne voit l'état reproduirait le défaut qu'elle
+    corrige — le 12/08, personne n'a su avant la mesure que la clé DashScope
+    était morte. Ne déclenche AUCUN appel aux API de facturation : c'est une
+    lecture de l'état collecté par `quota_refresh_loop`.
+    """
+    from core.quota_alert import (
+        alerte_activee,
+        confirmation_cycles,
+        intervalle_alerte,
+        lire_etat,
+        mode_observation,
+        seuil_saturation,
+        seuil_solde,
+        sortie_cycles,
+    )
+    return {
+        "alerte": {
+            "activee": alerte_activee(),
+            "observation": mode_observation(),
+            "intervalle_s": intervalle_alerte(),
+            "seuil_saturation_pct": seuil_saturation(),
+            "seuil_solde_usd": seuil_solde(),
+            "confirmation_cycles": confirmation_cycles(),
+            "sortie_cycles": sortie_cycles(),
+        },
+        "etat": lire_etat(),
+    }
+
+
+@router.post("/api/quotas/alertes/cycle")
+async def refresh_quotas_alertes():
+    """[#T334] Déclenche un cycle d'alerte immédiat (bouton IHM / diagnostic)."""
+    from core.quota_alert import executer_cycle_alerte
+    return await executer_cycle_alerte()
 
 
 @router.get("/api/models/{model_id}")

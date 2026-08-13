@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from core.ha_tls import ha_ssl_context, ha_tls_pinned_hostname  # [P0-1.5] politique TLS HA centralisée
 from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
 from core.validation import (  # [P0-1.6] validation des identifiants HA
     is_valid_ha_domain,
     is_valid_ha_entity_id,
@@ -53,9 +54,11 @@ def _get_ha_credentials():
     (HASS_TOKEN prioritaire, repli HA_TOKEN — T239).
     """
     ha_token = get_ha_token()
-    ha_url = os.environ.get("HASS_URL") or os.environ.get("HA_URL") or "http://${HA_HOST:-192.168.1.x}:8123"
+    ha_url = get_ha_url()
     if not ha_token:
         raise HTTPException(status_code=500, detail="Token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN).")
+    if not ha_url:
+        raise HTTPException(status_code=500, detail="URL Home Assistant non configurée (HASS_URL/HA_URL).")
     return ha_url, ha_token
 
 
@@ -75,7 +78,7 @@ async def ha_health():
     import time
 
     ha_token = get_ha_token()
-    ha_url = os.environ.get("HASS_URL") or os.environ.get("HA_URL") or "http://${HA_HOST:-192.168.1.x}:8123"
+    ha_url = get_ha_url()
     verify_tls = os.environ.get("HA_VERIFY_TLS", "true").lower() not in ("false", "0", "no")
 
     result: dict[str, Any] = {
@@ -94,6 +97,10 @@ async def ha_health():
 
     if not ha_token:
         result["error"] = "Token Home Assistant absent du .env du moteur (HASS_TOKEN/HA_TOKEN) — aucune requête tentée."
+        return result
+
+    if not ha_url:
+        result["error"] = "URL Home Assistant absente du .env du moteur (HASS_URL/HA_URL) — aucune requête tentée."
         return result
 
     headers = {"Authorization": f"Bearer {ha_token}", "Content-Type": "application/json"}

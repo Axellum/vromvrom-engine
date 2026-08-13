@@ -32,8 +32,8 @@ class ReviewerAgent(BaseAgent):
     de sécurité (secrets), et des consignes utilisateur (commentaires en français, DAC, GPIO).
     """
     def __init__(self, llm_gateway: LLMGateway, provider_name: str = "deepseek"):
-        # [#T188] Prompt externalisé en Markdown (contexte_ia/03_Software/prompts_agents/
-        # reviewer.md) ; la chaîne ci-dessous reste le repli si le fichier est absent.
+        # [#T188/#T340] Prompt externalisé (prompts/agents/reviewer.md) ;
+        # la chaîne ci-dessous reste le repli si le fichier est absent.
         from core.prompt_loader import load_agent_prompt
         super().__init__(
             name="reviewer",

@@ -60,7 +60,7 @@ _LIGHT_ENTITIES: dict[str, tuple[str, str]] = {
     "salon": ("light.living_room", "du salon"),
     "chambre": ("light.bedroom", "de la chambre"),
     "chevet": ("light.bedside", "de chevet"),
-    "cuisine": ("light.kitchen", "de la cuisine"),
+    "cuisine": ("light.sonoff_1000f18da8", "de la cuisine"),
 }
 
 _VOLET_STATE_ENTITY = "input_text.volet_serre_etat"

@@ -64,7 +64,7 @@ FUZZY_AMBIGUITY_DELTA = 0.08
 ENTITY_CACHE_TTL = 60.0
 
 # URL LM Studio pour les embeddings (PC dev par défaut ; override via .env Deck)
-LM_STUDIO_URL = os.environ.get("LM_STUDIO_URL", "http://${LM_STUDIO_HOST:-192.168.1.x}:1234").rstrip("/")
+LM_STUDIO_URL = os.environ.get("LM_STUDIO_URL", "http://192.168.1.x:1234").rstrip("/")
 LM_STUDIO_EMBED_MODEL = "nomic-embed-text"
 LM_STUDIO_EMBED_TIMEOUT = 3.0  # secondes
 
@@ -120,7 +120,7 @@ class HAFuzzyMatcher:
     def __init__(self, ha_url: str, ha_token: str):
         """
         Args:
-            ha_url: URL de l'instance HA (ex: https://${HA_HOST:-192.168.1.x}:8123)
+            ha_url: URL de l'instance HA (ex: https://192.168.1.x:8123)
             ha_token: Long-lived access token HA
         """
         self.ha_url = ha_url.rstrip("/")

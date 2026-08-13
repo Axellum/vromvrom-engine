@@ -40,6 +40,34 @@ def register_base_tools(registry: ToolRegistry, git_safety: bool = True) -> None
     registry.register("validate_config_yaml", validate_config_yaml, "Valide la syntaxe et les dépendances d'un fichier YAML ESPHome.")
     registry.register("run_tests", run_tests, "Lance pytest sur un fichier ou dossier de tests et renvoie le résultat. Args: test_path (défaut 'tests/').")
 
+    # [#T320] Sans cet outil, « il me reste combien de crédit chez Anthropic ? »
+    # traversait tout le moteur pour finir sur un listing de répertoire : aucun
+    # outil ne savait répondre. La description est explicite sur les formulations
+    # attendues — c'est elle, et non la catégorie de routage, que la boucle ReAct
+    # lit pour choisir (vérifié le 12/08, cf. #T319).
+    #
+    # [#T341] Mesuré le 12/08, session `chat_aa88ff7bed` : une question de
+    # température (« quelle température fait-il dans le salon ? ») a déclenché
+    # 2 181 appels à CET outil, avec des NOMS DE SERVEURS MCP en argument
+    # (« ha-custom », « tab5-engine », « sqlite-ha »). Le nom de l'outil et sa
+    # description laissaient croire qu'il répondait à tout ce qui touche aux
+    # « comptes » ou aux serveurs : il faut donc dire explicitement ce qu'il NE
+    # fait PAS (pas de domotique, pas de MCP) et que `provider` est un ID de
+    # fournisseur LLM. La fonction n'est pas renommée : elle est référencée
+    # ailleurs.
+    from tools.comptes import get_account_status
+    registry.register(
+        "get_account_status", get_account_status,
+        "Donne UNIQUEMENT les soldes, quotas et la dépense réelle des comptes "
+        "d'API LLM (Anthropic, Gemini, DeepSeek, OpenRouter…). À utiliser pour "
+        "« combien me reste-t-il de crédit », « où en sont mes quotas », "
+        "« combien ai-je dépensé ». Ne répond PAS aux questions sur Home "
+        "Assistant, la météo, la température, les appareils ni toute question "
+        "domotique : utilise pour cela les outils mcp_ha_*. "
+        "Args: provider (optionnel, ex: 'anthropic' ou 'gemini' ; vide = tous) "
+        "— un ID de fournisseur LLM, jamais un nom de serveur ni d'agent.",
+    )
+
     if git_safety:
         try:
             from tools.git_safety import git_apply_checkpoint, git_create_checkpoint, git_rollback_checkpoint

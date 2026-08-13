@@ -6,9 +6,10 @@ Contrats RÉELS uniquement (leçon #T160 : ne jamais inventer un contrat côté 
   prompt_engineer, tool_maker) : le "modèle" est la clé `<agent>_model` de
   config.json (tier leger/moyen/fort/automatique OU id de modèle littéral),
   celle que core/factory.py et services/pipeline_service.py lisent réellement.
-- Prompts systèmes : fichiers Markdown de #T188 (core/prompt_loader.py) pour
-  reviewer/planner/tool_maker/prompt_engineer. Les autres prompts vivent dans
-  le code Python et sont exposés en lecture seule (null → non éditable).
+- Prompts systèmes : fichiers Markdown `prompts/agents/<nom>.md` (#T188/#T340)
+  via core/prompt_loader.py. Agents cœur éditables : planner, executor,
+  ha_agent, reviewer, prompt_engineer, tool_maker. Les autres (antigravity)
+  restent en lecture seule (prompt dans le Python).
 - Agents persistants (daemon, dreamer) : clés `persistent_agents.*` de
   config.json (mêmes clés que /api/persistent-agents/config).
 - Agents custom : section `custom_agents` de config.json, réellement chargée
@@ -56,7 +57,7 @@ CORE_AGENTS: dict[str, dict] = {
         "config_key": "executor_model",
         "default_model": "automatique",
         "label": "Executor (boucle ReAct + outils)",
-        "prompt_agent": None,
+        "prompt_agent": "executor",
     },
     "antigravity_agent": {
         "config_key": "antigravity_model",
@@ -68,7 +69,7 @@ CORE_AGENTS: dict[str, dict] = {
         "config_key": "ha_model",
         "default_model": "moyen",
         "label": "Home Assistant (domotique)",
-        "prompt_agent": None,
+        "prompt_agent": "ha_agent",
     },
     "reviewer": {
         "config_key": "reviewer_model",

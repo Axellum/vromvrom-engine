@@ -9,6 +9,7 @@ import logging
 import os
 
 from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
 from core.mcp_app import mcp
 
 logger = logging.getLogger("mcp_server.homeassistant")
@@ -39,11 +40,13 @@ async def search_ha_entities(
         import requests
 
         # Récupérer les entités HA via l'API
-        ha_url = os.environ.get("HA_URL", "http://${HA_HOST:-192.168.1.x}:8123")
+        ha_url = get_ha_url()
         ha_token = get_ha_token()
 
         if not ha_token:
             return "❌ Token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN) dans .env. Impossible de contacter Home Assistant."
+        if not ha_url:
+            return "❌ URL Home Assistant non configurée (HASS_URL/HA_URL) dans .env. Impossible de contacter Home Assistant."
 
         # [P0-1.5] passer par la session TLS centralisée, sinon HA en HTTPS échoue.
         from core.ha_tls import ha_requests_session
@@ -176,11 +179,13 @@ async def execute_ha_action(
 
     import requests
 
-    ha_url = os.environ.get("HA_URL", os.environ.get("HASS_URL", "http://${HA_HOST:-192.168.1.x}:8123"))
+    ha_url = get_ha_url()
     ha_token = get_ha_token()
 
     if not ha_token:
         return "❌ Token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN) dans .env."
+    if not ha_url:
+        return "❌ URL Home Assistant non configurée (HASS_URL/HA_URL) dans .env."
 
     # Parser le domaine depuis le service (ex: "light.turn_on" → domain="light", svc="turn_on")
     if "." in service:

@@ -27,7 +27,7 @@ STRATEGIES = [
 PROMPTS = [
     {"type": "Logique Rapide", "text": "Combien y a-t-il de r dans fraise ? Réponds en un mot."},
     {"type": "Code Complexe", "text": "Écris une fonction Python asynchrone qui implémente un Circuit Breaker avec exponential backoff."},
-    {"type": "Domotique HA", "text": "L'entité light.salon est allumée et sensor.temperature affiche 25. Que me conseilles-tu ?"}
+    {"type": "Domotique HA", "text": "L'entité light.living_room est allumée et sensor.temperature affiche 25. Que me conseilles-tu ?"}
 ]
 
 ROUNDS = 3  # Plusieurs tours pour tester l'optimisation et le cache

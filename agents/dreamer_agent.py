@@ -341,8 +341,9 @@ async def _analyze_with_llm(daily_data: dict, existing_lessons: list[dict],
         config = load_config()
         dreamer_tier = pa_config.get("dreamer_model", "leger")
 
-        # Construire le prompt d'analyse
-        system_prompt = """Tu es un agent de consolidation mémoire pour un système multi-agents domotique.
+        # [#T340] Prompt externalisé (prompts/agents/dreamer.md) ; repli ci-dessous.
+        from core.prompt_loader import load_agent_prompt
+        system_prompt = load_agent_prompt("dreamer", """Tu es un agent de consolidation mémoire pour un système multi-agents domotique.
 Tu analyses les sessions de la journée écoulée et extrais les leçons apprises.
 
 Tu devez retourner un JSON valide avec cette structure exacte :
@@ -360,7 +361,7 @@ Tu devez retourner un JSON valide avec cette structure exacte :
 }
 
 Catégories valides : esphome, moteur, gcp, hmi, infra.
-Réponds UNIQUEMENT avec le JSON, sans commentaire."""
+Réponds UNIQUEMENT avec le JSON, sans commentaire.""")
 
         user_prompt = f"""## Sessions du {daily_data.get('date', 'N/A')}
 
@@ -386,12 +387,17 @@ Réponds UNIQUEMENT avec le JSON, sans commentaire."""
         logger.info(f"[DREAMER] [Analyse LLM] Modèle résolu pour consolidation : {model_name} (provider: {type(provider).__name__})")
 
         logger.info("[DREAMER] [Analyse LLM] Envoi de la requête au LLM (generate_async)...")
-        response = await provider.generate_async(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=2000,
-            temperature=0.3,
-        )
+        # [#T308] La boucle autoDream tourne 24h/24 sur le Deck et consomme sans
+        # être un agent : elle appelle le provider directement, donc l'enveloppe de
+        # `BaseAgent.invoke()` ne s'applique pas et sa dépense restait anonyme.
+        from core.agent_trace import agent_courant
+        with agent_courant("dreamer"):
+            response = await provider.generate_async(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                max_tokens=2000,
+                temperature=0.3,
+            )
         logger.info("[DREAMER] [Analyse LLM] Réponse reçue du LLM.")
 
         # Parser la réponse JSON

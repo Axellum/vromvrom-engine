@@ -22,6 +22,7 @@ import aiohttp
 
 from core.ha_tls import ha_ssl_context
 from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
 from core.source_router import ModeType, RequestSource
 from core.vocal_stt_normalize import normalize_vocal_stt
 from core.vocal_tts_cache import canonical_text_for_ha_action, enrich_response_with_tts_cache
@@ -48,7 +49,7 @@ _VOLET_ON_MARKERS = frozenset({"monte", "ouvre", "ouvrir", "leve"})
 _VOLET_STATUS_MARKERS = frozenset({"sont", "est", "ete", "etait", "etaient", "seront", "deja", "maintenant"})
 _VOLET_COVER_ENTITY = "cover.living_room_blind"
 _VOLET_SCRIPT = "script.blind_action"
-_VOLET_MOVING_ENTITY = "input_boolean.blind_moving"
+_VOLET_MOVING_ENTITY = "input_boolean.volet_serre_mouvement"
 _VOLET_STOP_WORDS = frozenset({"stop", "stoppe", "arrete", "arret", "arreter"})
 # Table pièce → entité clim (extensible : ajouter une ligne suffit pour une 2e clim).
 # La détection reste zéro-LLM et choisit l'entité selon la pièce citée, défaut = salon.
@@ -189,7 +190,7 @@ _ROOM_ENTITIES: dict[str, tuple[str, dict[str, str]]] = {
     "salon": ("light.living_room", {"on": "light.turn_on", "off": "light.turn_off"}),
     "chambre": ("light.bedroom", {"on": "light.turn_on", "off": "light.turn_off"}),
     "chevet": ("light.bedside", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "cuisine": ("light.kitchen", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "cuisine": ("light.sonoff_1000f18da8", {"on": "light.turn_on", "off": "light.turn_off"}),
     "serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
     "volet serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
     "clim salon": ("climate.living_room", {"on": "climate.turn_on", "off": "climate.turn_off"}),
@@ -560,7 +561,7 @@ def build_chat_mode_failure_response(session_id: str) -> dict[str, Any]:
 
 def _read_ha_credentials() -> tuple[str, str]:
     ha_token = get_ha_token()
-    ha_url = os.environ.get("HASS_URL", "https://${HA_HOST:-192.168.1.x}:8123")
+    ha_url = get_ha_url()
     if ha_token:
         return ha_token, ha_url
     env_path = os.path.join(
@@ -629,6 +630,30 @@ async def read_ha_state(entity_id: str) -> dict[str, Any] | None:
         return None
 
 
+def _est_action_rejouable(ha_service: str) -> bool:
+    """
+    [#T323] L'action peut-elle être rejouée sans effet de bord observable ?
+
+    Sert à décider si une requête perdue sur une connexion fermée par le serveur
+    peut être retentée. Le critère est l'IDEMPOTENCE de l'effet physique :
+    « ferme le volet » rejoué laisse le volet fermé, « inverse la lumière »
+    rejoué la rallume. Liste blanche stricte — tout service inconnu est traité
+    comme non rejouable, parce que le coût d'une double commande physique chez
+    l'utilisateur est bien supérieur à celui d'un échec annoncé.
+    """
+    if ha_service == _VOLET_SCRIPT:
+        # Le script volet reçoit une action explicite (open/close/stop) : rejouer
+        # le même ordre absolu est sans effet de bord.
+        return True
+    action = ha_service.split(".", 1)[-1]
+    return action in {
+        "turn_on", "turn_off",
+        "open_cover", "close_cover", "stop_cover", "set_cover_position",
+        "set_temperature", "set_hvac_mode", "set_fan_mode", "set_preset_mode",
+        "set_value", "select_option",
+    }
+
+
 async def execute_ha_service(
     ha_service: str,
     ha_entity: str,
@@ -684,22 +709,55 @@ async def execute_ha_service(
         except (aiohttp.ClientError, TimeoutError) as exc:
             logger.warning("[HA EXEC] set_hvac_mode préalable erreur : %s", exc)
 
-    async with http_session.post(
-        api_url,
-        json=payload,
-        headers=headers,
-        timeout=aiohttp.ClientTimeout(total=10),
-    ) as resp:
-        if resp.status == 200:
-            if response_text:
-                return True, response_text
-            return True, build_natural_ha_response(
-                ha_entity, ha_service, friendly_name, service_data=service_data,
+    # [#T323] Une seule reprise, et seulement sur ServerDisconnectedError.
+    #
+    # La session HTTP est partagée et garde ses connexions ouvertes. Quand HA (ou
+    # son proxy) ferme une connexion inactive pile au moment où on la reprend au
+    # pool, aiohttp lève `ServerDisconnectedError` — ce qui frappe exactement les
+    # appels ESPACÉS, donc les commandes vocales. Mesuré en prod : 2 échecs sur 5
+    # appels zero-LLM en 7 jours, dont « descend le volet du salon » le 12/08,
+    # correctement reconnu (fuzzy 0.88) mais jamais exécuté.
+    #
+    # La reprise est réservée aux actions REJOUABLES : rejouer `close_cover` est
+    # sans effet de bord, rejouer `toggle` inverserait deux fois. Toute action
+    # hors de cette liste échoue franchement plutôt que de risquer une double
+    # commande physique chez l'utilisateur.
+    tentatives = 2 if _est_action_rejouable(ha_service) else 1
+    resp_status = None
+    resp_text = ""
+    for tentative in range(tentatives):
+        try:
+            async with http_session.post(
+                api_url,
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    if response_text:
+                        return True, response_text
+                    return True, build_natural_ha_response(
+                        ha_entity, ha_service, friendly_name, service_data=service_data,
+                    )
+                resp_status = resp.status
+                resp_text = await resp.text()
+            break
+        except aiohttp.ServerDisconnectedError as exc:
+            if tentative + 1 >= tentatives:
+                logger.warning(
+                    "[HA EXEC] %s : connexion fermée par le serveur, abandon "
+                    "après %d tentative(s) : %s", ha_service, tentatives, exc,
+                )
+                raise
+            logger.info(
+                "[HA EXEC] [#T323] %s : connexion du pool fermée par le serveur, "
+                "nouvelle tentative sur une connexion neuve.", ha_service,
             )
-        resp_text = await resp.text()
+
+    if resp_status is not None:
         logger.warning(
             "[HA EXEC] Échec %s payload=%s : HTTP %s %s",
-            ha_service, payload, resp.status, resp_text[:120],
+            ha_service, payload, resp_status, resp_text[:120],
         )
 
     # Fallback : groupe light.living_room → membres individuels

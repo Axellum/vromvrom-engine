@@ -42,7 +42,7 @@ class _FakeParamikoClient:
         pass
 
     def connect(self, **kwargs):
-        raise ConnectionRefusedError("Connexion refusée par ${HA_HOST:-192.168.1.x}")
+        raise ConnectionRefusedError("Connexion refusée par 192.168.1.x")
 
 
 class _FakeChannel:

@@ -216,8 +216,8 @@ class LMStudioLocalPlugin(ProviderPlugin):
         name='LM Studio (Local)',
         type='local',
         transport='local',
-        api_endpoint='http://${LM_STUDIO_HOST:-192.168.1.x}:1234/v1/chat/completions',
-        auth=AuthSpec(kind='none', instructions='Aucune clé : serveur LM Studio sur le LAN (${LM_STUDIO_HOST:-192.168.1.x}:1234).'),
+        api_endpoint='http://192.168.1.x:1234/v1/chat/completions',
+        auth=AuthSpec(kind='none', instructions='Aucune clé : serveur LM Studio sur le LAN (192.168.1.x:1234).'),
         confidentiality='total',
         cascade_priority=1.0,
         notes='RTX 5070 Ti (16GB VRAM), 9 modèles chargés. Coût zéro, confidentialité totale. Curation étape 2 : Zoo local LM Studio déclaré tel quel (9 modèles) : le contenu est dynamique par nature, la découverte live relève de discover_models. Signal : gemma-4-31b = 17 appels, seul modèle local réellement consommé.',
@@ -336,7 +336,7 @@ class OllamaLocalPlugin(_PluginOpenAICompat):
         auth=AuthSpec(kind='none', instructions='Aucune clé : démon Ollama local (127.0.0.1:11434).'),
         confidentiality='total',
         cascade_priority=1.1,
-        notes="Ollama local sur RTX 5070 Ti. Inférence ultra-rapide. Curation étape 2 : 2 modèles du seed + le fine-tune domotique câblé mais absent du catalogue. ollama_pc (LAN ${LM_STUDIO_HOST:-192.168.1.x}) reste hors descripteur : c'est un accès distant au MÊME service, pas un provider distinct.",
+        notes="Ollama local sur RTX 5070 Ti. Inférence ultra-rapide. Curation étape 2 : 2 modèles du seed + le fine-tune domotique câblé mais absent du catalogue. ollama_pc (LAN 192.168.1.x) reste hors descripteur : c'est un accès distant au MÊME service, pas un provider distinct.",
         models=(
         ModelSpec(
             id='qwen2.5-coder:7b',

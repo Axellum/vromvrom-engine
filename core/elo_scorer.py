@@ -53,6 +53,12 @@ K_THRESHOLD = 30
 LATENCY_PENALTY_THRESHOLD_MS = 10000  # Au-delà de 10s, légère pénalité
 LATENCY_PENALTY_FACTOR = 0.5         # -0.5 Elo par seconde au-delà du seuil
 
+# [#T325] Statuts de sessions considérés comme un SUCCÈS pour la métrique
+# « coût par tâche réussie ». Seul 'success' compte ; 'error',
+# 'waiting_approval' et 'running' ne sont pas des succès et leurs coûts sont
+# exposés séparément (cost_failed_or_other_usd).
+STATUTS_SUCCES_SESSION = ("success",)
+
 
 def _get_connection() -> sqlite3.Connection:
     """Ouvre la base SQLite unifiée."""
@@ -329,67 +335,156 @@ def get_model_profile(model_name: str) -> dict[str, dict]:
         return {}
 
 
-def get_cost_per_successful_task() -> dict[str, dict]:
+def get_cost_per_successful_task(seuil_fiabilite_status: float | None = None) -> dict[str, dict]:
     """
-    [#T116] Métrique "coût par tâche réussie", agrégée par provider.
+    [#T116][#T325] Métrique « coût par tâche réussie », agrégée par session.
 
-    Croise deux sources déjà persistées plutôt que d'ajouter une nouvelle table :
-    - `token_usage` (moteur_runtime.db, via `core.token_tracker.load_usage()`) pour
-      le coût USD cumulé réel par modèle. `billing_history` (session_history.db)
-      est trop grossier pour cet usage : ce sont des snapshots périodiques de
-      solde/facturation par PROVIDER, non corrélés à une tâche individuelle.
-    - `model_elo_scores.wins` (cette table, mise à jour par `update_elo()` après
-      chaque tâche DAG — cf. `dag_runner.py::_run_single_task`) pour le nombre de
-      tâches réussies par modèle, toutes domaines confondus.
+    L'ancienne version joignait `model_elo_scores.wins` (les succès des TIERS
+    — 'leger', 'moyen', 'fort'…) aux coûts de `token_usage.model` (des ids de
+    MODÈLES — 'deepseek-chat', 'gemini-3.5-flash'…). Mesuré en prod le 12/08 :
+    l'intersection des deux colonnes est VIDE, d'où un résultat absurde
+    (88 tâches réussies pour $0, $0,0854 pour 0 succès). Ce n'était pas une
+    jointure à réparer : c'était une jointure impossible.
+
+    La voie de remplacement, vérifiée en base de prod le 12/08 : `token_usage`
+    porte 821 lignes sur 1145 avec un `session_id` (attribution réparée par
+    #T296/#T299/#T301/#T308/#T312), et `sessions` porte le statut réel
+    (406 success, 84 error, 2 waiting_approval) ; 314 sessions distinctes
+    joignent déjà les deux tables. Le coût par tâche réussie se calcule donc
+    par `token_usage.session_id` × `sessions.status`, sans l'Elo.
+
+    Garde-fous (#T325) :
+    - L'Elo n'est PAS touché : il score des TIERS par conception (#T288).
+    - « 0 $ mesuré » et « coût inconnu » sont distingués : les lignes
+      `token_usage` non rattachables à une session connue (session_id NULL ou
+      orphelin) sont exposées dans `cost_without_session_usd` — ni disparues,
+      ni comptées gratuites.
+    - Piège historique : avant le correctif #T328 (commit 1f4a20d, mergé le
+      12/08 10:01 UTC+2, déployé en prod le 12/08 ~22h52), `sessions.status`
+      était écrit EN DUR sur « success » : les succès antérieurs peuvent être
+      surdéclarés. La métrique le SIGNALE dans `fiabilite_status_sessions`,
+      et `seuil_fiabilite_status` permet de se borner dans le temps (ne
+      compter que les sessions démarrées après le seuil) sans changer le code.
+
+    Args:
+        seuil_fiabilite_status: epoch (secondes) ; si fourni, seules les
+            sessions success avec `started_at >= seuil` comptent comme succès.
 
     Returns:
         {
-            "gemini": {"total_cost_usd": 1.23, "successful_tasks": 42, "cost_per_success_usd": 0.0293},
-            "unknown": {...},  # modèles absents du catalogue models_registry.db
-            ...
+            "successful_tasks": 1,            # sessions.status == 'success'
+            "total_cost_usd": 0.10,           # coût des sessions réussies uniquement
+            "cost_per_success_usd": 0.10,     # None si aucun succès (pas de div par zéro)
+            "cost_failed_or_other_usd": 0.05, # sessions error/waiting_approval/running
+            "cost_without_session_usd": 0.0,  # lignes non rattachables à une session connue
+            "cost_by_model_usd": {...},       # coût des sessions réussies par token_usage.model
+            "sessions_par_statut": {...},
+            "fiabilite_status_sessions": {"note": "..."},
         }
-        Un provider sans tâche réussie a `cost_per_success_usd: None` (pas de
-        division par zéro) plutôt que d'être omis du résultat.
     """
-    from core.models_db import get_model
-    from core.token_tracker import load_usage
+    from core.runtime_db import get_connection
 
+    cout_succes = 0.0
+    cout_autres = 0.0
+    cout_hors_session = 0.0
+    cout_par_modele_succes: dict[str, float] = {}
+    sessions_par_statut: dict[str, int] = {}
+    nb_succes = 0
     try:
-        conn = _get_connection()
-        rows = conn.execute(
-            "SELECT model_name, SUM(wins) FROM model_elo_scores GROUP BY model_name"
-        ).fetchall()
-        conn.close()
-        wins_by_model = {row[0]: row[1] or 0 for row in rows}
-    except Exception as e:
-        logger.warning(f"[ELO] Erreur lecture wins pour cost_per_success: {e}")
-        wins_by_model = {}
+        with get_connection() as conn:
+            lignes = conn.execute(
+                """
+                SELECT t.session_id, t.model, COALESCE(SUM(t.cost_usd), 0.0) AS cout,
+                       s.status, s.started_at
+                FROM token_usage t
+                LEFT JOIN sessions s ON s.session_id = t.session_id
+                GROUP BY t.session_id, t.model, s.status, s.started_at
+                """
+            ).fetchall()
+            for session_id, modele, cout, statut, started_at in lignes:
+                if session_id is None or statut is None:
+                    # Ligne non rattachable à une session connue : ni disparue,
+                    # ni comptée gratuite — exposée telle quelle.
+                    cout_hors_session += cout
+                elif (
+                    statut in STATUTS_SUCCES_SESSION
+                    and (seuil_fiabilite_status is None
+                         or (started_at or 0) >= seuil_fiabilite_status)
+                ):
+                    cout_succes += cout
+                    cout_par_modele_succes[modele] = (
+                        cout_par_modele_succes.get(modele, 0.0) + cout
+                    )
+                else:
+                    # Session en échec, en attente d'approbation, en cours, ou
+                    # succès antérieur au seuil de fiabilité (#T328) : son coût
+                    # n'est PAS attribué au succès.
+                    cout_autres += cout
 
+            for statut, nb in conn.execute(
+                "SELECT status, COUNT(*) FROM sessions GROUP BY status"
+            ).fetchall():
+                sessions_par_statut[statut] = nb
+
+            if seuil_fiabilite_status is not None:
+                (nb_succes,) = conn.execute(
+                    "SELECT COUNT(*) FROM sessions "
+                    "WHERE status = ? AND started_at >= ?",
+                    (STATUTS_SUCCES_SESSION[0], seuil_fiabilite_status),
+                ).fetchone()
+            else:
+                (nb_succes,) = conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE status = ?",
+                    (STATUTS_SUCCES_SESSION[0],),
+                ).fetchone()
+    except Exception as e:
+        logger.warning(f"[ELO] Erreur lecture coûts/sessions pour cost_per_success: {e}")
+
+    return {
+        "successful_tasks": nb_succes,
+        "total_cost_usd": round(cout_succes, 6),
+        "cost_per_success_usd": (
+            round(cout_succes / nb_succes, 6) if nb_succes > 0 else None
+        ),
+        "cost_failed_or_other_usd": round(cout_autres, 6),
+        "cost_without_session_usd": round(cout_hors_session, 6),
+        "cost_by_model_usd": {
+            m: round(v, 6) for m, v in sorted(cout_par_modele_succes.items())
+        },
+        "sessions_par_statut": sessions_par_statut,
+        "fiabilite_status_sessions": {
+            "note": (
+                "sessions.status était écrit en dur sur « success » avant le "
+                "correctif #T328 (commit 1f4a20d, mergé le 12/08 10:01 UTC+2, "
+                "déployé en prod le 12/08 ~22h52) : les succès antérieurs "
+                "peuvent être surdéclarés. La métrique ne borne pas la période "
+                "par défaut ; passer `seuil_fiabilite_status` pour ne compter "
+                "que les sessions démarrées après une borne."
+            ),
+        },
+    }
+
+
+def cost_success_par_modele() -> tuple[dict[str, float], int]:
+    """
+    [#T325] Coût des sessions RÉUSSIES par modèle, et nombre total de succès.
+
+    Consommé par `/api/models/registry` (api/routes/context.py) pour que son
+    « coût par tâche réussie » partage EXACTEMENT la même source que
+    `/api/metrics/cost-per-success` — la somme des parts par modèle vaut le
+    `total_cost_usd` de la métrique globale. Avant #T325, le registre faisait
+    un calcul local `cost_30d / wins Elo`, la même jointure impossible.
+
+    Returns:
+        (coût par token_usage.model, nombre de sessions success).
+        Base indisponible → ({}, 0) : le registre affiche alors None, pas 0.
+    """
     try:
-        costs_by_model = {
-            m: v.get("estimated_cost_usd", 0.0) or 0.0
-            for m, v in load_usage().get("models", {}).items()
-        }
+        resultat = get_cost_per_successful_task()
+        return resultat["cost_by_model_usd"], resultat["successful_tasks"]
     except Exception as e:
-        logger.warning(f"[ELO] Erreur lecture coûts pour cost_per_success: {e}")
-        costs_by_model = {}
-
-    by_provider: dict[str, dict] = {}
-    for model_name in set(wins_by_model) | set(costs_by_model):
-        model_info = get_model(model_name) or {}
-        provider_id = model_info.get("provider_id") or "unknown"
-        entry = by_provider.setdefault(provider_id, {"total_cost_usd": 0.0, "successful_tasks": 0})
-        entry["total_cost_usd"] += costs_by_model.get(model_name, 0.0)
-        entry["successful_tasks"] += wins_by_model.get(model_name, 0)
-
-    for entry in by_provider.values():
-        entry["total_cost_usd"] = round(entry["total_cost_usd"], 6)
-        entry["cost_per_success_usd"] = (
-            round(entry["total_cost_usd"] / entry["successful_tasks"], 6)
-            if entry["successful_tasks"] > 0 else None
-        )
-
-    return by_provider
+        logger.warning(f"[ELO] cost_success_par_modele indisponible : {e}")
+        return {}, 0
 
 
 def get_domain_leaderboard(domain: str, top_n: int = 10) -> list[dict]:

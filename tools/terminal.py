@@ -28,6 +28,41 @@ from tools.system import resoudre_dans_workspace
 
 logger = logging.getLogger(__name__)
 
+# [#T313] Le découpage Windows garde les guillemets DANS le token (posix=False,
+# nécessaire pour préserver les backslashes des chemins). Il faut donc les
+# retirer après coup, sinon l'argument part avec ses guillemets littéraux.
+_PAIRES_GUILLEMETS = (('"', '"'), ("'", "'"))
+
+
+def _denuder_guillemets(token: str) -> str:
+    """
+    Retire UNE paire de guillemets encadrant le token, s'il y en a une.
+
+    `shlex.split(cmd, posix=False)` conserve les guillemets — c'est ce qui rend
+    `powershell -Command "Get-Process"` inopérant : PowerShell reçoit la chaîne
+    entre guillemets, l'évalue comme un littéral et la renvoie telle quelle au
+    lieu de l'exécuter. Mesuré le 11/08 (cf. docstring du module).
+
+    On ne touche qu'aux guillemets ENCADRANTS : un token comme `dit-il "oui"`
+    ou `C:\\Program Files\\x` est laissé intact.
+    """
+    if len(token) < 2:
+        return token
+    for ouvrant, fermant in _PAIRES_GUILLEMETS:
+        if token.startswith(ouvrant) and token.endswith(fermant):
+            return token[1:-1]
+    return token
+
+
+# [#T313] Cmdlets PowerShell couramment proposées par les modèles sur un hôte
+# Windows. Ce ne sont pas des exécutables : `subprocess` échoue en WinError 2,
+# et le message brut n'indique nulle part comment s'y prendre.
+_CMDLETS_POWERSHELL_COURANTES = (
+    "get-", "set-", "new-", "remove-", "start-", "stop-", "test-",
+    "select-", "sort-", "measure-", "where-", "foreach-", "out-",
+    "write-", "read-", "invoke-", "add-", "clear-", "export-", "import-",
+)
+
 # Interpréteurs acceptant du code inline : c'est LE contournement observé en
 # prod (#T275), leur code s'exécute hors de tout contrôle d'arguments.
 # `pythonw`, `python3.12`… sont couverts via le préfixe `python`.
@@ -169,6 +204,11 @@ def run_terminal_command(command: str) -> str:
         argv = shlex.split(command, posix=(os.name != "nt"))
         if not argv:
             return "Erreur: commande vide."
+        # [#T313] …mais posix=False conserve aussi les guillemets dans le token,
+        # ce qui casse tout argument cité. On les retire ici, après le découpage,
+        # donc sans jamais réintroduire d'interprétation shell.
+        if os.name == "nt":
+            argv = [_denuder_guillemets(t) for t in argv]
         # [#T275] Garde des chemins AVANT exécution : en cas de refus, le
         # sous-processus n'est jamais lancé. Journalisé en warning avec la
         # commande tronquée à 120 caractères (logs saturés = logs ignorés).
@@ -207,5 +247,31 @@ def run_terminal_command(command: str) -> str:
 
     except subprocess.TimeoutExpired:
         return "Erreur: La commande a mis trop de temps à s'exécuter (> 30s) et a été tuée de force."
+    except FileNotFoundError:
+        # [#T313] Message actionnable plutôt que « [WinError 2] Le fichier
+        # spécifié est introuvable ». Sur Windows, un modèle propose
+        # spontanément des cmdlets PowerShell (`Get-Process`, `Get-Date`…) :
+        # ce ne sont pas des exécutables, et le message brut ne dit pas quoi
+        # faire. Mesuré le 11/08 : l'agent réessayait la même commande jusqu'à
+        # épuiser ses 10 tours de boucle ReAct, sans jamais rien produire.
+        prog = ""
+        try:
+            prog = shlex.split(command, posix=(os.name != "nt"))[0]
+            if os.name == "nt":
+                prog = _denuder_guillemets(prog)
+        except Exception:
+            prog = command.split()[0] if command.split() else command
+        if os.name == "nt" and prog.lower().startswith(_CMDLETS_POWERSHELL_COURANTES):
+            return (
+                f"Erreur: '{prog}' est une cmdlet PowerShell, pas un exécutable — "
+                f"elle ne peut pas être lancée directement. Relance-la via "
+                f"l'interpréteur, en une seule commande : "
+                f'powershell -NoProfile -Command "{command}". '
+                f"Ne réessaie pas la forme actuelle, elle échouera à l'identique."
+            )
+        return (
+            f"Erreur: exécutable '{prog}' introuvable dans le PATH. "
+            f"Vérifie le nom, ou donne le chemin complet."
+        )
     except Exception as e:
         return f"Erreur système inattendue: {str(e)}"

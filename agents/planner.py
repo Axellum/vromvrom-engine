@@ -84,7 +84,7 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                 f"{cmd_rule_healing}"
             )
         else:
-            # [#T188] Prompt standard externalisé en Markdown (planner.md) : le
+            # [#T188/#T340] Prompt standard externalisé (prompts/agents/planner.md) : le
             # placeholder {{CMD_RULE}} y est remplacé par la règle plateforme
             # (Windows/Linux). La chaîne ci-dessous reste le repli si absent.
             from core.prompt_loader import load_agent_prompt

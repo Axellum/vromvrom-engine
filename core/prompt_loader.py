@@ -1,18 +1,18 @@
 """
-core/prompt_loader.py — Prompts systèmes des agents externalisés en Markdown (#T188).
+core/prompt_loader.py — Prompts systèmes des agents externalisés en Markdown (#T188, #T340).
 
-Les prompts des agents (reviewer, planner, tool_maker, prompt_engineer) vivent
-dans `contexte_ia/03_Software/prompts_agents/<agent>.md` plutôt qu'en dur dans
-le Python : modifiables par l'IDE/IHM sans redéploiement de code.
+Les prompts vivent dans `prompts/agents/<agent>.md` (dans ce dépôt) plutôt
+qu'en dur dans le Python : modifiables par l'IDE/IHM, et présents sur le Deck
+après overlay (contrairement à `contexte_ia/`, absent de la prod).
 
-Contrat fail-safe : si le fichier Markdown est absent ou illisible (ex. prod
-Deck déployée par overlay sans le dossier contexte_ia), l'agent retombe sur son
-prompt par défaut codé en dur — le moteur ne casse JAMAIS pour un prompt manquant.
+Contrat fail-safe : si le fichier Markdown est absent ou illisible, l'agent
+retombe sur son prompt par défaut codé en dur — le moteur ne casse JAMAIS
+pour un prompt manquant.
 
 Résolution du dossier :
 1. Variable d'env `MOTEUR_PROMPTS_DIR` si définie (chemin absolu).
-2. Sinon `<parent de moteur_agents>/contexte_ia/03_Software/prompts_agents/`
-   (même convention de racine workspace que tools/system.py).
+2. Sinon `<racine moteur>/prompts/agents/` (source de vérité, versionnée).
+3. Repli historique : `contexte_ia/03_Software/prompts_agents/` (vide / hors dépôt).
 
 Cache : contenu mémorisé par (chemin, mtime) — une édition du fichier est
 prise en compte au prochain chargement sans redémarrage, sans relire le disque
@@ -35,6 +35,10 @@ def get_prompts_dir() -> str:
     if env_dir:
         return env_dir
     moteur_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    in_repo = os.path.join(moteur_root, "prompts", "agents")
+    if os.path.isdir(in_repo):
+        return in_repo
+    # Repli : ancien emplacement hors dépôt (Deck overlay d'avant #T340).
     return os.path.join(
         os.path.dirname(moteur_root), "contexte_ia", "03_Software", "prompts_agents"
     )

@@ -21,8 +21,8 @@ class PromptEngineerAgent(BaseAgent):
     enrichi du contexte du système ou formaté pour une IA cible.
     """
     def __init__(self, llm_gateway: LLMGateway, provider_name: str = "fort"):
-        # [#T188] Prompt externalisé en Markdown (contexte_ia/03_Software/prompts_agents/
-        # prompt_engineer.md) ; la chaîne ci-dessous reste le repli si le fichier est absent.
+        # [#T188/#T340] Prompt externalisé (prompts/agents/prompt_engineer.md) ;
+        # la chaîne ci-dessous reste le repli si le fichier est absent.
         from core.prompt_loader import load_agent_prompt
         super().__init__(
             name="prompt_engineer",

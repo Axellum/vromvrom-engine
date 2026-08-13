@@ -14,6 +14,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from core.agent_trace import etiqueter_agent
+
 logger = logging.getLogger(__name__)
 
 _HA_COMMANDS_PATH = Path(__file__).resolve().parents[1] / "ha_commands.json"
@@ -78,6 +80,7 @@ def _parse_llm_json(raw: str) -> LLMIntentResult | None:
     return LLMIntentResult(service=service, entity_id=entity_id)
 
 
+@etiqueter_agent("ha_vocal_fallback")
 async def resolve_ha_via_llm(user_prompt: str, session_id: str) -> LLMIntentResult | None:
     """
     Un seul appel LLM tier léger. Retourne None si timeout/échec/incompris.
@@ -95,11 +98,11 @@ async def resolve_ha_via_llm(user_prompt: str, session_id: str) -> LLMIntentResu
         logger.warning("[HA LLM FALLBACK] Tier leger indisponible : %s", exc)
         return None
 
-    loop = asyncio.get_event_loop()
     try:
+        # [#T308] `asyncio.to_thread` et NON `loop.run_in_executor` : seul le premier
+        # propage les ContextVar, donc l'étiquette d'agent (#T301).
         raw = await asyncio.wait_for(
-            loop.run_in_executor(
-                None,
+            asyncio.to_thread(
                 lambda: provider.generate(system, user, session_id=session_id),
             ),
             timeout=_LLM_TIMEOUT_S,

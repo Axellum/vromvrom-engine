@@ -150,42 +150,44 @@ class TestEloScorer(unittest.TestCase):
         self.assertEqual(ranked, [])
 
     def test_cost_per_successful_task(self):
-        """[#T116] Le coût par tâche réussie doit être correctement agrégé."""
+        """[#T325] Le coût par tâche réussie s'agrège par session, pas par Elo."""
         import core.runtime_db as db_mod
-        from core.elo_scorer import get_cost_per_successful_task, update_elo
+        from core.elo_scorer import get_cost_per_successful_task
 
-        # 2 succès + 1 échec pour "cost-model" (seuls les succès comptent)
-        update_elo("cost-model", "code_gen", success=True)
-        update_elo("cost-model", "analysis", success=True)
-        update_elo("cost-model", "home_assistant", success=False)
-
-        # Coût cumulé simulé pour ce modèle (table token_usage)
         conn = db_mod.get_connection()
+        # Une session réussie qui a coûté 0,06 $ et une session en échec.
         conn.execute(
-            "INSERT INTO token_usage (session_id, timestamp, model, prompt_tokens, "
-            "completion_tokens, total_tokens, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("test-session", 0.0, "cost-model", 100, 50, 150, 0.06),
+            "INSERT INTO sessions (session_id, objective, status, started_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("s_ok", "objectif", "success", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO sessions (session_id, objective, status, started_at) "
+            "VALUES (?, ?, ?, ?)",
+            ("s_ko", "objectif", "error", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO token_usage (session_id, timestamp, model, cost_usd) "
+            "VALUES (?, ?, ?, ?)",
+            ("s_ok", 0.0, "cost-model", 0.06),
         )
         conn.commit()
         conn.close()
 
         result = get_cost_per_successful_task()
-        # "cost-model" n'existe pas dans models_registry.db → regroupé sous "unknown"
-        self.assertIn("unknown", result)
-        entry = result["unknown"]
-        self.assertEqual(entry["successful_tasks"], 2)
-        self.assertAlmostEqual(entry["total_cost_usd"], 0.06, places=6)
-        self.assertAlmostEqual(entry["cost_per_success_usd"], 0.03, places=6)
+        self.assertEqual(result["successful_tasks"], 1)
+        self.assertAlmostEqual(result["total_cost_usd"], 0.06, places=6)
+        self.assertAlmostEqual(result["cost_per_success_usd"], 0.06, places=6)
+        # La session en échec n'est ni comptée comme succès, ni comptée gratuite.
+        self.assertAlmostEqual(result["cost_failed_or_other_usd"], 0.0, places=6)
 
     def test_cost_per_successful_task_no_wins(self):
-        """[#T116] Un modèle sans succès ne doit pas provoquer de division par zéro."""
-        from core.elo_scorer import get_cost_per_successful_task, update_elo
-        update_elo("failing-model", "code_gen", success=False)
+        """[#T325] Aucune session réussie → pas de division par zéro."""
+        from core.elo_scorer import get_cost_per_successful_task
 
         result = get_cost_per_successful_task()
-        self.assertIn("unknown", result)
-        self.assertEqual(result["unknown"]["successful_tasks"], 0)
-        self.assertIsNone(result["unknown"]["cost_per_success_usd"])
+        self.assertEqual(result["successful_tasks"], 0)
+        self.assertIsNone(result["cost_per_success_usd"])
 
     def test_k_factor_decreases_over_time(self):
         """Après 30+ matchs, le K-factor diminue → convergence plus lente."""

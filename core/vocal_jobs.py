@@ -20,6 +20,7 @@ from typing import Any
 
 import aiohttp
 
+from core.agent_trace import etiqueter_agent
 from core.ha_tls import ha_ssl_context
 
 logger = logging.getLogger(__name__)
@@ -262,6 +263,7 @@ def _resolve_grounding_provider(gateway) -> Any | None:
     return None
 
 
+@etiqueter_agent("vocal_jobs")
 async def _generate_with_provider(
     provider,
     *,
@@ -270,9 +272,11 @@ async def _generate_with_provider(
     session_id: str,
     use_search_grounding: bool = False,
 ) -> str:
-    loop = asyncio.get_event_loop()
-    raw = await loop.run_in_executor(
-        None,
+    # [#T308] `asyncio.to_thread` et NON `loop.run_in_executor` : seul le premier
+    # propage les ContextVar, donc l'étiquette posée par le décorateur ci-dessus
+    # (vérifié et documenté par #T301). Sans ça, l'étiquette n'atteindrait jamais
+    # `record_usage()`, qui s'exécute dans le thread du provider.
+    raw = await asyncio.to_thread(
         lambda: provider.generate(
             system_prompt,
             user_prompt,

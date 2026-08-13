@@ -44,7 +44,7 @@ def seed_providers():
             "id": "local",
             "name": "LM Studio (Local)",
             "type": "local",
-            "api_endpoint": "http://${LM_STUDIO_HOST:-192.168.1.x}:1234/v1/chat/completions",
+            "api_endpoint": "http://192.168.1.x:1234/v1/chat/completions",
             "auth_method": "local",
             "confidentiality": "total",
             "cascade_priority": 1.0,

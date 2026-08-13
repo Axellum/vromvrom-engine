@@ -24,8 +24,9 @@ class HACommandAgent(ExecutorAgent):
             tool_registry=tool_registry,
             provider_name=provider_name
         )
+        from core.prompt_loader import load_agent_prompt
         self.name = "ha_agent"
-        self.system_prompt = """Tu es l'HACommandAgent, un agent domotique rapide et efficace pour Home Assistant.
+        self.system_prompt = load_agent_prompt("ha_agent", """Tu es l'HACommandAgent, un agent domotique rapide et efficace pour Home Assistant.
 
 RÈGLE ABSOLUE — CONCISION :
 - Pour les commandes simples (allumer/éteindre lumière, volet, switch), exécute IMMÉDIATEMENT l'outil puis réponds en UNE SEULE PHRASE courte.
@@ -43,6 +44,6 @@ PROCÉDURE POUR COMMANDE DOMOTIQUE :
 2. Réponds en 1 phrase : "[Appareil] [action effectuée]."
 3. C'est tout. Pas d'explication supplémentaire.
 
-Pour les tâches SQL complexes uniquement, tu peux être plus détaillé."""
+Pour les tâches SQL complexes uniquement, tu peux être plus détaillé.""")
 
         logger.info("HACommandAgent initialisé avec succès.")

@@ -12,13 +12,35 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import socket
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger("watchdog")
+
+
+def _client_id_par_defaut() -> str:
+    """
+    [#T322] Identifiant MQTT unique par hôte : « watchdog-domus-<machine> ».
+
+    `MQTT_CLIENT_ID` reste prioritaire pour forcer une valeur précise. Le nom de
+    machine est nettoyé (caractères sûrs seulement) et l'ensemble est tronqué à
+    23 caractères — la limite du client_id en MQTT 3.1, que certains brokers
+    appliquent encore.
+    """
+    force = os.getenv("MQTT_CLIENT_ID")
+    if force:
+        return force
+    try:
+        machine = socket.gethostname() or "inconnu"
+    except Exception:
+        machine = "inconnu"
+    machine = re.sub(r"[^A-Za-z0-9-]", "-", machine).strip("-").lower() or "inconnu"
+    return f"wd-domus-{machine}"[:23]
 
 SEVERITY_ORDER = {"info": 0, "warning": 1, "error": 2, "critical": 3}
 SEVERITY_COLORS = {"info": "blue", "warning": "yellow", "error": "orange", "critical": "red"}
@@ -35,11 +57,22 @@ def _build_rules() -> list[tuple[re.Pattern, re.Pattern, str]]:
 
 @dataclass
 class WatchdogConfig:
-    mqtt_host: str = "${HA_HOST:-192.168.1.x}"
+    mqtt_host: str = "192.168.1.x"
     mqtt_port: int = 1883
     mqtt_username: str | None = None
     mqtt_password: str | None = None
-    mqtt_client_id: str = "watchdog-domus"
+    # [#T322] Identifiant MQTT UNIQUE PAR HÔTE. MQTT impose l'unicité du
+    # client_id : quand deux clients partagent le même, le broker éjecte
+    # l'ancien à chaque connexion du nouveau — qui se reconnecte aussitôt, et
+    # ainsi de suite. Avec la valeur figée « watchdog-domus », le moteur de dev
+    # (poste Windows) et la prod (Deck) se sont battus **15 209 fois en une
+    # journée** (11/08), soit ~869 déconnexions par heure : le watchdog
+    # domotique 24/7 était de fait inopérant dès qu'une seconde instance
+    # tournait. Le conflit n'est apparu que le 11/08 parce qu'il a fallu
+    # attendre la création du login `moteur_watchdog` (#T236, le 10/08) pour
+    # que les DEUX instances puissent enfin s'authentifier et donc se disputer
+    # l'identifiant.
+    mqtt_client_id: str = field(default_factory=lambda: _client_id_par_defaut())
     moteur_url: str = "http://localhost:8000"
     moteur_model: str = "auto"
     anti_spam_seconds: float = 300.0
@@ -56,7 +89,7 @@ class WatchdogConfig:
     escalate_min_severity: str = "warning"
     http_timeout: float = 10.0
     extra_sinks: list[Callable[[str, str, str], Any]] = field(default_factory=list)
-    ha_log_path: str = r"\\${HA_HOST:-192.168.1.x}\config\home-assistant.log"
+    ha_log_path: str = r"\\192.168.1.x\config\home-assistant.log"
     log_poll_interval: float = 14400.0  # 4 heures par défaut
 
 
@@ -379,7 +412,7 @@ class WatchdogDaemon:
 def create_watchdog_daemon(config_dict: dict) -> WatchdogDaemon:
     """Factory : crée un WatchdogDaemon depuis un dict de configuration."""
     cfg = WatchdogConfig(
-        mqtt_host=config_dict.get("mqtt_host", "${HA_HOST:-192.168.1.x}"),
+        mqtt_host=config_dict.get("mqtt_host", "192.168.1.x"),
         mqtt_port=int(config_dict.get("mqtt_port", 1883)),
         mqtt_username=config_dict.get("mqtt_username"),
         mqtt_password=config_dict.get("mqtt_password"),

@@ -29,6 +29,7 @@ from typing import Any
 
 from core.ha_tls import ha_ssl_context  # [P0-1.5] politique TLS HA centralisée
 from core.ha_token import get_ha_token  # [T239] lecture centralisée du token HA
+from core.ha_url import get_ha_url  # [T330] lecture centralisée de l'URL HA
 
 logger = logging.getLogger("daemon_loop")
 
@@ -164,7 +165,7 @@ async def _check_ha_health() -> dict[str, Any]:
 
     # Entités critiques à surveiller (Tab5, DAC, Voice Assistant)
     critical_entities = [
-        "switch.example_wake_word",
+        "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
         "sensor.m5stack_tab5_home_assistant_hmi_tab5_core_temp",
         "media_player.m5stack_tab5_home_assistant_hmi_tab5_media_player",
     ]
@@ -172,11 +173,16 @@ async def _check_ha_health() -> dict[str, Any]:
     try:
         # Récupérer le token HA depuis les variables d'environnement
         ha_token = get_ha_token()
-        ha_url = os.environ.get("HASS_URL", "http://${HA_HOST:-192.168.1.x}:8123")
+        ha_url = get_ha_url()
 
         if not ha_token:
             result["status"] = "skipped"
             result["details"]["reason"] = "token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN)"
+            return result
+
+        if not ha_url:
+            result["status"] = "skipped"
+            result["details"]["reason"] = "URL Home Assistant non configurée (HASS_URL/HA_URL)"
             return result
 
         import aiohttp
@@ -238,10 +244,12 @@ async def _check_ha_health() -> dict[str, Any]:
 async def _get_ha_state(entity_id: str) -> dict[str, Any]:
     """Récupère l'état d'une entité HA via son API REST."""
     ha_token = get_ha_token()
-    ha_url = os.environ.get("HASS_URL", os.environ.get("HA_URL", "http://${HA_HOST:-192.168.1.x}:8123"))
+    ha_url = get_ha_url()
     
     if not ha_token:
         raise ValueError("token Home Assistant non configuré (HASS_TOKEN/HA_TOKEN)")
+    if not ha_url:
+        raise ValueError("URL Home Assistant non configurée (HASS_URL/HA_URL)")
         
     import aiohttp
     headers = {
@@ -265,9 +273,11 @@ async def _get_ha_state(entity_id: str) -> dict[str, Any]:
 async def _send_ha_notification(title: str, message: str) -> bool:
     """Envoie une notification persistante à Home Assistant."""
     ha_token = get_ha_token()
-    ha_url = os.environ.get("HASS_URL", os.environ.get("HA_URL", "http://${HA_HOST:-192.168.1.x}:8123"))
+    ha_url = get_ha_url()
     
     if not ha_token:
+        return False
+    if not ha_url:
         return False
         
     import aiohttp
@@ -337,7 +347,7 @@ async def _execute_freebox_ssh_command(command: str) -> tuple[int, str, str]:
     en debug seul a masqué la vraie cause en production (#T266).
     """
     ssh_user = os.environ.get("SSH_USER", "axel")
-    freebox_ip = "${HA_HOST:-192.168.1.x}"
+    freebox_ip = "192.168.1.x"
 
     # 1. Tentative SSH système par clé — la raison d'échec est conservée pour
     #    être visible si tout le chemin échoue.

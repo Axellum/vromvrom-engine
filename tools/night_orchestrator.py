@@ -28,9 +28,9 @@ LOCATION_ONLINE = "global"
 
 # Fichiers de règles et leçons à injecter en contexte pour guider Vertex AI
 RULES_FILES = [
-    r"e:\AuxFilsDesIdees\contexte_ia\01_Core\rules_global.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\rules_moteur_agents.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\lecons_gcp_apis.md",
+    r".\contexte_ia\01_Core\rules_global.md",
+    r".\contexte_ia\03_Software\rules_moteur_agents.md",
+    r".\contexte_ia\03_Software\lecons_gcp_apis.md",
 ]
 
 def refresh_oauth():
@@ -275,7 +275,7 @@ def main():
     print("\n--- Étape 5 : Audit long-contexte de 00ProjetTab ---")
     report_lines.append("\n## 3. Audits long-contexte de nuit")
 
-    tab5_dir = r"e:\AuxFilsDesIdees\00ProjetTab"
+    tab5_dir = r".\00ProjetTab"
     audit_out = r"docs\audits\audit_tab5_de_nuit.md"
 
     if os.path.exists(tab5_dir):

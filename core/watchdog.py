@@ -57,7 +57,7 @@ def _build_rules() -> list[tuple[re.Pattern, re.Pattern, str]]:
 
 @dataclass
 class WatchdogConfig:
-    mqtt_host: str = "192.168.1.x"
+    mqtt_host: str = "192.168.1.10"
     mqtt_port: int = 1883
     mqtt_username: str | None = None
     mqtt_password: str | None = None
@@ -89,7 +89,7 @@ class WatchdogConfig:
     escalate_min_severity: str = "warning"
     http_timeout: float = 10.0
     extra_sinks: list[Callable[[str, str, str], Any]] = field(default_factory=list)
-    ha_log_path: str = r"\\192.168.1.x\config\home-assistant.log"
+    ha_log_path: str = r"\\192.168.1.10\config\home-assistant.log"
     log_poll_interval: float = 14400.0  # 4 heures par défaut
 
 
@@ -412,7 +412,7 @@ class WatchdogDaemon:
 def create_watchdog_daemon(config_dict: dict) -> WatchdogDaemon:
     """Factory : crée un WatchdogDaemon depuis un dict de configuration."""
     cfg = WatchdogConfig(
-        mqtt_host=config_dict.get("mqtt_host", "192.168.1.x"),
+        mqtt_host=config_dict.get("mqtt_host", "192.168.1.10"),
         mqtt_port=int(config_dict.get("mqtt_port", 1883)),
         mqtt_username=config_dict.get("mqtt_username"),
         mqtt_password=config_dict.get("mqtt_password"),

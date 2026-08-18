@@ -84,9 +84,9 @@ async def ingest_ha_entities():
     for entity in entities:
         entity_id = entity.get("entity_id", "")
         if "tab5" in entity_id.lower() or entity_id in (
-            "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
-            "sensor.m5stack_tab5_home_assistant_hmi_tab5_core_temp",
-            "media_player.m5stack_tab5_home_assistant_hmi_tab5_media_player"
+            "switch.example_wake_word",
+            "sensor.tablet_cpu_temp",
+            "media_player.tablet"
         ):
             tab5_entities.append(entity)
 

@@ -90,6 +90,23 @@ async def lifespan(app: FastAPI):
     """
     global GLOBAL_ROUTER
 
+    # ── Journalisation de la version du code en cours d'exécution (#T355) ──
+    # Une ligne au démarrage : SHA court + date du commit. Si le commit est
+    # indéterminable (git absent/échoué), on le dit explicitement — jamais une
+    # valeur d'apparence valide.
+    try:
+        from core.version_info import get_version_info
+        _vinfo = get_version_info()
+        if _vinfo.get("commit"):
+            logger.info(
+                "[STARTUP] 🏷️  Version du code : %s (commit %s)",
+                _vinfo["commit"], _vinfo["commit_date"],
+            )
+        else:
+            logger.warning("[STARTUP] 🏷️  Version du code indéterminable : %s", _vinfo.get("reason"))
+    except Exception as _ve:  # pragma: no cover - défensif, ne doit jamais bloquer le boot
+        logger.warning("[STARTUP] 🏷️  Journalisation de la version impossible : %s", _ve)
+
     # ── Initialisation du sérialiseur SQLite  ──
     from core.async_db_serializer import AsyncDBSerializer
     db_serializer = AsyncDBSerializer.get_instance()
@@ -254,7 +271,7 @@ async def lifespan(app: FastAPI):
         try:
             from core.watchdog import create_watchdog_daemon
             _watchdog = create_watchdog_daemon({
-                "mqtt_host": os.getenv("MQTT_HOST", "192.168.1.x"),
+                "mqtt_host": os.getenv("MQTT_HOST", "192.168.1.10"),
                 "mqtt_port": int(os.getenv("MQTT_PORT", "1883")),
                 "mqtt_username": os.getenv("MQTT_USERNAME"),
                 "mqtt_password": os.getenv("MQTT_PASSWORD"),
@@ -328,7 +345,7 @@ Requête → Router → Planner (DAG) → Executor/Antigravity/HA Agent → Revi
 
 # Configuration CORS pilotée par l'environnement.
 # MOTEUR_CORS_ORIGINS : liste d'origines séparées par des virgules
-#   (ex. "http://192.168.1.x:8000,http://localhost:8000").
+#   (ex. "http://192.168.1.10:8000,http://localhost:8000").
 # Sécurité : la combinaison allow_origins=["*"] + allow_credentials=True est
 # invalide/dangereuse (CSRF cross-origin authentifié). Si aucune origine n'est
 # définie, on retombe sur "*" SANS credentials.

@@ -10,7 +10,7 @@
 
 > **Dernière mise à jour** : 2026-06-12  
 > **Version code** : V11 (Circuit Breaker V12 intégré)  
-> **Espace de travail** : `e:\AuxFilsDesIdees\moteur_agents`
+> **Espace de travail** : `.`
 
 ---
 
@@ -431,7 +431,7 @@ sequenceDiagram
 
 | Service | Usage | Module |
 |---------|-------|--------|
-| LM Studio (192.168.1.x:1234) | Inférence locale (RTX 5070Ti) | `LMStudioProvider` |
+| LM Studio (192.168.1.x:1234) | Inférence locale (GPU locale) | `LMStudioProvider` |
 | Ollama Deck (192.168.1.x/139:11434) | Inférence Edge (Steam Deck RDNA2) | `OllamaDeckProvider` |
 | Home Assistant (192.168.1.x:8123) | Domotique REST API | `ha_agent.py`, `tab5_pusher.py` |
 | Gemini API | LLM Cloud + embeddings + grounding | `gemini_native.py`, `GeminiProvider` |

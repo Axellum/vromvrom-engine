@@ -41,7 +41,7 @@ function renderSwarm(container) {
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="worker-host">Adresse IP locale ou Host</label>
-                        <input type="text" id="worker-host" placeholder="ex: ${HA_HOST:-192.168.1.x}">
+                        <input type="text" id="worker-host" placeholder="ex: 192.168.1.x">
                     </div>
                     <div class="form-group">
                         <label class="form-label" for="worker-port">Port HTTP (par défaut 8780)</label>

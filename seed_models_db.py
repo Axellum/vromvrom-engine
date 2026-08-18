@@ -24,6 +24,7 @@ load_dotenv()
 
 from core.models_db import (
     get_db_stats,
+    set_model_routing_tier,
     update_quota_realtime,
     upsert_access_channel,
     upsert_api_key,
@@ -44,11 +45,11 @@ def seed_providers():
             "id": "local",
             "name": "LM Studio (Local)",
             "type": "local",
-            "api_endpoint": "http://192.168.1.x:1234/v1/chat/completions",
+            "api_endpoint": "http://192.168.1.10:1234/v1/chat/completions",
             "auth_method": "local",
             "confidentiality": "total",
             "cascade_priority": 1.0,
-            "notes": "RTX 5070 Ti (16GB VRAM), 9 modèles chargés. Coût zéro, confidentialité totale.",
+            "notes": "GPU locale (16GB VRAM), 9 modèles chargés. Coût zéro, confidentialité totale.",
         },
         {
             "id": "gemini_free",
@@ -189,7 +190,7 @@ def seed_providers():
             "auth_method": "local",
             "confidentiality": "total",
             "cascade_priority": 1.1,
-            "notes": "Ollama local sur RTX 5070 Ti. Inférence ultra-rapide.",
+            "notes": "Ollama local sur GPU locale. Inférence ultra-rapide.",
         },
         {
             "id": "anthropic_native",
@@ -293,8 +294,9 @@ def seed_models():
         {"id": "zai-glm-4.7", "provider_id": "cerebras", "display_name": "Zai GLM 4.7 (Cerebras)", "tier": "paid", "context_input": 8192, "context_output": 4096, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "supports_thinking": 1, "speciality": "raisonnement", "recommended_use": "Raisonnement polyvalent ultra-rapide (Cerebras)", "notes": "Clé Payante (Cerebras)"},
 
         # ═══ OPENROUTER API ═══
-        {"id": "meta-llama/llama-3.3-70b-instruct:free", "provider_id": "openrouter", "display_name": "Llama 3.3 70B Instruct (Free via OpenRouter)", "tier": "free", "routing_tier": "moyen", "context_input": 131072, "context_output": 4096, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "raisonnement", "recommended_use": "Raisonnement fort gratuit via OpenRouter", "notes": "Plan Gratuit (OpenRouter)"},
-        {"id": "meta-llama/llama-3.2-3b-instruct:free", "provider_id": "openrouter", "display_name": "Llama 3.2 3B Instruct (Free via OpenRouter)", "tier": "free", "routing_tier": "leger", "context_input": 131072, "context_output": 4096, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "ultra_rapide", "recommended_use": "Tâches rapides gratuites via OpenRouter", "notes": "Plan Gratuit (OpenRouter)"},
+        {"id": "openrouter/auto", "provider_id": "openrouter", "display_name": "OpenRouter Auto", "tier": "paid", "routing_tier": "moyen", "context_input": 131072, "context_output": 4096, "cost_input_per_m": 0.15, "cost_output_per_m": 0.60, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "raisonnement", "recommended_use": "Routeur OpenRouter — choisit un modèle vivant, plus de slug :free mort", "notes": "Décision Axel 13/08. Auto facture le modèle routé (pas gratuit). Coûts catalogue = ordre de grandeur, solde OR = source d'autorité."},
+        {"id": "meta-llama/llama-3.3-70b-instruct:free", "provider_id": "openrouter", "display_name": "Llama 3.3 70B Instruct (Free via OpenRouter)", "tier": "free", "context_input": 131072, "context_output": 4096, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "raisonnement", "recommended_use": "Slug :free mort (404 13/08) — hors cascade", "notes": "unavailable for free. Gardé au catalogue, routing_tier retiré."},
+        {"id": "meta-llama/llama-3.2-3b-instruct:free", "provider_id": "openrouter", "display_name": "Llama 3.2 3B Instruct (Free via OpenRouter)", "tier": "free", "context_input": 131072, "context_output": 4096, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "ultra_rapide", "recommended_use": "Slug :free mort (404 13/08) — hors cascade", "notes": "unavailable for free. Gardé au catalogue, routing_tier retiré."},
         {"id": "anthropic/claude-3.5-sonnet", "provider_id": "openrouter", "display_name": "Claude 3.5 Sonnet (OpenRouter)", "tier": "paid", "routing_tier": "fort", "context_input": 200000, "context_output": 8192, "cost_input_per_m": 3.0, "cost_output_per_m": 15.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Raisonnement, code, agentique via OpenRouter", "notes": "Payant"},
         {"id": "anthropic/claude-sonnet-5", "provider_id": "openrouter", "display_name": "Claude 5 Sonnet (OpenRouter)", "tier": "paid", "routing_tier": "fort", "context_input": 200000, "context_output": 8192, "cost_input_per_m": 2.0, "cost_output_per_m": 10.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Raisonnement, code, agentique via OpenRouter", "notes": "Payant (Nouveau Claude 5)"},
         {"id": "openai/gpt-5.2", "provider_id": "openrouter", "display_name": "GPT-5.2 (OpenRouter)", "tier": "fort", "context_input": 400000, "context_output": 128000, "cost_input_per_m": 1.75, "cost_output_per_m": 14.0, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "raisonnement", "recommended_use": "Seul accès à la famille OpenAI GPT-5.x du catalogue — agentique/contexte long", "notes": "GPT-5.5 existe aussi sur OpenRouter (plus récent) mais pricing non confirmé au 03/07/2026"},
@@ -321,16 +323,16 @@ def seed_models():
         # ═══ ALIBABA DASHSCOPE CODING PLAN LITE (abonnement requêtes) ═══
         # Allowlist exacte GET /v1/models (2026-07-26). Coût token = 0 (forfait).
         # Contextes : doc officielle FAQ Coding Plan.
-        {"id": "dashscope/qwen3.7-plus", "provider_id": "dashscope", "display_name": "Qwen3.7 Plus (Coding Plan)", "tier": "subscription", "routing_tier": "fort", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Flagship Qwen Coding Plan — vision + thinking, contexte 1M", "notes": "Lite amorti (~¥40/mois). ID API exact: qwen3.7-plus", "last_tested": "2026-07-26"},
-        {"id": "dashscope/qwen3.6-plus", "provider_id": "dashscope", "display_name": "Qwen3.6 Plus (Coding Plan)", "tier": "subscription", "routing_tier": "fort", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Qwen Coding Plan — vision + thinking", "notes": "ID API exact: qwen3.6-plus", "last_tested": "2026-07-26"},
-        {"id": "dashscope/qwen3.5-plus", "provider_id": "dashscope", "display_name": "Qwen3.5 Plus (Coding Plan)", "tier": "subscription", "routing_tier": "moyen", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Qwen Coding Plan polyvalent — vision", "notes": "ID API exact: qwen3.5-plus", "last_tested": "2026-07-26"},
-        {"id": "dashscope/qwen3-max-2026-01-23", "provider_id": "dashscope", "display_name": "Qwen3 Max 2026-01-23 (Coding Plan)", "tier": "subscription", "routing_tier": "fort", "context_input": 262144, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "raisonnement", "recommended_use": "Qwen Max snapshot Coding Plan", "notes": "ID API exact: qwen3-max-2026-01-23", "last_tested": "2026-07-26"},
-        {"id": "dashscope/qwen3-coder-next", "provider_id": "dashscope", "display_name": "Qwen3 Coder Next (Coding Plan)", "tier": "subscription", "routing_tier": "moyen", "context_input": 262144, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Défaut moteur Coding Plan — génération de code (pas de thinking)", "notes": "Thinking non supporté. ID API exact: qwen3-coder-next", "last_tested": "2026-07-26"},
-        {"id": "dashscope/qwen3-coder-plus", "provider_id": "dashscope", "display_name": "Qwen3 Coder Plus (Coding Plan)", "tier": "subscription", "routing_tier": "fort", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Code + contexte 1M (pas de thinking)", "notes": "Thinking non supporté. ID API exact: qwen3-coder-plus", "last_tested": "2026-07-26"},
-        {"id": "dashscope/kimi-k2.5", "provider_id": "dashscope", "display_name": "Kimi K2.5 (Coding Plan)", "tier": "subscription", "routing_tier": "fort", "context_input": 262144, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Moonshot Kimi via Coding Plan — vision + agentique", "notes": "ID API exact: kimi-k2.5", "last_tested": "2026-07-26"},
-        {"id": "dashscope/glm-5", "provider_id": "dashscope", "display_name": "GLM-5 (Coding Plan)", "tier": "subscription", "routing_tier": "fort", "context_input": 202752, "context_output": 32768, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "GLM-5 via forfait Alibaba (distinct de Zhipu payant)", "notes": "ID API exact: glm-5 — ne pas confondre avec provider zhipu", "last_tested": "2026-07-26"},
-        {"id": "dashscope/glm-4.7", "provider_id": "dashscope", "display_name": "GLM-4.7 (Coding Plan)", "tier": "subscription", "routing_tier": "moyen", "context_input": 202752, "context_output": 32768, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "GLM-4.7 via forfait Alibaba", "notes": "ID API exact: glm-4.7", "last_tested": "2026-07-26"},
-        {"id": "dashscope/MiniMax-M2.5", "provider_id": "dashscope", "display_name": "MiniMax M2.5 (Coding Plan)", "tier": "subscription", "routing_tier": "moyen", "context_input": 196608, "context_output": 32768, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "polyvalent", "recommended_use": "MiniMax via Coding Plan (distinct de MINIMAX_API_KEY)", "notes": "ID API exact: MiniMax-M2.5 (casse significative)", "last_tested": "2026-07-26"},
+        {"id": "dashscope/qwen3.7-plus", "provider_id": "dashscope", "display_name": "Qwen3.7 Plus (Coding Plan)", "tier": "subscription", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Flagship Qwen Coding Plan — vision + thinking, contexte 1M", "notes": "Lite amorti (~¥40/mois). ID API exact: qwen3.7-plus", "last_tested": "2026-07-26"},
+        {"id": "dashscope/qwen3.6-plus", "provider_id": "dashscope", "display_name": "Qwen3.6 Plus (Coding Plan)", "tier": "subscription", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Qwen Coding Plan — vision + thinking", "notes": "ID API exact: qwen3.6-plus", "last_tested": "2026-07-26"},
+        {"id": "dashscope/qwen3.5-plus", "provider_id": "dashscope", "display_name": "Qwen3.5 Plus (Coding Plan)", "tier": "subscription", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Qwen Coding Plan polyvalent — vision", "notes": "ID API exact: qwen3.5-plus", "last_tested": "2026-07-26"},
+        {"id": "dashscope/qwen3-max-2026-01-23", "provider_id": "dashscope", "display_name": "Qwen3 Max 2026-01-23 (Coding Plan)", "tier": "subscription", "context_input": 262144, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "raisonnement", "recommended_use": "Qwen Max snapshot Coding Plan", "notes": "ID API exact: qwen3-max-2026-01-23", "last_tested": "2026-07-26"},
+        {"id": "dashscope/qwen3-coder-next", "provider_id": "dashscope", "display_name": "Qwen3 Coder Next (Coding Plan)", "tier": "subscription", "context_input": 262144, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Défaut moteur Coding Plan — génération de code (pas de thinking)", "notes": "Thinking non supporté. ID API exact: qwen3-coder-next", "last_tested": "2026-07-26"},
+        {"id": "dashscope/qwen3-coder-plus", "provider_id": "dashscope", "display_name": "Qwen3 Coder Plus (Coding Plan)", "tier": "subscription", "context_input": 1000000, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Code + contexte 1M (pas de thinking)", "notes": "Thinking non supporté. ID API exact: qwen3-coder-plus", "last_tested": "2026-07-26"},
+        {"id": "dashscope/kimi-k2.5", "provider_id": "dashscope", "display_name": "Kimi K2.5 (Coding Plan)", "tier": "subscription", "context_input": 262144, "context_output": 65536, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_vision": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "Moonshot Kimi via Coding Plan — vision + agentique", "notes": "ID API exact: kimi-k2.5", "last_tested": "2026-07-26"},
+        {"id": "dashscope/glm-5", "provider_id": "dashscope", "display_name": "GLM-5 (Coding Plan)", "tier": "subscription", "context_input": 202752, "context_output": 32768, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "GLM-5 via forfait Alibaba (distinct de Zhipu payant)", "notes": "ID API exact: glm-5 — ne pas confondre avec provider zhipu", "last_tested": "2026-07-26"},
+        {"id": "dashscope/glm-4.7", "provider_id": "dashscope", "display_name": "GLM-4.7 (Coding Plan)", "tier": "subscription", "context_input": 202752, "context_output": 32768, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "code", "recommended_use": "GLM-4.7 via forfait Alibaba", "notes": "ID API exact: glm-4.7", "last_tested": "2026-07-26"},
+        {"id": "dashscope/MiniMax-M2.5", "provider_id": "dashscope", "display_name": "MiniMax M2.5 (Coding Plan)", "tier": "subscription", "context_input": 196608, "context_output": 32768, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_thinking": 1, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "polyvalent", "recommended_use": "MiniMax via Coding Plan (distinct de MINIMAX_API_KEY)", "notes": "ID API exact: MiniMax-M2.5 (casse significative)", "last_tested": "2026-07-26"},
 
         # ═══ DEEPINFRA (Pay-as-you-go) ═══
         {"id": "deepinfra/llama-3.3-70b-instruct", "provider_id": "deepinfra", "display_name": "Llama 3.3 70B Instruct (DeepInfra)", "tier": "paid", "context_input": 131072, "context_output": 4096, "cost_input_per_m": 0.23, "cost_output_per_m": 0.23, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "raisonnement", "recommended_use": "Routage alternatif Tier Moyen/Fort — excellent rapport qualité/prix"},
@@ -386,6 +388,24 @@ def seed_models():
         if ok:
             count += 1
         print(f"  {'✅' if ok else '❌'} {mid}")
+
+    # 13/08 : slugs :free morts — les retirer du routing_tier même si l'upsert
+    # non-destructif (#T254) a conservé l'ancienne valeur.
+    for slug_mort in (
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "meta-llama/llama-3.2-3b-instruct:free",
+        "dashscope/qwen3.7-plus",
+        "dashscope/qwen3.6-plus",
+        "dashscope/qwen3.5-plus",
+        "dashscope/qwen3-max-2026-01-23",
+        "dashscope/qwen3-coder-next",
+        "dashscope/qwen3-coder-plus",
+        "dashscope/kimi-k2.5",
+        "dashscope/glm-5",
+        "dashscope/glm-4.7",
+        "dashscope/MiniMax-M2.5",
+    ):
+        set_model_routing_tier(slug_mort, None)
 
     return count
 
@@ -571,14 +591,13 @@ def seed_routing_rules():
         {"task_type": "confidentiel", "recommended_model": "qwen2.5-14b-instruct-1m", "provider_id": "local", "justification": "100% local, confidentialité totale", "effective_cost": "0.00 $/M"},
         {"task_type": "embeddings", "recommended_model": "nomic-embed-text-v1.5", "provider_id": "local", "justification": "Embeddings airgapped", "effective_cost": "0.00 $/M"},
 
-        # ═══ DASHSCOPE CODING PLAN (forfait ~¥40/mois amorti) ═══
-        # Forfait Lite : quota 4 requêtes/min et ~600/jour → recommandé pour du code
-        # interactif à faible débit (pas pour routine_batch / fort débit).
-        {"task_type": "code_generation", "recommended_model": "dashscope/qwen3-coder-next", "provider_id": "dashscope", "justification": "Défaut Coding Plan : code sans thinking, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
-        {"task_type": "code_complexe", "recommended_model": "dashscope/qwen3-coder-plus", "provider_id": "dashscope", "justification": "Code + contexte 1M (sans thinking), forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
-        {"task_type": "code_revision", "recommended_model": "dashscope/qwen3.7-plus", "provider_id": "dashscope", "justification": "Flagship vision + thinking, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
-        {"task_type": "refactoring", "recommended_model": "dashscope/glm-5", "provider_id": "dashscope", "justification": "GLM-5 thinking via forfait Alibaba, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
-        {"task_type": "agentique", "recommended_model": "dashscope/kimi-k2.5", "provider_id": "dashscope", "justification": "Kimi K2.5 vision + agentique, forfait amorti (~¥40/mois) — quota 4 RPM/600 j, pas pour fort débit", "effective_cost": "0.00 $/M (forfait ~¥40/mois amorti)"},
+        # D-8 : Dashscope hors recommandations (401 + CGU). Repli sur modèles déjà
+        # présents dans les règles voisines (code_rapide / pair_programming / planification).
+        {"task_type": "code_generation", "recommended_model": "gemini-3.5-flash", "provider_id": "gemini_free", "justification": "D-8 : Dashscope désactivé — repli gratuit thinking (même famille que code_rapide)", "effective_cost": "0.00 $/M"},
+        {"task_type": "code_complexe", "recommended_model": "claude-sonnet-4-6", "provider_id": "claude_cli", "justification": "D-8 : Dashscope désactivé — repli CLI Sonnet (même famille que pair_programming)", "effective_cost": "0.57 $/M amorti"},
+        {"task_type": "code_revision", "recommended_model": "gemini-3.5-flash", "provider_id": "gemini_free", "justification": "D-8 : Dashscope désactivé — repli gratuit thinking", "effective_cost": "0.00 $/M"},
+        {"task_type": "refactoring", "recommended_model": "claude-sonnet-4-6", "provider_id": "claude_cli", "justification": "D-8 : Dashscope désactivé — repli CLI Sonnet", "effective_cost": "0.57 $/M amorti"},
+        {"task_type": "agentique", "recommended_model": "deepseek-v4-pro", "provider_id": "deepseek", "justification": "D-8 : Dashscope désactivé — repli raisonnement long (même famille que planification)", "effective_cost": "0.435 $/M"},
     ]
 
     count = 0
@@ -730,6 +749,7 @@ def seed_access_channels():
 
     # OpenRouter API
     openrouter_models = [
+        ("openrouter/auto", "openrouter/auto", 800, 50.0),
         ("meta-llama/llama-3.3-70b-instruct:free", "meta-llama/llama-3.3-70b-instruct:free", 800, 50.0),
         ("meta-llama/llama-3.2-3b-instruct:free", "meta-llama/llama-3.2-3b-instruct:free", 500, 80.0),
         ("anthropic/claude-3.5-sonnet", "anthropic/claude-3.5-sonnet", 800, 60.0),
@@ -849,7 +869,7 @@ def seed_access_channels():
             model_id, None,
             access_method="local", provider_alias=model_id,
             speed_tier="fast", is_default=1,
-            notes="LM Studio local (RTX 5070 Ti)",
+            notes="LM Studio local (GPU locale)",
         )
         if ok: count += 1
 
@@ -863,7 +883,7 @@ def seed_access_channels():
             model_id, None,
             access_method="api_rest", provider_alias=alias,
             speed_tier="fast", latency_ttft_ms=500, throughput_tps=tps,
-            is_default=1, notes="Ollama local (RTX 5070 Ti)",
+            is_default=1, notes="Ollama local (GPU locale)",
         )
         if ok: count += 1
 

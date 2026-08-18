@@ -611,7 +611,7 @@ async def query_llm_direct(
       - "deepseek-chat"     : $0.14/$0.28 par M tokens — ultra économique
       - "deepseek-reasoner" : R1, $0.55/$2.19 — Chain of Thought
       - "deepseek-v4-pro"   : $0.435/$0.87 — raisonnement avancé
-      - "local"             : LM Studio RTX 5070Ti (0$, 50 tok/s, confidentiel)
+      - "local"             : LM Studio GPU locale (0$, 50 tok/s, confidentiel)
       - "claude-sonnet-4-6" : Inclus Claude Pro, pair programming
       - "claude-opus-4-8"   : Inclus Claude Pro, architecture
       - "gemini-2.5-flash"  : Free Tier (0$, 80 tok/s, raisonnement)

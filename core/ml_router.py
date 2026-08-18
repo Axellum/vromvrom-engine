@@ -367,19 +367,19 @@ class MLRouter:
         local_targets = [
             {
                 "type": "ollama",
-                "url": "http://192.168.1.x:11434/api/embeddings",
+                "url": "http://192.168.1.10:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "ollama",
-                "url": "http://192.168.1.x:11434/api/embeddings",
+                "url": "http://192.168.1.10:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "lmstudio",
-                "url": "http://192.168.1.x:1234/v1/embeddings",
+                "url": "http://192.168.1.10:1234/v1/embeddings",
                 "payload": {"model": "nomic-embed-text", "input": ["ping"]},
                 "model": "nomic-embed-text"
             }
@@ -444,19 +444,19 @@ class MLRouter:
         local_targets = [
             {
                 "type": "ollama",
-                "url": "http://192.168.1.x:11434/api/embeddings",
+                "url": "http://192.168.1.10:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "ollama",
-                "url": "http://192.168.1.x:11434/api/embeddings",
+                "url": "http://192.168.1.10:11434/api/embeddings",
                 "payload": {"model": "nomic-embed-text", "prompt": "ping"},
                 "model": "nomic-embed-text"
             },
             {
                 "type": "lmstudio",
-                "url": "http://192.168.1.x:1234/v1/embeddings",
+                "url": "http://192.168.1.10:1234/v1/embeddings",
                 "payload": {"model": "nomic-embed-text", "input": ["ping"]},
                 "model": "nomic-embed-text"
             }

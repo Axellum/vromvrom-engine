@@ -8,22 +8,49 @@ jour. Ce fichier fige par des tests le comportement réel, symptôme par symptô
 SYMPTÔME A — « zai-glm-4.7 routé vers Cerebras »
 Verdict établi : comportement CONFORME. `zai-glm-4.7` est un modèle Cerebras par
 design — descripteur CerebrasPlugin (core/llm/builtin_providers.py:1249), câblage
-gateway (core/llm_gateway.py:267), seed (seed_models_db.py:293), usage documenté
-(agents/dreamer_agent.py:528-531 : « escaladé vers zai-glm-4.7 — GLM/Z.ai hébergé
+gateway (core/llm_gateway.py:321), seed (seed_models_db.py:294), usage documenté
+(agents/dreamer_agent.py:530-532 : « escaladé vers zai-glm-4.7 — GLM/Z.ai hébergé
 gratuitement via la clé Cerebras — décision Axel 07/07 »). `glm-4.7` est un modèle
-Zhipu DISTINCT (ZhipuPlugin builtin_providers.py:1774, gateway:358, seed:316) ;
-`dashscope/glm-4.7` un troisième (préfixé, gateway:385, seed:332). La résolution se
-fait par clé exacte (`self.providers.get(name.lower())`, llm_gateway.py:661) : ni
-préfixe rogné, ni correspondance partielle, ni dernier gagnant. Aucune collision
+Zhipu DISTINCT (ZhipuPlugin builtin_providers.py:1758, gateway:414, seed:318) ;
+`dashscope/glm-4.7` un troisième (préfixé, catalogue conservé, D-8 : plus instancié,
+gateway:437). La résolution se fait par clé exacte (`self.providers.get(name.lower())`) :
+ni préfixe rogné, ni correspondance partielle, ni dernier gagnant. Aucune collision
 d'identifiants entre plugins ni entre plugin et seed.
 
+Réfutation de l'hypothèse « clé absente → repli muet » : si les deux clés Cerebras
+sont absentes, `key_paid_path` est vide (core/llm_gateway.py:310-311) → `zai-glm-4.7`
+n'est PAS construit (le `if key_paid_path:` de la ligne 317 ne s'exécute pas). Un
+accès explicite lève alors une ValueError bruyante (« Provider LLM inconnu »,
+core/llm_gateway.py:719), jamais une redirection silencieuse vers un autre provider.
+Sur la voie plugin (core/llm/provider_registration.py:102-108), `CredentialsManquantes`
+écarte proprement le provider (log info + `rapport.ecartes`), sans repli.
+
 SYMPTÔME B — « timeout 120 s »
-Verdict établi : comportement CONFORME. Le read de 120 s est le DÉFAUT de la famille
-`openai_compat` (core/llm_timeouts.py:24), pas un héritage du réglage local
-`lmstudio` ((2, 120), llm_timeouts.py:25, utilisé uniquement par LMStudioProvider,
-core/llm/providers/deepseek.py:206). Le seul timeout court est `ollama_pc` (2, 15),
-explicite (core/llm_gateway.py:430-436). Aucun provider distant n'utilise la famille
-`lmstudio`.
+Verdict établi : comportement CONFORME (documenté, par design — pas un défaut). Le
+read de 120 s est le DÉFAUT de la famille `openai_compat` (core/llm_timeouts.py:24),
+pas un héritage du réglage local `lmstudio` ((2, 120), llm_timeouts.py:25, utilisé
+uniquement par LMStudioProvider, core/llm/providers/deepseek.py:185). Le seul
+timeout court est `ollama_pc` (2, 15), explicite (core/llm_gateway.py:492). Aucun
+provider distant n'utilise la famille `lmstudio`. Sur le chemin interactif, la
+fenêtre de session vaut aussi 120 s (core/fenetres_execution.py:114) : un appel
+amont qui pend bloque donc jusqu'à 120 s — arbitrage produit ASSUMÉ et documenté
+(core/fenetres_execution.py:103-112 : « c'est un arbitrage produit assumé... pas un
+oubli »). Le raccourcir est une décision produit, pas une correction de bug.
+
+TABLE DES TIMEOUTS PAR FAMILLE (source de vérité : core/llm_timeouts.py) :
+
+| Famille            | connect | read   | Source fichier:ligne                    | Providers concernés |
+|--------------------|---------|--------|-----------------------------------------|---------------------|
+| gemini             | 5.0     | 120.0  | llm_timeouts.py:23                      | GeminiProvider, GeminiNativeProvider |
+| openai_compat      | 5.0     | 120.0  | llm_timeouts.py:24                      | deepseek, mistral, cohere, cerebras, openrouter, deepinfra, xai, minimax, zhipu, dashscope, ollama_local |
+| lmstudio           | 2.0     | 120.0  | llm_timeouts.py:25                      | LMStudioProvider (local) |
+| anthropic          | 5.0     | 180.0  | llm_timeouts.py:26                      | AnthropicNativeProvider |
+| claude_cli         | —       | 240.0  | llm_timeouts.py:27                      | ClaudeCLIProvider |
+| ollama_pc (explicite) | 2.0  | 15.0   | llm_gateway.py:492                      | ollama_pc seul (LAN) |
+| deck_ollama        | 2.0     | 60.0   | core/llm/providers/deepseek.py:276-277  | OllamaDeckProvider (endpoint local Deck) |
+
+Surcharge possible via `config.json` (`provider_timeouts`), lue par
+`get_timeout` (core/llm_timeouts.py:47-50).
 """
 
 
@@ -76,13 +103,11 @@ def test_resolution_par_cle_exacte_des_trois_glm(gateway_cles_factices):
     )
     assert glm.model == "glm-4.7"
 
-    dash = providers["dashscope/glm-4.7"]
-    assert "dashscope.aliyuncs.com" in dash.base_url, (
-        "dashscope/glm-4.7 doit être câblé chez DashScope — reçu : {dash.base_url}"
-    )
+    # D-8 : dashscope/* n'est plus instancié même avec une clé factice.
+    assert "dashscope/glm-4.7" not in providers
 
-    # Les trois objets sont distincts : aucune collision d'entrée de registre.
-    assert zai is not glm and glm is not dash and zai is not dash
+    # Les deux objets restants sont distincts : aucune collision d'entrée de registre.
+    assert zai is not glm
 
 
 def test_aucun_id_modele_partage_entre_plugins():

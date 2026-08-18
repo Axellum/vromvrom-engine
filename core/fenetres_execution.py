@@ -100,6 +100,45 @@ def duree_session_fond_s() -> float:
     return 900.0
 
 
+def duree_tache_dreamcoder_s() -> float:
+    """
+    Fenêtre d'UNE tâche autonome DreamCoder (nuit, backlog).
+
+    Quatrième occurrence du défaut que ce module existe pour empêcher :
+    `_process_one_dreamcoder_task` enveloppait le pipeline dans un
+    `wait_for(timeout=600)` — 10 minutes affichées — mais appelait
+    `run_full_pipeline` SANS `timeout_seconds`, donc avec son défaut de 120 s
+    hérité du chemin interactif. L'enveloppe était décorative : le vrai plafond
+    d'une tâche de nuit était de 2 minutes, Planner compris. Aucune tâche de
+    code sérieuse ne tient là-dedans.
+
+    Pourquoi 600 s et pas les 900 s de la session de fond : le cycle entier est
+    borné par `dreamcoder_max_cycle_minutes` (30 min par défaut), qui est le
+    budget de TOUTES les tâches de la nuit. À 900 s, une seule tâche lente
+    mangerait la moitié du cycle ; à 600 s il en reste pour trois.
+    """
+    brut = os.environ.get("MOTEUR_DREAMCODER_TACHE_TIMEOUT_S")
+    if brut:
+        try:
+            return float(brut)
+        except ValueError:
+            logger.warning(
+                f"[FENETRES] MOTEUR_DREAMCODER_TACHE_TIMEOUT_S illisible ({brut!r}) — défaut retenu.")
+    return 600.0
+
+
+# Marge de l'enveloppe `wait_for` de DreamCoder au-dessus de la fenêtre du
+# pipeline. Elle DOIT rester positive : c'est ce qui laisse le pipeline rendre
+# son erreur « Timeout Xs » (et clore la session) au lieu d'être tué de
+# l'extérieur, ce qui laisserait une session zombie (#T361).
+MARGE_ENVELOPPE_DREAMCODER_S = 60.0
+
+
+def duree_enveloppe_dreamcoder_s() -> float:
+    """Borne extérieure d'une tâche DreamCoder — toujours au-dessus du pipeline."""
+    return duree_tache_dreamcoder_s() + MARGE_ENVELOPPE_DREAMCODER_S
+
+
 def duree_session_interactive_s() -> float:
     """
     Fenêtre d'une session interactive (chat, vocal) : un humain attend.
@@ -137,6 +176,19 @@ def verifier_emboitement() -> list[str]:
             f"Session de fond ({session_fond}s) <= Planner ({planner}s) : "
             f"il ne resterait rien pour exécuter le DAG."
         )
+
+    tache_dreamcoder = duree_tache_dreamcoder_s()
+    if tache_dreamcoder <= planner:
+        violations.append(
+            f"Tâche DreamCoder ({tache_dreamcoder}s) <= Planner ({planner}s) : "
+            f"une tâche de nuit ne pourrait pas dépasser son propre plan."
+        )
+    if duree_enveloppe_dreamcoder_s() <= tache_dreamcoder:
+        violations.append(
+            f"Enveloppe DreamCoder ({duree_enveloppe_dreamcoder_s()}s) <= tâche "
+            f"({tache_dreamcoder}s) : le pipeline serait tué avant de pouvoir "
+            f"rendre son erreur, laissant une session zombie."
+        )
     return violations
 
 
@@ -144,7 +196,8 @@ def journaliser_fenetres() -> None:
     """Trace la hiérarchie au démarrage, et signale toute incohérence."""
     logger.info(
         f"[FENETRES] tentative LLM {duree_tentative_llm_s()}s < Planner {duree_planner_s()}s "
-        f"< session de fond {duree_session_fond_s()}s (interactive : {duree_session_interactive_s()}s)"
+        f"< session de fond {duree_session_fond_s()}s (interactive : {duree_session_interactive_s()}s) "
+        f"| tâche DreamCoder {duree_tache_dreamcoder_s()}s < enveloppe {duree_enveloppe_dreamcoder_s()}s"
     )
     for violation in verifier_emboitement():
         logger.error(f"[FENETRES] ⚠️ {violation}")

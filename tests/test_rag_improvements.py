@@ -74,7 +74,7 @@ class TestChunkingContextual(unittest.TestCase):
         store = EmbeddingStore.__new__(EmbeddingStore)
 
         content = "# Mon Titre\n\nCeci est un contenu de test suffisamment long pour passer le seuil de 20 caractères et être retenu comme chunk valide."
-        filepath = os.path.join("e:", "AuxFilsDesIdees", "contexte_ia", "02_Hardware", "rules_esphome.md")
+        filepath = os.path.join("docs", "ARCHITECTURE.md")
 
         sections = store._chunk_markdown(content, filepath)
 

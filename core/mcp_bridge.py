@@ -134,8 +134,8 @@ class MCPBridge:
                 for arg in args:
                     if isinstance(arg, str):
                         # Remplacer les chemins réseau Windows par le chemin Linux local
-                        arg_adapted = arg.replace("\\\\192.168.1.x\\config", "/config")
-                        arg_adapted = arg_adapted.replace("e:\\AuxFilsDesIdees", "/config")
+                        arg_adapted = arg.replace("\\\\192.168.1.10\\config", "/config")
+                        arg_adapted = arg_adapted.replace("/path/to/workspace", "/config")
                         # Remplacer les antislashs par des slashs
                         arg_adapted = arg_adapted.replace("\\", "/")
                         new_args.append(arg_adapted)

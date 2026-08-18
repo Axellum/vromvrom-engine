@@ -132,18 +132,16 @@ def test_dashscope_models_db_registration(_catalogue_dashscope):
     assert sub["rolling_window_hours"] == 5
 
 
-def test_dashscope_gateway_binds_key(monkeypatch):
-    """Les alias dashscope/* doivent binder DASHSCOPE_API_KEY."""
+def test_dashscope_gateway_ne_instancie_plus(monkeypatch):
+    """D-8 : clé présente ≠ providers construits (401 + CGU backend)."""
     monkeypatch.setenv("DASHSCOPE_API_KEY", "sk-sp-test-key-for-unit")
     gateway = LLMGateway()
-    default = gateway.providers.get("dashscope")
-    coder = gateway.providers.get("dashscope/qwen3-coder-next")
-    assert default is not None
-    assert coder is not None
-    assert default.api_key == "sk-sp-test-key-for-unit"
-    assert coder.api_key == "sk-sp-test-key-for-unit"
-    assert coder.model == "qwen3-coder-next"
-    assert "coding" in coder.base_url
+    assert gateway.providers.get("dashscope") is None
+    assert gateway.providers.get("dashscope/qwen3-coder-next") is None
+    assert not any(
+        nom == "dashscope" or nom.startswith("dashscope/")
+        for nom in gateway.providers
+    )
 
 
 @pytest.mark.live
@@ -161,6 +159,11 @@ def test_dashscope_live_generation():
     key = os.getenv("DASHSCOPE_API_KEY") or os.getenv("BAILIAN_CODING_PLAN_API_KEY")
     if not key:
         pytest.skip("Aucune clé DashScope configurée")
+
+    from core.llm_gateway import DASHSCOPE_ACTIF
+
+    if not DASHSCOPE_ACTIF:
+        pytest.skip("Dashscope désactivé (D-8) — pas d'inférence live")
 
     gateway = LLMGateway()
     provider = gateway.providers.get("dashscope/qwen3-coder-next")

@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # remote) sans pointer vers ce dépôt, on refuse d'opérer dessus plutôt que de
 # committer/merger silencieusement dans un dépôt orphelin non lié à l'historique
 # réel (cf. incident Steam Deck du 2026-06-27 : ~400 fichiers absorbés dans un
-# dépôt sans remote créé par erreur dans /home/deck/dev_station/moteur_agents).
+# dépôt sans remote créé par erreur dans /opt/vromvrom-engine).
 EXPECTED_REMOTE_SUBSTR = "Axellum/moteur_agents"
 
 def _run_git(args: list, cwd: str = ".") -> tuple[int, str, str]:

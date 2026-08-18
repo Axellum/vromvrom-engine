@@ -89,7 +89,7 @@ def _check_git_status() -> dict[str, Any]:
     result = {"check": "git_status", "status": "ok", "details": {}}
 
     try:
-        # Vérifier dans le répertoire parent (e:\AuxFilsDesIdees)
+        # Vérifier dans le répertoire parent (.)
         workspace = os.path.dirname(_ENGINE_ROOT)
 
         # Chercher les répertoires Git dans le workspace
@@ -165,9 +165,9 @@ async def _check_ha_health() -> dict[str, Any]:
 
     # Entités critiques à surveiller (Tab5, DAC, Voice Assistant)
     critical_entities = [
-        "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
-        "sensor.m5stack_tab5_home_assistant_hmi_tab5_core_temp",
-        "media_player.m5stack_tab5_home_assistant_hmi_tab5_media_player",
+        "switch.example_wake_word",
+        "sensor.tablet_cpu_temp",
+        "media_player.tablet",
     ]
 
     try:
@@ -347,7 +347,7 @@ async def _execute_freebox_ssh_command(command: str) -> tuple[int, str, str]:
     en debug seul a masqué la vraie cause en production (#T266).
     """
     ssh_user = os.environ.get("SSH_USER", "axel")
-    freebox_ip = "192.168.1.x"
+    freebox_ip = "192.168.1.10"
 
     # 1. Tentative SSH système par clé — la raison d'échec est conservée pour
     #    être visible si tout le chemin échoue.

@@ -21,13 +21,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PHRASES_YAML = _REPO_ROOT / "scripts" / "domotic_phrases.yaml"
 _CACHE_DIRS = (
     _REPO_ROOT / "00ProjetTab" / "audio_lib",
-    Path(r"H:\AuxFilsDesIdees\00ProjetTab\audio_lib"),
-    Path(r"E:\AuxFilsDesIdees\00ProjetTab\audio_lib"),
+    Path(r"audio_lib"),
+    Path(r"audio_lib"),
 )
 
 # Phrases fixes du moteur (fallback si domotic_phrases.yaml absent sur le Deck)
 _EXTRA_PHRASES: dict[str, str] = {
-    "vocal_bonjour_axel": "Bonjour Axel, que veux-tu contrôler ?",
+    "vocal_bonjour": "Bonjour, que veux-tu contrôler ?",
     "vocal_merci": "De rien. Que veux-tu contrôler ?",
     "vocal_ha_echec": "Je n'ai pas compris la commande domotique.",
     "lum_salon_on": "Lumière du salon allumée.",
@@ -148,6 +148,12 @@ _TOOL_DUMP_MARKERS = (
 )
 
 
+# [#T366] Formules LaTeX : délimiteurs standard puis commandes résiduelles.
+_RE_LATEX_BLOCS = re.compile(r"\\\[.*?\\\]|\\\(.*?\\\)|\$\$.*?\$\$", re.DOTALL)
+_RE_LATEX_INLINE_DOLLAR = re.compile(r"\$[^$\n]{1,120}\$")
+_RE_LATEX_COMMANDE = re.compile(r"\\[a-zA-Z]+\b\s*")
+
+
 def looks_like_tool_or_code_dump(text: str) -> bool:
     """True si la réponse ressemble à du JSON d'outil / code technique, pas du français TTS."""
     if not text or not str(text).strip():
@@ -168,14 +174,47 @@ def looks_like_tool_or_code_dump(text: str) -> bool:
     return False
 
 
+def _neutraliser_latex(texte: str) -> str:
+    """
+    [#T366] Remplace les formules LaTeX par « la formule », lisible en synthèse.
+
+    Mesuré le 17/08 : « donne-moi la formule de la relativité générale » rendait
+    `\\(G_{\\mu\\nu} + \\Lambda\\,g_{\\mu\\nu} = \\frac{8\\pi G}{c^{4}}\\,T_{\\mu\\nu}\\)`,
+    que le TTS ânonne symbole par symbole. Même défaut dans l'historique réel du
+    17/08 à 09:46 — ce n'est pas un cas de test isolé.
+
+    On remplace plutôt qu'on supprime : « L'équation s'écrit la formule, où G est
+    le tenseur… » reste une phrase française, là où une suppression sèche
+    laisserait un trou au milieu. Aucun fait n'est inventé, c'est une
+    transformation de présentation pour l'oral.
+
+    Le `$…$` n'est neutralisé que s'il contient une marque de LaTeX (backslash,
+    accolade, exposant, indice) : « ça coûte 5 $ » ou « entre 10 $ et 20 $ » ne
+    doivent pas être avalés.
+    """
+    t = _RE_LATEX_BLOCS.sub(" la formule ", texte)
+
+    def _dollar(m: re.Match[str]) -> str:
+        contenu = m.group(0)
+        return " la formule " if any(c in contenu for c in "\\{}^_") else contenu
+
+    t = _RE_LATEX_INLINE_DOLLAR.sub(_dollar, t)
+    # Commandes résiduelles hors délimiteurs (« \alpha », « \frac »).
+    t = _RE_LATEX_COMMANDE.sub(" ", t)
+    # Deux formules adjacentes ne doivent pas donner « la formule la formule ».
+    t = re.sub(r"(la formule)(\s+la formule)+", r"\1", t)
+    return t
+
+
 def sanitize_discussion_tts(text: str, max_sentences: int = 3, max_chars: int = 420) -> str:
     """
     Nettoie une réponse LLM pour le mode Discussion vocal Tab5.
-    Supprime le markdown, refuse les dumps d'outils/JSON, limite la longueur TTS.
+    Supprime le markdown, refuse les dumps d'outils/JSON, neutralise le LaTeX,
+    limite la longueur TTS.
     """
     if not text:
         return ""
-    t = str(text).strip()
+    t = _neutraliser_latex(str(text).strip()).strip()
     if looks_like_tool_or_code_dump(t):
         return _TOOL_DUMP_FALLBACK
     t = re.sub(r"```.*?```", " ", t, flags=re.DOTALL)

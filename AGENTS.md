@@ -1,6 +1,6 @@
 # AGENTS.md — tab5-engine
 
-Tu travailles **dans ce dépôt**. Le parapluie `H:\AuxFilsDesIdees\contexte_ia\` est le journal d'écosystème (Tab5, HA, sessions). Ici = source de vérité du moteur.
+Tu travailles **dans ce dépôt**. Le parapluie `.\contexte_ia\` est le journal d'écosystème (Tab5, HA, sessions). Ici = source de vérité du moteur.
 
 ## Lire, dans cet ordre
 

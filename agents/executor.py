@@ -60,8 +60,8 @@ class ExecutorAgent(BaseAgent):
         is_windows = (sys.platform == 'win32' or os.name == 'nt')
         if is_windows:
             os_rules = """2. COMPATIBILITÉ WINDOWS : La machine hôte tourne sous Windows. N'utilise jamais de commandes terminal Unix comme 'ls', 'grep' ou 'cat' via 'run_terminal_command'. Utilise à la place les outils de manipulation de fichier de Python ('read_file', 'write_file') ou des commandes Windows natives ('dir', 'findstr', 'type').
-3. SÉCURITÉ DU SYSTÈME : Ne modifie jamais de fichiers système Windows (comme C:\\Windows ou C:\\Windows\\System32). Tout fichier créé ou modifié doit l'être uniquement dans le répertoire de l'application ou du workspace de l'utilisateur (e:\\AuxFilsDesIdees).
-4. CHEMINS : Le workspace principal est 'e:\\AuxFilsDesIdees'. Le tab5-engine (code Python) est dans 'e:\\AuxFilsDesIdees\\moteur_agents\\'. Les fichiers core/ sont donc dans 'e:\\AuxFilsDesIdees\\moteur_agents\\core\\'. Utilise TOUJOURS des chemins absolus."""
+3. SÉCURITÉ DU SYSTÈME : Ne modifie jamais de fichiers système Windows (comme C:\\Windows ou C:\\Windows\\System32). Tout fichier créé ou modifié doit l'être uniquement dans le répertoire de l'application ou du workspace de l'utilisateur.
+4. CHEMINS : Le workspace est la racine du dépôt. Les fichiers core/ sont dans core/. Utilise TOUJOURS des chemins absolus."""
         else:
             os_rules = """2. COMPATIBILITÉ LINUX : La machine hôte tourne sous Linux (Alpine). N'exécute pas de commandes Windows comme 'dir', 'type', 'findstr' via 'run_terminal_command'. Utilise à la place des commandes Unix standard comme 'ls', 'cat', 'grep', ou de préférence les outils intégrés Python.
 3. SÉCURITÉ DU SYSTÈME : Ne tente pas de modifier les répertoires système protégés. Tout fichier créé ou modifié doit l'être uniquement dans le workspace (/config).
@@ -499,23 +499,33 @@ class ExecutorAgent(BaseAgent):
                 vus_dans_le_tour: set[tuple] = set()
                 nb_ecartes = 0
                 nb_doublons = 0
+                nb_decodages = 0
                 for tool_call in tool_calls:
                     func_name = tool_call["function"]["name"]
                     tool_call_id = tool_call.get("id", "call_123")
                     kwargs_str = tool_call["function"]["arguments"]
+
+                    # [#T343-A] JSON d'arguments illisible : l'outil ne part
+                    # JAMAIS à vide. Avant, `json.loads` échouait → `kwargs = {}`
+                    # → l'outil était exécuté SANS ses arguments (set_temperature()
+                    # sans température, write_file() sans chemin), en silence.
+                    # On retient l'erreur de décodage (renvoyée au modèle) et la
+                    # clé de déduplication repose alors sur la chaîne brute.
                     try:
                         kwargs = json.loads(kwargs_str)
+                        erreur_decodage = None
                     except Exception as e:
-                        res = f"Erreur de décodage des arguments JSON : {e}"
                         kwargs = {}
+                        erreur_decodage = str(e)
 
                     # Clé de déduplication : arguments normalisés (l'ordre des
                     # clés JSON ne doit pas créer de faux doublons), chaîne
-                    # brute si le JSON est invalide.
-                    try:
-                        cle_appel = (func_name, json.dumps(kwargs, sort_keys=True, default=str))
-                    except Exception:
+                    # brute si le JSON est invalide (deux malformés différents
+                    # restent donc deux appels différents).
+                    if erreur_decodage is not None:
                         cle_appel = (func_name, kwargs_str)
+                    else:
+                        cle_appel = (func_name, json.dumps(kwargs, sort_keys=True, default=str))
 
                     if cle_appel in vus_dans_le_tour:
                         nb_doublons += 1
@@ -524,6 +534,13 @@ class ExecutorAgent(BaseAgent):
                             f"{json.dumps(kwargs, ensure_ascii=False)}), déjà exécuté "
                             "avec exactement les mêmes arguments dans ce tour"
                         )
+                    elif erreur_decodage is not None:
+                        # [#T343-A] Arguments illisibles : on ne déduplique pas
+                        # (chaîne brute déjà distincte), on n'exécute pas, on
+                        # nomme l'erreur de décodage. L'appel ne consomme pas la
+                        # borne MAX_TOOL_CALLS_PER_TURN des appels légitimes.
+                        nb_decodages += 1
+                        raison = f"arguments JSON invalides, outil non exécuté : {erreur_decodage}"
                     elif len(vus_dans_le_tour) >= MAX_TOOL_CALLS_PER_TURN:
                         raison = f"borne de {MAX_TOOL_CALLS_PER_TURN} appels d'outil par tour atteinte"
                     else:
@@ -584,7 +601,8 @@ class ExecutorAgent(BaseAgent):
                 if nb_ecartes:
                     logger.warning(
                         f"[{self.name}]{prefix} {nb_ecartes} appel(s) d'outil écarté(s) ce tour "
-                        f"({nb_doublons} doublon(s), {nb_ecartes - nb_doublons} au-delà de la "
+                        f"({nb_doublons} doublon(s), {nb_decodages} JSON illisible(s), "
+                        f"{nb_ecartes - nb_doublons - nb_decodages} au-delà de la "
                         f"borne de {MAX_TOOL_CALLS_PER_TURN})"
                     )
 

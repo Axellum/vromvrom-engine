@@ -37,15 +37,17 @@ def test_deepseek_chat_from_strategy_file(monkeypatch):
 
 def test_free_tier_is_zero():
     """gemini-2.5-flash est en Free Tier dans le JSON → coût nul (source unique)."""
-    assert get_model_pricing("gemini-2.5-flash") == {"input": 0.0, "output": 0.0}
+    # [#T347] get_model_pricing expose aussi "cache" (ici 0, comme input/output).
+    assert get_model_pricing("gemini-2.5-flash") == {"input": 0.0, "output": 0.0, "cache": 0.0}
 
 
 def test_cli_and_local_and_subscription_are_free():
     """Conventions de gratuité : -cli, local, et modèles d'abonnement."""
-    assert get_model_pricing("gemini-3.5-flash-high-cli") == {"input": 0.0, "output": 0.0}
-    assert get_model_pricing("local") == {"input": 0.0, "output": 0.0}
+    free = {"input": 0.0, "output": 0.0, "cache": 0.0}
+    assert get_model_pricing("gemini-3.5-flash-high-cli") == free
+    assert get_model_pricing("local") == free
     # claude-opus-4-8 figure dans subscriptions[].models → coût marginal nul
-    assert get_model_pricing("claude-opus-4-8") == {"input": 0.0, "output": 0.0}
+    assert get_model_pricing("claude-opus-4-8") == free
 
 
 def test_eur_rates_converted_to_usd():
@@ -59,11 +61,14 @@ def test_eur_rates_converted_to_usd():
 def test_alias_fallback_when_absent_from_strategy():
     """L'alias générique 'gemini' (absent du JSON) retombe sur FALLBACK_PRICING."""
     p = get_model_pricing("gemini")
-    assert p == pricing.FALLBACK_PRICING["gemini"]
+    expected = dict(pricing.FALLBACK_PRICING["gemini"])
+    # [#T347] sans tarif cache explicite, cache = input (rétrocompat).
+    expected.setdefault("cache", expected["input"])
+    assert p == expected
 
 
 def test_unknown_model_is_zero():
-    assert get_model_pricing("modele-bidon-9000") == {"input": 0.0, "output": 0.0}
+    assert get_model_pricing("modele-bidon-9000") == {"input": 0.0, "output": 0.0, "cache": 0.0}
 
 
 def test_token_tracker_delegates_to_unified_pricing():

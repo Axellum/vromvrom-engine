@@ -70,6 +70,32 @@ def test_autonomous_session_bypasses_high_risk():
     assert eng._hitl_bypass_reason("dreamer_x", "high") is not None
 
 
+def test_tache_dreamcoder_contourne_le_hitl():
+    """
+    Les sessions `task_*` sont celles de DreamCoder, jouées sur le backlog à
+    3 h du matin. Elles écrivent des fichiers et lancent des commandes : TOUS
+    leurs plans sont « à risque » par construction. Sans ce bypass, chacune
+    sortait en `waiting_approval` devant un écran que personne ne regardait —
+    mesuré le 18/08 sur le Deck : 4 tâches lancées, 4 plans corrects, 4
+    rollbacks, 0 ligne de code produite.
+    """
+    eng = _engine(session_id="task_42")
+    assert eng._hitl_bypass_reason("task_42", "high") is not None
+    assert eng._hitl_bypass_reason("task_42", "critical") is not None
+
+
+def test_le_prefixe_task_ne_deborde_pas_sur_les_sessions_humaines():
+    """
+    Garde-fou : le bypass s'évalue sur un PRÉFIXE, jamais sur une sous-chaîne.
+    Une session interactive dont l'identifiant contient « task » reste soumise
+    à l'approbation — sinon il suffirait de nommer sa session pour s'en
+    affranchir.
+    """
+    eng = _engine(session_id="chat_task_1")
+    assert eng._hitl_bypass_reason("chat_task_1", "high") is None
+    assert eng._hitl_bypass_reason("gui_session_task_9", "critical") is None
+
+
 def test_interactive_high_risk_requires_approval():
     """[M5] Une session chat_* à risque n'est PLUS contournée d'office."""
     eng = _engine(session_id="chat_abc")

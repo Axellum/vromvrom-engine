@@ -1,5 +1,5 @@
 {
-  "_comment": "Phrases exactes après normalisation router (minuscules, sans accents finaux). entity_id vérifiés contre HA Freebox live 2026-07-14.",
+  "_comment": "Phrases exactes après normalisation router (minuscules, sans accents finaux). Exemple anonymisé — remplacer les entity_id par les vôtres.",
   "commands": [
     {
       "phrases": [
@@ -100,7 +100,9 @@
       ],
       "service": "script.blind_action",
       "entity_id": "",
-      "service_data": {"action": "open"}
+      "service_data": {
+        "action": "open"
+      }
     },
     {
       "phrases": [
@@ -117,7 +119,9 @@
       ],
       "service": "script.blind_action",
       "entity_id": "",
-      "service_data": {"action": "close"}
+      "service_data": {
+        "action": "close"
+      }
     },
     {
       "phrases": [
@@ -134,7 +138,9 @@
       ],
       "service": "script.blind_action",
       "entity_id": "",
-      "service_data": {"action": "stop"}
+      "service_data": {
+        "action": "stop"
+      }
     },
     {
       "phrases": [

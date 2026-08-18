@@ -45,6 +45,11 @@ class CircuitBreaker:
     _instances = _registry
     _global_lock = _registry_lock
 
+    # [#T352] Délai de réouverture maximal (30 min). Au-delà, le service est
+    # durablement indisponible : on ne pousse pas plus loin pour ne pas rendre un
+    # service rétabli inaccessible trop longtemps (voir PR #T352 pour la justification).
+    DEFAULT_MAX_RECOVERY_TIMEOUT: float = 1800.0
+
     @classmethod
     def get_or_create(cls, name: str, failure_threshold: int = 3, recovery_timeout: float = 30.0) -> "CircuitBreaker":
         """Récupère ou crée une instance de disjoncteur pour un modèle donné (thread-safe)."""
@@ -58,10 +63,25 @@ class CircuitBreaker:
         name: str,
         failure_threshold: int = 3,
         recovery_timeout: float = 30.0,
+        max_recovery_timeout: float | None = None,
     ):
         self.name = name
         self.failure_threshold = failure_threshold
+
+        # [#T352] `recovery_timeout` reste le délai EFFECTIF courant (rétro-compatible :
+        # première ouverture = valeur de base passée par l'appelant). `_base_recovery_timeout`
+        # conserve la valeur d'origine pour recalculer la progression et se remettre à zéro
+        # après un succès en HALF_OPEN.
+        self._base_recovery_timeout = recovery_timeout
         self.recovery_timeout = recovery_timeout
+        self._max_recovery_timeout = (
+            max_recovery_timeout if max_recovery_timeout is not None else self.DEFAULT_MAX_RECOVERY_TIMEOUT
+        )
+
+        # [#T352] Nombre d'ouvertures CONSÉCUTIVES sans succès entre-temps. Chaque nouvelle
+        # ouverture double le délai de réouverture (30 s, 1 min, 2 min…) jusqu'au plafond.
+        # Un succès en HALF_OPEN remet ce compteur à zéro.
+        self._consecutive_trips = 0
 
         self._state = CircuitBreakerState.CLOSED
         self._failure_count = 0
@@ -115,6 +135,10 @@ class CircuitBreaker:
             logger.info(f"[CIRCUIT BREAKER] {self.name} refermé (CLOSED) suite à un succès en HALF_OPEN")
             self._state = CircuitBreakerState.CLOSED
             self._failure_count = 0
+            # [#T352] Un succès en HALF_OPEN prouve que le service est rétabli :
+            # on remet le délai de réouverture à sa valeur de base.
+            self._consecutive_trips = 0
+            self.recovery_timeout = self._base_recovery_timeout
             self._last_state_change = time.time()
         elif self._state == CircuitBreakerState.CLOSED:
             self._failure_count = 0
@@ -143,13 +167,37 @@ class CircuitBreaker:
         logger.warning(f"[CIRCUIT BREAKER] Rate limit (429) détecté sur {self.name}. Disjoncteur déclenché.")
         self._trip()
 
+    def _compute_recovery_timeout(self) -> float:
+        """Délai de réouverture courant selon le nombre d'ouvertures consécutives.
+
+        [#T352] Progression géométrique : première ouverture = valeur de base,
+        puis double à chaque nouvelle ouverture consécutive, plafonnée à
+        `_max_recovery_timeout`. Un service durablement absent voit donc son délai
+        croître au lieu de payer un timeout fixe toutes les 30 secondes.
+        """
+        if self._consecutive_trips <= 1:
+            return self._base_recovery_timeout
+        exponent = self._consecutive_trips - 1
+        return min(
+            self._base_recovery_timeout * (2 ** exponent),
+            self._max_recovery_timeout,
+        )
+
     def _trip(self) -> None:
-        """Ouvre le disjoncteur (transition vers OPEN)."""
+        """Ouvre le disjoncteur (transition vers OPEN).
+
+        [#T352] À chaque nouvelle ouverture consécutive, le délai de réouverture
+        augmente (30 s, 1 min, 2 min…) jusqu'au plafond. Le délai retenu est
+        journalisé à chaque ouverture pour pouvoir vérifier le mécanisme en prod.
+        """
+        self._consecutive_trips += 1
+        self.recovery_timeout = self._compute_recovery_timeout()
         self._state = CircuitBreakerState.OPEN
         self._last_state_change = time.time()
         self.total_trips += 1
         logger.error(
-            f"[CIRCUIT BREAKER] 🚨 {self.name} a DISJONCTÉ (état OPEN) pour {self.recovery_timeout}s. "
+            f"[CIRCUIT BREAKER] 🚨 {self.name} a DISJONCTÉ (état OPEN) pour {self.recovery_timeout:.0f}s "
+            f"(ouverture consécutive n°{self._consecutive_trips}). "
             f"Seuil d'échecs ({self.failure_threshold}) dépassé."
         )
 
@@ -180,6 +228,9 @@ class CircuitBreaker:
             "failure_count": self._failure_count,
             "failure_threshold": self.failure_threshold,
             "recovery_timeout": self.recovery_timeout,
+            "base_recovery_timeout": self._base_recovery_timeout,
+            "max_recovery_timeout": self._max_recovery_timeout,
+            "consecutive_trips": self._consecutive_trips,
             "time_since_last_change": round(time.time() - self._last_state_change, 1),
             "total_calls": self.total_calls,
             "total_failures": self.total_failures,

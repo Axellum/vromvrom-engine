@@ -216,7 +216,7 @@ def est_prod(racine: str | None = None) -> bool:
     affiche la référence sans calculer d'écart.
     """
     cible = os.path.abspath(racine or RACINE).replace("\\", "/")
-    return cible.startswith("/home/deck/") or os.path.isdir("/home/deck/dev_station/moteur_agents")
+    return cible.startswith("/home/deck/") or os.path.isdir("/opt/vromvrom-engine")
 
 
 def _delta(actuel, reference, racine=None) -> str:

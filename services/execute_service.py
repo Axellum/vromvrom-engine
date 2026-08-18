@@ -44,12 +44,45 @@ _ACTION_OFF_MARKERS = frozenset({
     "descend", "descends",
 })
 _VOLET_OFF_MARKERS = frozenset({"descend", "descends", "baisse", "ferme", "fermer"})
-_VOLET_ON_MARKERS = frozenset({"monte", "ouvre", "ouvrir", "leve"})
+
+# [#T363] Formes interrogatives NON AMBIGUËS : elles demandent un état et
+# n'ordonnent rien, et aucune n'est une transcription plausible d'un impératif.
+# « est-elle » / « est-il » sont volontairement ABSENTS : `normalize_vocal_stt`
+# les réécrit en « éteins » (`core/vocal_stt_normalize.py:38`) parce que le STT
+# confond réellement les deux — les inclure ici ferait perdre de vraies commandes
+# mal transcrites. Pour ces formes-là, seul le point d'interrogation tranche.
+# « etat de » figure sans point d'interrogation : « État de la lumière de la
+# chambre. » est une demande de rapport, jamais un ordre.
+_MARQUEURS_INTERROGATIFS = (
+    "est-ce", "est ce", "qu'est-ce", "qu est ce",
+    "etat de", "l'etat", "quel est", "quelle est",
+    "c'est quoi", "c est quoi", "combien",
+)
+# Premier mot impératif : l'ordre explicite prime sur la forme interrogative.
+_IMPERATIFS_ACTION = frozenset({
+    "allume", "eteins", "ouvre", "ferme", "monte", "baisse", "descend", "descends",
+    "mets", "met", "coupe", "active", "desactive", "demarre", "arrete", "stop",
+    "regle", "augmente", "diminue", "leve", "remonte", "remontre", "releve",
+})
+# Infinitif d'action : « tu peux allumer la lumière ? » reste une commande polie.
+_INFINITIFS_ACTION = frozenset({
+    "allumer", "eteindre", "ouvrir", "fermer", "mettre", "couper", "activer",
+    "desactiver", "demarrer", "arreter", "stopper", "regler", "baisser", "monter",
+    "augmenter", "diminuer", "lever", "remonter", "descendre",
+})
+# Formes réellement dites (STT) pour ouvrir le volet. « remontre » est une
+# transcription fréquente de « remonte » (faster-whisper FR) ; « relève » était
+# reconnu par personne le 17/08. Ajoutées sans toucher à la reconnaissance
+# existante (« monte », « ouvre », « ouvrir », « leve »).
+_VOLET_ON_MARKERS = frozenset({
+    "monte", "ouvre", "ouvrir", "leve",
+    "remonte", "remontre", "releve",
+})
 # Écho TTS / phrases d'état — ne pas interpréter comme commande
 _VOLET_STATUS_MARKERS = frozenset({"sont", "est", "ete", "etait", "etaient", "seront", "deja", "maintenant"})
 _VOLET_COVER_ENTITY = "cover.living_room_blind"
 _VOLET_SCRIPT = "script.blind_action"
-_VOLET_MOVING_ENTITY = "input_boolean.volet_serre_mouvement"
+_VOLET_MOVING_ENTITY = "input_boolean.blind_moving"
 _VOLET_STOP_WORDS = frozenset({"stop", "stoppe", "arrete", "arret", "arreter"})
 # Table pièce → entité clim (extensible : ajouter une ligne suffit pour une 2e clim).
 # La détection reste zéro-LLM et choisit l'entité selon la pièce citée, défaut = salon.
@@ -93,7 +126,7 @@ _CLIMATE_TEMP_WORDS_RE = re.compile(
 _CLIMATE_SPLIT_HVAC_AND_TEMP = True
 _SALON_LIGHT_GROUP = "light.living_room"
 _SALON_LIGHT_MEMBERS = (
-    "light.sonoff_1001601d46",
+    "light.hallway",
     "light.hallway",
     "light.bedside",
 )
@@ -190,10 +223,23 @@ _ROOM_ENTITIES: dict[str, tuple[str, dict[str, str]]] = {
     "salon": ("light.living_room", {"on": "light.turn_on", "off": "light.turn_off"}),
     "chambre": ("light.bedroom", {"on": "light.turn_on", "off": "light.turn_off"}),
     "chevet": ("light.bedside", {"on": "light.turn_on", "off": "light.turn_off"}),
-    "cuisine": ("light.sonoff_1000f18da8", {"on": "light.turn_on", "off": "light.turn_off"}),
+    "cuisine": ("light.kitchen", {"on": "light.turn_on", "off": "light.turn_off"}),
     "serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
     "volet serre": ("cover.living_room_blind", {"on": "cover.open_cover", "off": "cover.close_cover"}),
     "clim salon": ("climate.living_room", {"on": "climate.turn_on", "off": "climate.turn_off"}),
+}
+
+# [T356] Libellé TTS humain pour les entités pilotées connues : la phrase
+# « <libellé> ne répond pas » doit nommer l'appareil pour que l'utilisateur
+# agisse sur la bonne cause (« le volet de la serre ne répond pas », pas « je
+# n'ai pas pu exécuter la commande »). Repli : friendly_name HA de l'état.
+_ENTITE_LIBELLE: dict[str, str] = {
+    _VOLET_COVER_ENTITY: "le volet de la serre",
+    "light.living_room": "la lumière du salon",
+    "light.bedroom": "la lumière de la chambre",
+    "light.bedside": "la lumière de chevet",
+    "light.kitchen": "la lumière de la cuisine",
+    _CLIMATE_DEFAULT_ENTITY: "la climatisation du salon",
 }
 
 
@@ -215,7 +261,7 @@ def match_ha_volet_stop(prompt: str) -> HACommandMatch | None:
 
 def match_ha_volet_keywords(prompt: str) -> HACommandMatch | None:
     """
-    Volet (unique cover volet_serre_rideau — alias vocal « volets du salon »).
+    Volet (unique cover.living_room_blind — alias vocal « volets du salon »).
     Prioritaire sur le match lumière salon quand « volet » est présent.
     """
     norm = normalize_ha_command_prompt(prompt)
@@ -332,6 +378,48 @@ def match_ha_room_keywords(prompt: str) -> HACommandMatch | None:
     return None
 
 
+def _est_question_sans_ordre(prompt: str, norm: str) -> bool:
+    """
+    [#T363] La phrase est-elle une QUESTION qui ne porte aucun ordre ?
+
+    Mesuré le 17/08 : « est-ce que la lumière du salon est allumée ? » produisait
+    `light.turn_on` sur `light.living_room`, et « État de la lumière de la chambre. »
+    produisait `light.turn_off` sur `light.bedroom` (fuzzy 0,82 contre « eteins la
+    lumiere de la chambre »). Interroger la maison l'actionnait — et la réponse
+    « Lumière de la chambre éteinte. » est indiscernable d'un rapport d'état.
+    Six formulations de ce type sur 30 jours dans `vocal_audit_log`.
+
+    Deux mécanismes y menaient : le repli de `match_ha_room_keywords` qui force
+    `is_on = True` sur le seul mot « lumière », et le fuzzy qui rapproche une
+    question d'une phrase impérative du catalogue. Le garde-fou est posé ici, au
+    point d'entrée unique, plutôt que dans chacun d'eux.
+
+    L'ordre explicite l'emporte toujours sur la forme interrogative : « tu peux
+    allumer la lumière ? » et « allume la lumière ? » restent des commandes. Ce
+    n'est que la question SANS verbe d'action qui rend la main à la cascade, qui
+    la traitera en lecture d'état.
+
+    ⚠️ Tout se juge sur le prompt BRUT (minuscules, accents retirés), jamais sur
+    `norm` : `normalize_ha_command_prompt` réécrit « allumée » en « allume » et,
+    via `normalize_vocal_stt`, « est-elle » en « éteins »
+    (`core/vocal_stt_normalize.py:38`). Après normalisation, « Est-elle la
+    lumière de la chambre ? » est littéralement devenue un ordre d'extinction :
+    juger la forme interrogative sur ce texte-là reviendrait à ne jamais la voir.
+    """
+    brut = _strip_accents(prompt.strip().lower())
+    est_question = brut.endswith("?") or any(
+        marqueur in brut for marqueur in _MARQUEURS_INTERROGATIFS
+    )
+    if not est_question:
+        return False
+    mots = re.findall(r"[\w'-]+", brut)
+    if mots and mots[0] in _IMPERATIFS_ACTION:
+        return False
+    if set(mots) & _INFINITIFS_ACTION:
+        return False
+    return True
+
+
 def match_ha_command(prompt: str) -> HACommandMatch | None:
     """
     Match déterministe ha_commands.json avec tolérance STT (exact puis fuzzy).
@@ -339,6 +427,27 @@ def match_ha_command(prompt: str) -> HACommandMatch | None:
     norm = normalize_ha_command_prompt(prompt)
     if not norm:
         return None
+
+    # [#T363] Une question n'est pas un ordre : rendre la main à la cascade, qui
+    # dispose d'un chemin de lecture d'état. Ne jamais actionner la maison sur un
+    # doute — le coût d'une lecture manquée est nul, celui d'une lampe allumée à
+    # 3 h du matin ne l'est pas.
+    if _est_question_sans_ordre(prompt, norm):
+        logger.debug("[HA CMD] '%s' : question sans ordre, pas une commande", prompt[:60])
+        return None
+
+    # Volet : la détection déterministe prime sur le fuzzy ha_commands. Un
+    # marker explicite (« remonte », « descend ») est plus fiable que la
+    # similarité floue — mesuré le 17/08, le fuzzy confondait « remonte le
+    # volet » avec la phrase stop « arrete le volet » (score 0.867) et produisait
+    # `stop` au lieu de `open`. L'écho TTS (markers de statut) ou une phrase
+    # bruitée sans marker retombent ensuite sur le fuzzy, sans régression.
+    stop = match_ha_volet_stop(prompt)
+    if stop:
+        return stop
+    volet = match_ha_volet_keywords(prompt)
+    if volet:
+        return volet
 
     best: HACommandMatch | None = None
     best_score = 0.0
@@ -376,12 +485,6 @@ def match_ha_command(prompt: str) -> HACommandMatch | None:
         )
         return ensure_volet_via_script(best)
 
-    stop = match_ha_volet_stop(prompt)
-    if stop:
-        return stop
-    volet = match_ha_volet_keywords(prompt)
-    if volet:
-        return volet
     climate = match_ha_climate_command(prompt)
     if climate:
         return climate
@@ -630,6 +733,113 @@ async def read_ha_state(entity_id: str) -> dict[str, Any] | None:
         return None
 
 
+# ── [T356] Vérification de l'état AVANT d'exécuter une commande domotique ─────
+#
+# Le moteur n'inspectait jamais l'état de l'entité visée : il envoyait le
+# service, lisait le code HTTP et annonçait le succès. Or HA répond HTTP 200 à
+# un appel de service visant une entité `unavailable` : l'appareil n'exécute
+# jamais la commande, et le moteur disait « Volet fermé » alors que rien ne
+# bougeait. Mesuré en prod le 17/08 : 146 entités `unavailable`/`unknown`, dont
+# 17 pilotables (cover.living_room_blind, 6 light.sonoff_*, 7 switch.sonoff_*).
+#
+# On réutilise `read_ha_state` (déjà présent — pas de troisième chemin). La
+# lecture d'état est un GET /api/states/<id> sur la session keep-alive partagée
+# (~10-40 ms LAN vs 271 ms pour la commande) : un aller-retour léger, nécessaire
+# car on doit savoir AVANT l'appel si l'entité est morte pour ne pas annoncer un
+# succès. Une lecture indisponible (HA muet, erreur réseau) n'est PAS « l'appareil
+# est mort » : on exécute quand même, comme avant.
+
+def _entite_physique_a_verifier(ha_service: str, ha_entity: str) -> str | None:
+    """
+    Détermine l'entité dont il faut lire l'état avant d'exécuter `ha_service`.
+
+    Les commandes de volet passent par `script.blind_action` (entity_id
+    vide) : l'entité physique à vérifier est la cover `cover.living_room_blind`.
+    Pour tout autre service, on vérifie l'entité passée en paramètre. Retourne
+    None si aucune entité n'est identifiable (script générique sans cible) — on
+    exécute alors sans vérification.
+    """
+    if ha_service == _VOLET_SCRIPT:
+        return _VOLET_COVER_ENTITY
+    return ha_entity or None
+
+
+def _cover_sans_retour_de_position(entity_id: str, state: dict) -> bool:
+    """
+    [#T385] Un volet piloté sans capteur de position reste en `unknown` : c'est
+    son état NORMAL, pas une panne.
+
+    Mesuré sur le vrai HA le 17/08 : `cover.living_room_blind` — le volet
+    UNIQUE de l'installation, et la cible de la commande vocale la plus
+    utilisée — est en `unknown` alors qu'il fonctionne (script relancé avec
+    succès à 13:53). #T356 traitait `unknown` comme `unavailable` : sans ce
+    garde-fou, chaque commande de volet aurait répondu « le volet de la serre
+    ne répond pas » pendant que le volet bouge.
+
+    Le critère reste étroit et vérifiable : domaine `cover`, et aucun attribut
+    `current_position`. Un volet QUI sait rendre sa position et tombe en
+    `unknown` continue d'être traité comme suspect. `unavailable`, lui, bloque
+    toujours — c'est l'état par lequel HA dit qu'un appareil est injoignable.
+    """
+    if not entity_id.startswith("cover."):
+        return False
+    return "current_position" not in (state.get("attributes") or {})
+
+
+def _phrase_entite_hors_service(entity_id: str, state: dict) -> str:
+    """
+    Phrase TTS qui nomme l'appareil qui ne répond pas, pour que l'utilisateur
+    agisse sur la bonne cause (« le volet de la serre ne répond pas », pas « je
+    n'ai pas pu exécuter la commande »).
+    """
+    libelle = _ENTITE_LIBELLE.get(entity_id)
+    if not libelle:
+        friendly = (state.get("attributes") or {}).get("friendly_name")
+        if friendly:
+            libelle = str(friendly).lower()
+        else:
+            libelle = entity_id
+    return f"{libelle[0].upper()}{libelle[1:]} ne répond pas."
+
+
+async def _verifier_etat_entite(ha_service: str, ha_entity: str) -> str | None:
+    """
+    Lit l'état de l'entité visée avant exécution.
+
+    Retourne une phrase de blocage nommant l'appareil si l'entité est
+    `unavailable`/`unknown` (ne pas annoncer un succès). Retourne None si
+    l'entité est vivante OU si l'état est invérifiable (lecture en échec) : dans
+    les deux cas la commande peut partir.
+
+    [#T385] Une exception étroite : un `cover` SANS attribut `current_position`
+    en `unknown` est dans son état normal (volet piloté sans capteur), pas en
+    panne — voir `_cover_sans_retour_de_position`.
+    """
+    entity_id = _entite_physique_a_verifier(ha_service, ha_entity)
+    if not entity_id:
+        return None
+    state = await read_ha_state(entity_id)
+    if state is None:
+        # État invérifiable ≠ appareil mort : ne pas bloquer une commande dont
+        # on ne connaît pas l'état. Le moteur doit rester utilisable sous le doute.
+        logger.debug("[T356] Lecture d'état indisponible pour %s — on exécute", entity_id)
+        return None
+    etat = (state.get("state") or "").lower()
+    if etat == "unknown" and _cover_sans_retour_de_position(entity_id, state):
+        # [#T385] État normal d'un volet sans capteur de position, pas une panne.
+        logger.debug(
+            "[T385] %s en 'unknown' sans retour de position — on exécute", entity_id
+        )
+        return None
+    if etat in ("unavailable", "unknown"):
+        logger.warning(
+            "[T356] Entité %s hors service (état=%s) — commande %s non exécutée",
+            entity_id, etat, ha_service,
+        )
+        return _phrase_entite_hors_service(entity_id, state)
+    return None
+
+
 def _est_action_rejouable(ha_service: str) -> bool:
     """
     [#T323] L'action peut-elle être rejouée sans effet de bord observable ?
@@ -640,11 +850,16 @@ def _est_action_rejouable(ha_service: str) -> bool:
     rejoué la rallume. Liste blanche stricte — tout service inconnu est traité
     comme non rejouable, parce que le coût d'une double commande physique chez
     l'utilisateur est bien supérieur à celui d'un échec annoncé.
+
+    Le script volet n'est PLUS rejouable depuis #T350 : il est passé par
+    `script.turn_on` et son script HA est en `mode: restart`. Rejouer
+    `turn_on` ANNULE l'exécution lancée par la première tentative (la seconde
+    commande redémarre le script), donc une reprise interrompt au lieu de
+    réessayer. On échoue franchement plutôt que de laisser le volet en cours de
+    course sans suivi.
     """
     if ha_service == _VOLET_SCRIPT:
-        # Le script volet reçoit une action explicite (open/close/stop) : rejouer
-        # le même ordre absolu est sans effet de bord.
-        return True
+        return False
     action = ha_service.split(".", 1)[-1]
     return action in {
         "turn_on", "turn_off",
@@ -677,15 +892,44 @@ async def execute_ha_service(
     if not ha_token:
         return False, "Token HA non configuré. Commande non exécutée."
 
+    # [T356] Vérifier l'état de l'entité visée AVANT d'envoyer le service : si
+    # elle est `unavailable`/`unknown`, ne pas annoncer un succès — HA répondrait
+    # HTTP 200 mais l'appareil n'exécuterait rien. La phrase rendue nomme
+    # l'appareil qui ne répond pas. Une lecture d'état indisponible n'est pas un
+    # blocage : la commande part quand même (voir _verifier_etat_entite). Un
+    # garde-fou : toute erreur inattendue de la VÉRIFICATION ne doit pas bloquer
+    # la commande — le doute ne doit jamais devenir un refus.
+    try:
+        blocage = await _verifier_etat_entite(ha_service, ha_entity)
+    except Exception as exc:  # pragma: no cover - filet de sécurité
+        logger.warning("[T356] Vérification d'état en échec pour %s : %s — on exécute", ha_entity, exc)
+        blocage = None
+    if blocage:
+        return False, blocage
+
     domain, action = ha_service.split(".", 1)
-    api_url = f"{ha_url.rstrip('/')}/api/services/{domain}/{action}"
+    if domain == "script":
+        # script.<id> → script.turn_on : rend la main immédiatement sans
+        # attendre la fin du script. L'appel direct
+        # POST /api/services/script/<id> ne répond qu'une fois le script
+        # terminé (ex. volet 26 s) — inutilisable pour une commande vocale
+        # (timeout 10 s, #T350). Les paramètres du script passent par
+        # `variables` : à plat, script.turn_on les perdrait et le script
+        # démarrerait sans branche correspondante.
+        api_url = f"{ha_url.rstrip('/')}/api/services/script/turn_on"
+        payload: dict[str, Any] = {
+            "entity_id": ha_service,  # script.<id>
+            "variables": dict(service_data) if service_data else {},
+        }
+    else:
+        api_url = f"{ha_url.rstrip('/')}/api/services/{domain}/{action}"
+        payload: dict[str, Any] = dict(service_data) if service_data else {}
+        if ha_entity and "entity_id" not in payload:
+            payload["entity_id"] = ha_entity
     headers = {
         "Authorization": f"Bearer {ha_token}",
         "Content-Type": "application/json",
     }
-    payload: dict[str, Any] = dict(service_data) if service_data else {}
-    if ha_entity and "entity_id" not in payload:
-        payload["entity_id"] = ha_entity
     http_session = _get_ha_session()
 
     # Compatibilité Daikin : régler le mode AVANT la température, en 2 appels
@@ -721,7 +965,9 @@ async def execute_ha_service(
     # La reprise est réservée aux actions REJOUABLES : rejouer `close_cover` est
     # sans effet de bord, rejouer `toggle` inverserait deux fois. Toute action
     # hors de cette liste échoue franchement plutôt que de risquer une double
-    # commande physique chez l'utilisateur.
+    # commande physique chez l'utilisateur. Le script volet (désormais via
+    # `script.turn_on`, `mode: restart`) n'est pas rejouable : une seconde
+    # commande annulerait la première (#T350).
     tentatives = 2 if _est_action_rejouable(ha_service) else 1
     resp_status = None
     resp_text = ""

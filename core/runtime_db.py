@@ -205,12 +205,17 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             total_tokens INTEGER DEFAULT 0,
             cost_usd REAL DEFAULT 0.0,
             channel TEXT,
-            agent_name TEXT
+            agent_name TEXT,
+            cache_hit_tokens INTEGER DEFAULT 0
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_token_ts ON token_usage(timestamp DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_token_session ON token_usage(session_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_token_model ON token_usage(model)")
+    # [T347] Migration additive idempotente : `cache_hit_tokens` (tokens d'entrée
+    # servis par le cache) sur les bases préexistantes — CREATE TABLE IF NOT
+    # EXISTS ne l'ajoute pas à une table déjà créée.
+    _ensure_columns(conn, "token_usage", {"cache_hit_tokens": "INTEGER DEFAULT 0"})
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS ide_conversations (

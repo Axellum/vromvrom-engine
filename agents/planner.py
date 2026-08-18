@@ -205,6 +205,36 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                         "required": ["type", "valeur"]
                     },
                     "description": "OBLIGATOIRE. Vérifications mécaniques prouvant que l'objectif est atteint. Liste vide [] si l'objectif n'est pas vérifiable mécaniquement (question, analyse, discussion) — mais la clé doit toujours être présente."
+                },
+                # [Incident du 17/08] Substitution TRACÉE d'un critère du contrat
+                # d'origine devenu impossible parce que le plan correctif a
+                # légitimement changé d'approche (autre nom de fichier, autre
+                # chemin). Jamais de remplacement silencieux : chaque
+                # substitution doit être déclarée ici, elle sera journalisée,
+                # et elle n'est honorée que si le critère remplaçant figure
+                # dans 'criteres_acceptation' et n'était pas déjà satisfait
+                # avant le travail. Un plan qui ne substitue rien laisse [].
+                "substitutions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "origine": {
+                                "type": "object",
+                                "description": "Le critère du contrat d'origine remplacé (mêmes champs qu'un critère).",
+                            },
+                            "remplacant": {
+                                "type": "object",
+                                "description": "Le critère qui le remplace — il DOIT aussi figurer dans criteres_acceptation.",
+                            },
+                            "motif": {
+                                "type": "string",
+                                "description": "Pourquoi le critère d'origine est devenu impossible (ex: changement de chemin décidé par la correction).",
+                            },
+                        },
+                        "required": ["origine", "remplacant"],
+                    },
+                    "description": "Facultatif. Substitutions déclarées de critères du contrat d'origine, chacune tracée et journalisée. Liste vide par défaut.",
                 }
             },
             "required": ["plan", "criteres_acceptation"]
@@ -339,8 +369,39 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
 
             # [#T253] Contrat d'acceptation transporté dans les metadata du
             # StateUpdate : la boucle de revue le retrouvera dans l'historique.
-            from core.acceptance_contract import CLE_CONTRAT, normaliser_criteres
+            from core.acceptance_contract import (
+                CLE_CONTRAT,
+                CLE_ETAT_INITIAL,
+                CLE_SUBSTITUTIONS,
+                constater_etat_initial,
+                normaliser_criteres,
+            )
             criteres = normaliser_criteres(response_json.get("criteres_acceptation"))
+
+            # [Incident du 17/08] Constat de l'état des critères fichier À LA
+            # POSE DU PLAN, donc avant tout travail du lot : à l'évaluation,
+            # tout critère déjà satisfait à cet instant sera écarté du verdict
+            # comme « satisfait d'avance » — un critère vrai avant le travail
+            # n'est pas une preuve de travail. C'est ce constat qui rend
+            # inopérant un contrat correctif tautologique du type « vérifier
+            # qu'un fichier préexistant est accessible ».
+            etat_initial = constater_etat_initial(criteres) if criteres else {}
+
+            # [Incident du 17/08] Substitutions DÉCLARÉES par ce plan : elles
+            # voyagent avec le contrat et seront validées puis journalisées par
+            # la boucle de revue — jamais appliquées silencieusement ici.
+            substitutions_declarees = [
+                s for s in (response_json.get("substitutions") or [])
+                if isinstance(s, dict) and s.get("origine") and s.get("remplacant")
+            ]
+            for substitution in substitutions_declarees:
+                logger.warning(
+                    "[PLANNER] [CONTRAT] Substitution déclarée par le plan : "
+                    f"{substitution['origine']!r} → {substitution['remplacant']!r} "
+                    f"(motif : {substitution.get('motif') or 'non renseigné'}). "
+                    "Elle sera validée et tracée à l'évaluation."
+                )
+
             if criteres:
                 logger.info(
                     f"[PLANNER] [T253] Contrat d'acceptation : {len(criteres)} critère(s) — "
@@ -365,7 +426,11 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                     CLE_CONTRAT: [
                         {"type": c.type, "valeur": c.valeur, "attendu": c.attendu, "description": c.description}
                         for c in criteres
-                    ]
+                    ],
+                    # [Incident du 17/08] Le constat d'avant-travail et les
+                    # substitutions déclarées voyagent avec le contrat.
+                    CLE_ETAT_INITIAL: etat_initial,
+                    CLE_SUBSTITUTIONS: substitutions_declarees,
                 } if criteres else {},
             )
 

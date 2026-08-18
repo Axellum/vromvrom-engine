@@ -12,7 +12,7 @@ ENDPOINTS = [
     {"name": "Local Windows Native", "url": "http://localhost:8001/v1/chat/completions"},
     {
         "name": "Remote endpoint (optional)",
-        "url": os.environ.get("MOTEUR_BENCHMARK_REMOTE_URL", "http://${DECK_HOST:-192.168.1.x}:8002/v1/chat/completions"),
+        "url": os.environ.get("MOTEUR_BENCHMARK_REMOTE_URL", "http://${DECK_HOST:-192.168.1.10}:8002/v1/chat/completions"),
     },
 ]
 API_KEY = os.environ.get("MOTEUR_API_KEY", "changeme")

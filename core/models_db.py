@@ -402,6 +402,94 @@ def get_models_for_catalog_tiers(catalog_tiers: list[str]) -> list[dict[str, Any
         return []
 
 
+# Les trois niveaux de capacité du routeur (colonne `routing_tier`).
+ROUTING_TIERS = ("leger", "moyen", "fort")
+
+# Règle explicite de la zone grise (mesure prod du 17/08 : 52 modèles actifs
+# sans routing_tier, sondés chaque heure, jamais choisis par le routeur) :
+# un modèle SANS tier est légitime si sa spécialité le place hors du routage
+# par cascade de chat-complétion — embeddings, audio, image… Ces modèles ne
+# sont appelables QUE par nom explicite (RAG, pipelines, `model_override`) et
+# n'ont donc pas vocation à porter un leger/moyen/fort. Tout modèle actif sans
+# tier dont la spécialité n'est pas dans cette liste est une anomalie de
+# catalogue : il coûte des tokens à la sonde de vivacité sans pouvoir servir.
+SPECIALITES_HORS_ROUTAGE = frozenset({
+    "embeddings", "stt", "tts", "transcription", "audio",
+    "image", "images", "generation_images", "video", "videos",
+    "traduction", "translation",
+})
+
+
+def compter_profondeur_tiers() -> dict[str, int]:
+    """
+    Profondeur réelle du routage : nombre de modèles ACTIFS par routing_tier.
+
+    La clé `hors_tier` compte les modèles actifs au tier NULL — la zone grise
+    que le routeur ne choisit jamais (`get_models_for_tier` filtre sur le tier)
+    mais que la sonde de vivacité teste à chaque cycle.
+    """
+    try:
+        conn = _get_connection()
+        lignes = conn.execute(
+            "SELECT COALESCE(routing_tier, 'hors_tier') AS tier, COUNT(*) AS nb "
+            "FROM models WHERE status = 'active' "
+            "GROUP BY COALESCE(routing_tier, 'hors_tier')"
+        ).fetchall()
+        resultat = {tier: 0 for tier in ROUTING_TIERS}
+        resultat["hors_tier"] = 0
+        for ligne in lignes:
+            resultat[ligne[0]] = ligne[1]
+        return resultat
+    except Exception as e:
+        logger.warning(f"[ModelsDB] Erreur compter_profondeur_tiers: {e}")
+        return {}
+
+
+def get_active_models_hors_tier() -> list[dict[str, Any]]:
+    """Modèles actifs SANS routing_tier : routables par aucun tier, sondés quand même."""
+    try:
+        conn = _get_connection()
+        lignes = conn.execute(
+            "SELECT * FROM models WHERE status = 'active' AND routing_tier IS NULL ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in lignes]
+    except Exception as e:
+        logger.warning(f"[ModelsDB] Erreur get_active_models_hors_tier: {e}")
+        return []
+
+
+def est_hors_routage_legitime(modele: dict[str, Any]) -> bool:
+    """Applique la règle de la zone grise à UN modèle (cf. SPECIALITES_HORS_ROUTAGE)."""
+    specialite = (modele.get("speciality") or "").strip().lower()
+    return specialite in SPECIALITES_HORS_ROUTAGE
+
+
+def audit_zone_grise(seuil: int = 0) -> dict[str, Any]:
+    """
+    Audit de la zone grise contre la règle explicite. Retourne le compte rendu
+    et le verdict :
+
+      - `hors_tier`  : ids des modèles actifs sans routing_tier ;
+      - `justifies`  : ceux dont la spécialité est hors routage (légitimes) ;
+      - `zone_grise` : les autres — actifs, sondés, jamais choisis par le routeur ;
+      - `conforme`   : `len(zone_grise) <= seuil`.
+
+    Seuil 0 par défaut : chaque modèle actif sans tier ni justification de
+    spécialité est une anomalie (coût de sonde pour zéro service de routage).
+    La non-récidive est verrouillée par tests/unit/test_zone_grise_catalogue.py.
+    """
+    hors_tier = get_active_models_hors_tier()
+    justifies = [m["id"] for m in hors_tier if est_hors_routage_legitime(m)]
+    zone_grise = [m["id"] for m in hors_tier if m["id"] not in set(justifies)]
+    return {
+        "hors_tier": [m["id"] for m in hors_tier],
+        "justifies": justifies,
+        "zone_grise": zone_grise,
+        "seuil": seuil,
+        "conforme": len(zone_grise) <= seuil,
+    }
+
+
 def get_all_models() -> list[dict[str, Any]]:
     """
     [#T158] Retourne TOUS les modèles, actifs ET inactifs.

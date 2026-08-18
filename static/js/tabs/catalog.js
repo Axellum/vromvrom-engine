@@ -59,7 +59,7 @@ function renderChannelCarousel() {
     if (!container) return;
 
     const channelData = [
-        { key: 'local', models: ['local'], quota: 'Illimité (VRAM)', extra: 'Airgapped · RTX 5070 Ti' },
+        { key: 'local', models: ['local'], quota: 'Illimité (VRAM)', extra: 'Airgapped · GPU locale' },
         { key: 'free-api', models: getModelsForChannel('free-api'), quota: 'Flash: 15 RPM · 1500 RPD\nPro: 2 RPM · 50 RPD', extra: '⚠️ Données entraînement' },
         { key: 'cli-gemini-adv', models: getModelsForChannel('cli-gemini-adv'), quota: '~4M tokens/h\n~100M tokens/mois', extra: '🔒 Confidentiel' },
         { key: 'cli-claude-pro', models: getModelsForChannel('cli-claude-pro'), quota: '~1.5M tokens/h\n~35M tokens/mois', extra: '🔒 Confidentiel' },

@@ -134,7 +134,7 @@ class EmbeddingStore:
             return 0
 
         if doc_dir is None:
-            # Remonter au dossier e:\AuxFilsDesIdees\contexte_ia
+            # Remonter au dossier .\contexte_ia
             base_dir = os.path.dirname(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             )

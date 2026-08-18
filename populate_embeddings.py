@@ -41,20 +41,20 @@ except:
 
 # Fichiers de contexte à indexer (les 3-Layers + leçons thématiques)
 FILES_TO_EMBED = [
-    r"e:\AuxFilsDesIdees\contexte_ia\01_Core\rules_global.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\01_Core\hardware_pc_ia_locale.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\01_Core\lecons_infra_windows.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\02_Hardware\rules_esphome.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\02_Hardware\02_MATERIEL_ET_ECRANS.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\02_Hardware\lecons_esphome_hardware.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\rules_home_assistant.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\rules_moteur_agents.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\01_SERVEUR_HA.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\03_LOGIQUE_ET_APIS.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\05_MOTEUR_AGENTS_PYTHON.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\lecons_moteur_agents.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\lecons_gcp_apis.md",
-    r"e:\AuxFilsDesIdees\contexte_ia\03_Software\lecons_hmi.md",
+    r".\contexte_ia\01_Core\rules_global.md",
+    r".\contexte_ia\01_Core\hardware_pc_ia_locale.md",
+    r".\contexte_ia\01_Core\lecons_infra_windows.md",
+    r".\contexte_ia\02_Hardware\rules_esphome.md",
+    r".\contexte_ia\02_Hardware\02_MATERIEL_ET_ECRANS.md",
+    r".\contexte_ia\02_Hardware\lecons_esphome_hardware.md",
+    r".\contexte_ia\03_Software\rules_home_assistant.md",
+    r".\contexte_ia\03_Software\rules_moteur_agents.md",
+    r".\contexte_ia\03_Software\01_SERVEUR_HA.md",
+    r".\contexte_ia\03_Software\03_LOGIQUE_ET_APIS.md",
+    r".\contexte_ia\03_Software\05_MOTEUR_AGENTS_PYTHON.md",
+    r".\contexte_ia\03_Software\lecons_moteur_agents.md",
+    r".\contexte_ia\03_Software\lecons_gcp_apis.md",
+    r".\contexte_ia\03_Software\lecons_hmi.md",
 ]
 
 # Taille maximale d'un chunk (en caractères) pour l'indexation

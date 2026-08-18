@@ -26,9 +26,28 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Chemin par défaut relatif au répertoire moteur
+# Chemin par défaut relatif au répertoire moteur (repli si runtime_db indisponible).
+# [#T348] Ce chemin n'est PAS celui utilisé par défaut par EventStore : la
+# résolution réelle passe par `_resolve_default_db_path()` (ci-dessous), qui
+# délègue à `core.runtime_db.get_db_path()` À L'APPEL — pour que l'isolation
+# des tests (`override_db_path`) s'applique aussi à l'Event Store. `DEFAULT_DB`
+# reste conservé pour la compatibilité (rien d'autre ne l'importe).
 _ENGINE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_DB  = str(_ENGINE_DIR / "moteur_runtime.db")
+
+
+def _resolve_default_db_path() -> str:
+    """Chemin par défaut de l'EventStore, résolu au moment de l'appel.
+
+    Délègue à `core.runtime_db.get_db_path()` pour que l'isolation des tests
+    (`override_db_path`) s'applique aussi à l'Event Store. Ne JAMAIS figer ce
+    chemin en tête de module : ce serait reproduire le défaut #T348 (le chemin
+    calculé indépendamment de `runtime_db`, figeant l'EventStore sur la vraie
+    base du dépôt pendant toute la suite de tests).
+    """
+    from core.runtime_db import get_db_path
+
+    return get_db_path()
 
 # SQL append-only
 _SQL_CREATE = """
@@ -59,9 +78,10 @@ class EventStore:
     def __init__(self, db_path: str | None = None) -> None:
         """
         Args:
-            db_path: Chemin vers le fichier SQLite (défaut: moteur_runtime.db)
+            db_path: Chemin vers le fichier SQLite (défaut: moteur_runtime.db,
+                résolu dynamiquement via core.runtime_db.get_db_path()).
         """
-        self.db_path = db_path or DEFAULT_DB
+        self.db_path = db_path or _resolve_default_db_path()
         self._conn: sqlite3.Connection | None = None
         self._init_db()
 
@@ -228,8 +248,22 @@ _event_store_instance: EventStore | None = None
 
 
 def get_event_store(db_path: str = None) -> EventStore:
-    """Retourne le singleton EventStore (chargement lazy)."""
+    """Retourne le singleton EventStore (chargement lazy).
+
+    - Si `db_path` est fourni, il est prioritaire sur le chemin par défaut.
+    - Sinon, le chemin par défaut est résolu À L'APPEL
+      (`core.runtime_db.get_db_path()`). Si la base a été réorientée entre-temps
+      (ex. `override_db_path` dans les tests), le singleton se réinitialise
+      automatiquement pour suivre le nouveau chemin : deux appels séparés par un
+      `override_db_path()` n'écrivent plus dans le même fichier (#T348).
+    """
     global _event_store_instance
-    if _event_store_instance is None:
-        _event_store_instance = EventStore(db_path)
+    chemin = db_path if db_path is not None else _resolve_default_db_path()
+    if _event_store_instance is None or _event_store_instance.db_path != chemin:
+        # Une instance existe déjà mais pointe vers un autre fichier : on la
+        # ferme proprement avant de la remplacer, pour ne pas laisser une
+        # connexion SQLite ouverte sur l'ancien chemin.
+        if _event_store_instance is not None:
+            _event_store_instance.close()
+        _event_store_instance = EventStore(chemin)
     return _event_store_instance

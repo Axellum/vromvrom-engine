@@ -24,7 +24,7 @@ import threading
 
 # [P0-audit-2026-07-09] Racine autorisée pour write_file/read_file. Par défaut le
 # dossier PARENT de moteur_agents/ (workspace canonique documenté dans CLAUDE.md,
-# ex. H:\AuxFilsDesIdees ; sur Linux/Deck, parent du dossier de déploiement) —
+# ex. . ; sur Linux/Deck, parent du dossier de déploiement) —
 # même profondeur (3 dirname depuis un fichier de tools/) que project_root plus bas
 # dans validate_config_yaml(). Surchargeable via MOTEUR_WORKSPACE_ROOT si la
 # topologie diffère. realpath() résout aussi les symlinks/junctions (E:/H:), même
@@ -178,8 +178,8 @@ def validate_config_yaml(file_path: str) -> str:
         return f"Erreur: Le fichier {file_path} n'existe pas."
 
     # Résoudre le chemin de l'exécutable esphome dans le .venv
-    # e:\AuxFilsDesIdees\moteur_agents\tools\system.py -> le dossier parent de moteur_agents est e:\AuxFilsDesIdees
-    # et .venv est à e:\AuxFilsDesIdees\.venv
+    # .\tools\system.py -> le dossier parent de moteur_agents est .
+    # et .venv est à .\.venv
     project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
     is_windows = (os.name == 'nt')

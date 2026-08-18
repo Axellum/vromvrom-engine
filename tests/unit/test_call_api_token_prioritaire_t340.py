@@ -69,13 +69,13 @@ PLACEHOLDER = "Bearer YOUR_LONG_LIVED_ACCESS_TOKEN"
 
 def test_autorisation_inventee_par_le_modele_est_remplacee(monkeypatch):
     """Le cas de production : le placeholder du modèle cède la place au vrai token."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
     sortie = api.call_api(
-        "https://192.168.1.x:8123/api/states",
+        "https://192.168.1.10:8123/api/states",
         headers_json=json.dumps({"Authorization": PLACEHOLDER}),
     )
 
@@ -89,7 +89,7 @@ def test_remplacement_survit_a_la_bascule_https(monkeypatch):
     URL en clair ET un en-tête inventé. Les deux doivent être corrigés, et rien
     ne doit partir en clair sur le LAN.
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     appels = []
 
@@ -105,11 +105,11 @@ def test_remplacement_survit_a_la_bascule_https(monkeypatch):
     monkeypatch.setattr("core.ha_tls.ha_requests_session", lambda: _Session())
 
     api.call_api(
-        "http://192.168.1.x:8123/api/states",
+        "http://192.168.1.10:8123/api/states",
         headers_json=json.dumps({"Authorization": PLACEHOLDER}),
     )
 
-    assert appels == [("https://192.168.1.x:8123/api/states", "Bearer jeton-de-test")]
+    assert appels == [("https://192.168.1.10:8123/api/states", "Bearer jeton-de-test")]
 
 
 def test_autorisation_fournie_intacte_hors_ha(monkeypatch):
@@ -120,7 +120,7 @@ def test_autorisation_fournie_intacte_hors_ha(monkeypatch):
     transmet ce qu'on lui donne et n'injecte rien. Sans cette limite, le token HA
     partirait vers n'importe quelle URL écrite par le modèle.
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
 
@@ -144,13 +144,13 @@ def test_casse_de_l_en_tete_indifferente(monkeypatch):
     HTTP les fusionnerait en une valeur illisible, et le 401 reviendrait sans
     qu'aucun journal ne l'explique.
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
     api.call_api(
-        "https://192.168.1.x:8123/api/states",
+        "https://192.168.1.10:8123/api/states",
         headers_json=json.dumps({"authorization": PLACEHOLDER}),
     )
 
@@ -161,13 +161,13 @@ def test_casse_de_l_en_tete_indifferente(monkeypatch):
 
 def test_les_autres_en_tetes_sont_preserves(monkeypatch):
     """Seule l'autorisation est touchée : le reste (Content-Type…) passe intact."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
     api.call_api(
-        "https://192.168.1.x:8123/api/services/cover/close_cover",
+        "https://192.168.1.10:8123/api/services/cover/close_cover",
         method="POST",
         payload_json='{"entity_id": "cover.volet_salon"}',
         headers_json=json.dumps({"Authorization": PLACEHOLDER, "X-Trace": "abc"}),
@@ -183,14 +183,14 @@ def test_sans_token_configure_l_en_tete_fourni_est_conserve(monkeypatch):
     Repli : si la configuration n'a aucun token, on ne dégrade pas l'appel en
     retirant ce que l'appelant avait mis — on n'a rien de mieux à proposer.
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.delenv("HASS_TOKEN", raising=False)
     monkeypatch.delenv("HA_TOKEN", raising=False)
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
     api.call_api(
-        "https://192.168.1.x:8123/api/states",
+        "https://192.168.1.10:8123/api/states",
         headers_json='{"Authorization": "Bearer jeton-de-l-appelant"}',
     )
 
@@ -202,14 +202,14 @@ def test_aucun_secret_dans_le_journal(monkeypatch, caplog):
     Le journal explique le remplacement sans publier de secret : ni le token
     configuré, ni la valeur reçue (qui pourrait en être un dans un autre montage).
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-tres-secret")
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
     with caplog.at_level("INFO", logger="tools.api"):
         api.call_api(
-            "https://192.168.1.x:8123/api/states",
+            "https://192.168.1.10:8123/api/states",
             headers_json='{"Authorization": "Bearer secret-de-l-appelant"}',
         )
 
@@ -221,11 +221,11 @@ def test_aucun_secret_dans_le_journal(monkeypatch, caplog):
 
 def test_injection_normale_inchangee(monkeypatch):
     """Non-régression #T332 : sans en-tête fourni, le comportement d'origine tient."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
-    api.call_api("https://192.168.1.x:8123/api/states")
+    api.call_api("https://192.168.1.10:8123/api/states")
 
     assert vus["headers"]["Authorization"] == "Bearer jeton-de-test"

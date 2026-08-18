@@ -17,9 +17,10 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.routes.agents import ExecuteRequestBody
-from core.app_state import get_app_state
+from core.app_state import _cle_execution, get_app_state
 from core.auth import optional_auth
 from core.serializers import global_state_to_dict
+from core.source_router import parse_source
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,7 @@ async def _execute_stream_generator(
     session_id: str,
     tier: str | None = None,
     model: str | None = None,
+    execution_key: str | None = None,
 ):
     """
     Générateur SSE pour /api/execute/stream.
@@ -149,8 +151,8 @@ async def _execute_stream_generator(
                                 final_response = evt.get("response", "")
                         except _json.JSONDecodeError:
                             pass
-            async with state.execution_lock:
-                state.execution_state["status"] = "success"
+            if execution_key:
+                await state.set_execution_status(execution_key, "success")
             if conv_id and final_response:
                 from core.vocal_session import record_vocal_turn
                 record_vocal_turn(
@@ -203,8 +205,8 @@ async def _execute_stream_generator(
                 system_prompt_suffix=suffix,
                 inject_project_context=True,
             )
-            async with state.execution_lock:
-                state.execution_state["status"] = "success"
+            if execution_key:
+                await state.set_execution_status(execution_key, "success")
             event = _json.dumps({"type": "done", "response": response, "agents_used": ["fast_path"]})
             yield f"data: {event}\n\n"
             return
@@ -214,8 +216,8 @@ async def _execute_stream_generator(
             """Callback du pipeline → inject dans la queue SSE."""
             if engine:
                 state.execution_state["engine_state"] = global_state_to_dict(engine.state)
-            if event_type == "orchestration_completed":
-                state.execution_state["status"] = data.get("status", "success")
+            if event_type == "orchestration_completed" and execution_key:
+                await state.set_execution_status(execution_key, data.get("status", "success"))
             await queue.put({"type": event_type, "data": data})
 
         # [#T194] Override par requête + source_router tier recommandé.
@@ -266,9 +268,8 @@ async def _execute_stream_generator(
 
             if item["type"] == "__done__":
                 result = item.get("result", {})
-                async with state.execution_lock:
-                    state.execution_state["status"] = result.get("status", "success")
-                    state.execution_state["engine_state"] = result.get("engine_state")
+                if execution_key:
+                    await state.set_execution_status(execution_key, result.get("status", "success"))
                 done_event = _json.dumps({
                     "type": "done",
                     "response": result.get("response", ""),
@@ -279,9 +280,8 @@ async def _execute_stream_generator(
                 return
 
             elif item["type"] == "__error__":
-                async with state.execution_lock:
-                    state.execution_state["status"] = "error"
-                    state.execution_state["error_message"] = item.get("error", "Erreur inconnue")
+                if execution_key:
+                    await state.set_execution_status(execution_key, "error")
                 err_event = _json.dumps({"type": "error", "message": item.get("error", "Erreur inconnue")})
                 yield f"data: {err_event}\n\n"
                 return
@@ -297,16 +297,12 @@ async def _execute_stream_generator(
         logger.info(f"[STREAM] Client déconnecté ({session_id}) → annulation pipeline")
         if pipeline_task and not pipeline_task.done():
             pipeline_task.cancel()
-        async with state.execution_lock:
-            if state.execution_state.get("status") == "running":
-                state.execution_state["status"] = "error"
-                state.execution_state["error_message"] = "Client déconnecté"
+        if execution_key:
+            await state.set_execution_status(execution_key, "error")
     except Exception as e:
         logger.error(f"[STREAM] Erreur générateur SSE : {e}")
-        async with state.execution_lock:
-            if state.execution_state.get("status") == "running":
-                state.execution_state["status"] = "error"
-                state.execution_state["error_message"] = str(e)
+        if execution_key:
+            await state.set_execution_status(execution_key, "error")
         try:
             import json as _j
             yield f"data: {_j.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -320,18 +316,19 @@ async def _execute_stream_with_cleanup(
     session_id: str,
     tier: str | None = None,
     model: str | None = None,
+    execution_key: str | None = None,
 ):
-    """Enveloppe le générateur SSE pour libérer execution_state même si client coupe."""
+    """Enveloppe le générateur SSE pour libérer l'entrée de session même si le
+    client coupe (garde-fou anti-fuite #T324)."""
     state = get_app_state()
     try:
         async for chunk in _execute_stream_generator(
-            user_prompt, source, session_id, tier=tier, model=model
+            user_prompt, source, session_id, tier=tier, model=model, execution_key=execution_key
         ):
             yield chunk
     finally:
-        async with state.execution_lock:
-            if state.execution_state.get("status") == "running":
-                state.execution_state["status"] = "success"
+        if execution_key:
+            await state.end_execution(execution_key)
 
 
 @router.post("/api/execute/stream")
@@ -340,22 +337,21 @@ async def execute_chat_stream(body: ExecuteRequestBody, _auth=Depends(optional_a
     Streaming SSE du pipeline conversationnel pour l'IHM web.
     """
     state = get_app_state()
+    request_source = parse_source(body.source)
 
-    async with state.execution_lock:
-        if state.execution_state.get("status") == "running":
-            raise HTTPException(
-                status_code=409,
-                detail="Une exécution est déjà en cours. Attendez sa fin ou utilisez /api/stop."
-            )
-        state.execution_state.update({
-            "status": "running", "objective": body.user_prompt,
-            "engine_state": None, "error_message": None,
-        })
+    # [#T324] Verrou d'exécution PAR SESSION : deux sessions différentes
+    # peuvent streamer en parallèle ; une même session ne s'exécute jamais
+    # deux fois (409 doublon) ; plafond global de concurrence respecté.
+    execution_key = _cle_execution(body.session_id, request_source)
+    refus = await state.begin_execution(execution_key, body.user_prompt)
+    if refus is not None:
+        raise HTTPException(status_code=refus["status_code"], detail=refus["detail"])
 
     session_id = f"stream_{int(asyncio.get_event_loop().time())}"
     return StreamingResponse(
         _execute_stream_with_cleanup(
-            body.user_prompt, body.source, session_id, tier=body.tier, model=body.model
+            body.user_prompt, body.source, session_id,
+            tier=body.tier, model=body.model, execution_key=execution_key,
         ),
         media_type="text/event-stream",
         headers={

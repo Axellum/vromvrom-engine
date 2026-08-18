@@ -36,11 +36,49 @@ _WEB_MARKERS = (
     "dernier modele", "dernier modèle", "derniere version", "dernière version",
     "vient de sortir", "qui est sorti", "modele sorti", "modèle sorti",
     "nouveaute", "nouveauté", "sortie de",
+    # Météo demandée SANS le mot « météo » (#T351) — formulations réelles du
+    # vocal_audit_log : « quel temps il fait / il fera », « est-ce qu'il va
+    # pleuvoir », « il fait combien dehors ».
+    "quel temps il fait", "quel temps il fera", "quel temps fait-il",
+    "il va pleuvoir", "il pleuvra", "il fait combien", "il fera",
 )
 _CALENDAR_MARKERS = (
     "calendrier", "agenda", "rendez-vous", "rendez vous", "rdv", "reunion",
-    "réunion", "demain matin", "ce soir", "planning", "evenement", "événement",
+    "réunion", "demain matin", "planning", "evenement", "événement",
     "mon emploi du temps", "qu ai-je", "qu'est-ce que j'ai", "qu est ce que j ai",
+    # Agenda demandé SANS le mot « agenda » (#T351) — formulations réelles du
+    # vocal_audit_log : « quand est-ce que je travaille », « je bosse quand »,
+    # « c'est quand la prochaine fois que je travaille ».
+    "quand est-ce que je travaille", "quand est ce que je travaille",
+    "je travaille quand", "je bosse quand", "quand je travaille", "quand je bosse",
+    # Racines fiables (#T351) : couvrent « c'est quand la prochaine fois que je
+    # travaille » et les variantes où « quand » n'est pas collé au verbe.
+    "je travaille", "je bosse",
+    # [#T365] Le champ horaire du travail, absent de la liste et pourtant la
+    # formulation la plus fréquente d'Axel. Mesuré le 17/08 : sur 12 demandes
+    # d'agenda en 30 jours, 3 SEULEMENT atteignaient le calendrier, et
+    # « A quelle heure je commence à travailler demain ? » recevait « Je n'ai pas
+    # accès à ton agenda » alors que l'accès fonctionne. Formulations volontairement
+    # longues : « je commence » seul capterait « je commence à comprendre ».
+    # [#T383] Les deux orthographes, accentuée ET non accentuée, comme le fait
+    # déjà `_HA_STATE_MARKERS` (« c est allume » / « c'est allumé »).
+    # `_normalize_prompt` CONSERVE les accents (l. 131-132 : la classe de
+    # caractères gardés contient àâäéèêëïîôùûüç), donc un marqueur écrit sans
+    # accent ne peut pas matcher le texte réel du STT, qui en produit. Livrés
+    # sans accent par #T365, ces six marqueurs ne matchaient donc RIEN :
+    # « je commence à travailler », « je finis à quelle heure », « je termine à
+    # quelle heure », « je suis en congé », « quoi de prévu », « de prévu ».
+    # Les tests de #T365 ne l'ont pas vu : ils écrivent les phrases sans accent.
+    "je commence a travailler", "je commence à travailler",
+    "je commence le travail", "heure je commence",
+    "je finis a quelle heure", "je finis à quelle heure",
+    "je finis le travail", "quand je finis",
+    "je termine a quelle heure", "je termine à quelle heure",
+    "quand je termine", "j'embauche", "j embauche",
+    "jour de repos", "jours de repos",
+    "je suis en conge", "je suis en congé", "je suis en repos",
+    "quoi de prevu", "quoi de prévu", "de prevu", "de prévu",
+    "mon planning", "mes horaires",
 )
 _FILES_MARKERS = (
     "fichier", "document", "drive", "pdf", "dossier", "piece jointe",
@@ -53,6 +91,24 @@ _DEEP_MARKERS = (
 )
 
 _INTENT_SUFFIX: dict[VocalIntent, str] = {
+    VocalIntent.CHAT: (
+        "\n\n[INTENT=chat] Réponds en 2-3 phrases TTS. Ne JAMAIS affirmer une "
+        "panne technique (accès, connexion, outil en panne…) que tu n'as pas "
+        "constatée dans CE tour. Si aucune action n'a été tentée dans ce tour, "
+        "ne prétends pas qu'elle a échoué : dis honnêtement que tu n'as pas "
+        "d'information, ou propose une piste. "
+        # [#T365] Le chat ne voit pas les autres chemins du moteur et niait donc
+        # des capacités bien réelles : « je n'ai pas accès à ton agenda » (alors
+        # que le spécialiste calendrier répond), « je n'ai pas la capacité de
+        # contrôler le Tab 5 » (alors que 29 commandes HA ont abouti en 30 jours).
+        # Axel finissait par débattre des capacités du moteur avec le moteur.
+        "Le système auquel tu appartiens SAIT lire l'agenda Google et piloter la "
+        "maison (lumières, volet, climatisation) : d'autres chemins s'en chargent. "
+        "N'affirme donc JAMAIS que tu n'as pas accès à l'agenda ou à la domotique. "
+        "Si la demande relève de l'un des deux et ne t'est pas parvenue résolue, "
+        "invite simplement à la reformuler — par exemple « demande-moi ce que tu "
+        "as de prévu demain »."
+    ),
     VocalIntent.WEB: (
         "\n\n[INTENT=web] Réponds en 2-3 phrases TTS. Si tu n'as pas de données "
         "temps réel, dis-le honnêtement et propose une piste."
@@ -230,6 +286,21 @@ async def _try_zero_llm_ha_state(user_prompt: str) -> str | None:
     return await resolve_ha_state_query(user_prompt)
 
 
+async def _try_zero_llm_ha_weather(user_prompt: str) -> str | None:
+    """Météo locale déterministe depuis l'entité HA de la maison.
+
+    Intercepte les demandes météo AVANT le spécialiste web, qui n'a pas la
+    localisation et finissait par réclamer la position à l'utilisateur puis
+    livrer un chiffre inventé sur un autre continent (mesuré en prod le 17/08).
+    Source de vérité : l'entité `weather.*` de la maison. Retourne None si ce
+    n'est pas une demande météo, si la lecture HA échoue, ou si la prévision
+    demandée est absente → la cascade continue vers le spécialiste web.
+    """
+    from services.ha_weather_query import resolve_weather_query
+
+    return await resolve_weather_query(user_prompt)
+
+
 async def _process_vocal_job(
     job_id: str,
     intent: VocalIntent,
@@ -330,6 +401,37 @@ async def handle_discussion(
             metadata=meta,
         )
 
+    # 1c) Météo locale HA (avant le spécialiste web, qui n'a pas la localisation)
+    try:
+        weather_tts = await _try_zero_llm_ha_weather(user_prompt)
+    except Exception as exc:
+        logger.warning("[VOCAL_HOST] Zero-LLM météo HA échec : %s", exc)
+        weather_tts = None
+    if weather_tts:
+        meta["ha_zero_llm_weather"] = True
+        return DiscussionHostResult(
+            response_text=weather_tts,
+            agents_used=["ha_weather", "vocal_host"],
+            routing_type="discussion_ha_weather",
+            metadata=meta,
+        )
+
+    # 1d) Heure/Date déterministe
+    try:
+        from services.datetime_query import resolve_datetime_query
+        dt_tts = resolve_datetime_query(user_prompt)
+    except Exception as exc:
+        logger.warning("[VOCAL_HOST] Zero-LLM datetime échec : %s", exc)
+        dt_tts = None
+    if dt_tts:
+        meta["datetime_zero_llm"] = True
+        return DiscussionHostResult(
+            response_text=dt_tts,
+            agents_used=["datetime_query", "vocal_host"],
+            routing_type="discussion_datetime",
+            metadata=meta,
+        )
+
     # 2) Web / calendrier — spécialistes (grounding / OAuth), pas Cerebras tools
     if intent in _SYNC_SPECIALIST_INTENTS:
         from core.vocal_jobs import run_vocal_specialist
@@ -362,13 +464,16 @@ async def handle_discussion(
     # 3) Chat (éventuellement lecture état HA via outils)
     if intent == VocalIntent.CHAT:
         use_tools = _looks_like_ha_state_query(user_prompt)
+        # [#T351] Consigne anti-panne-inventée : le modèle ne doit jamais
+        # affirmer un échec technique qu'il n'a pas constaté dans ce tour.
+        chat_suffix = system_prompt_suffix + _INTENT_SUFFIX[VocalIntent.CHAT]
         text = await _run_sync_discussion(
             user_prompt=user_prompt,
             session_id=session_id,
             gateway=gateway,
             token_tracker=token_tracker,
             fast_path_cache=fast_path_cache,
-            system_prompt_suffix=system_prompt_suffix,
+            system_prompt_suffix=chat_suffix,
             conversation_id=conversation_id,
             tier_override=tier_override,
             model_override=model_override,

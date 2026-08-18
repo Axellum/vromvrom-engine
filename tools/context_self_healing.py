@@ -168,17 +168,17 @@ class ContextSelfHealer:
 
         # Ajouter les IPs de l'infrastructure (DHCP statiques / PC / HA) pour éviter les faux positifs
         known_infra_ips = {
-            "192.168.1.x",  # Host PC de dev (LM Studio)
-            "192.168.1.x", # PC Ethernet primaire
-            "192.168.1.x", # PC Ethernet secondaire
-            "192.168.1.x",  # M5Stack Tab5 V2 (DHCP lease)
-            "192.168.1.x",  # MicHA AtomS3R (DHCP lease)
+            "192.168.1.10",  # Host PC de dev (LM Studio)
+            "192.168.1.10", # PC Ethernet primaire
+            "192.168.1.10", # PC Ethernet secondaire
+            "192.168.1.10",  # M5Stack Tab5 V2 (DHCP lease)
+            "192.168.1.10",  # MicHA AtomS3R (DHCP lease)
             "192.168.1.10",  # HA VM Local IP (NGINX proxy)
-            "192.168.1.x",  # VM Freebox (Worker Sentinelle)
-            "192.168.1.x", # Passerelle Freebox Delta
-            "192.168.1.x",  # Steam Deck (Prod Moteur / Failover HA)
-            "192.168.1.x", # Failover IP secondaire
-            "192.168.1.x",  # Coordinateur Zigbee SMLIGHT SLZB-06MU
+            "192.168.1.10",  # VM Freebox (Worker Sentinelle)
+            "192.168.1.10", # Passerelle Freebox Delta
+            "192.168.1.10",  # Steam Deck (Prod Moteur / Failover HA)
+            "192.168.1.10", # Failover IP secondaire
+            "192.168.1.10",  # Coordinateur Zigbee SMLIGHT SLZB-06MU
         }
         all_known_ips = esphome_ips | workers_ips | known_infra_ips
 

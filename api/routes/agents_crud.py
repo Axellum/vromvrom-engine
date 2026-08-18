@@ -367,9 +367,13 @@ def update_agent(name: str, body: AgentPatchBody):
                     entry["system_prompt"] = body.system_prompt.strip() or None
                 if body.enabled is not None:
                     entry["enabled"] = body.enabled
-                # [#T233] Permissions d'outils : null = « tous les outils » (la
-                # distinction [] / null est conservée telle quelle en config).
-                if body.allowed_tools is not None:
+                # [#T233/#T345] Permissions d'outils : pour un PATCH, `None` a deux
+                # sens qu'il faut distinguer — « champ absent » (on ne touche pas)
+                # et « fourni à null » (= tous les outils). `model_fields_set`
+                # (Pydantic 2) nomme les champs réellement présents dans le corps
+                # JSON : c'est ce qui sépare les deux cas. Absent → inchangé ;
+                # fourni à null → on écrit null ; fourni à [] → on écrit [].
+                if "allowed_tools" in body.model_fields_set:
                     entry["allowed_tools"] = body.allowed_tools
                 updated.update(entry)
                 return

@@ -108,10 +108,68 @@ def test_routing_policy_reelle_exclut_fable5():
     exécutable — empêche une session future de la retirer par erreur)."""
     from core.llm_gateway import load_config
     policy = load_config().get("routing_policy", {})
-    excluded = policy.get("excluded_models", [])
-    if not excluded:
-        pytest.skip("config d'exemple OSS sans routing_policy")
-    assert "claude-fable-5" in excluded
+    exclus = policy.get("excluded_models", [])
+    assert "claude-fable-5" in exclus
+    assert "claude-sonnet-5" in exclus
+    assert "claude-opus-4-8-direct" in exclus
+    assert "meta-llama/llama-3.3-70b-instruct:free" in exclus
+
+
+def test_exclusions_defaut_couvrent_api_anthropic_et_or_free():
+    """13/08 : le défaut code doit suffire même si le config Deck est figé."""
+    from core.llm_gateway import EXCLUSIONS_CASCADE_DEFAUT
+    assert "claude-sonnet-5" in EXCLUSIONS_CASCADE_DEFAUT
+    assert "claude-opus-4-8-direct" in EXCLUSIONS_CASCADE_DEFAUT
+    assert "claude-haiku-4-5-direct" in EXCLUSIONS_CASCADE_DEFAUT
+    assert "meta-llama/llama-3.2-3b-instruct:free" in EXCLUSIONS_CASCADE_DEFAUT
+    assert "dashscope/qwen3-coder-next" in EXCLUSIONS_CASCADE_DEFAUT
+
+
+def test_exclusions_defaut_filtrent_meme_sans_config(gateway, monkeypatch):
+    """Le défaut code filtre même si routing_policy.excluded_models est vide
+    (cas du config.json Deck figé au deploy)."""
+    import core.models_db as models_db
+
+    monkeypatch.setattr(models_db, "get_models_for_tier", lambda _tier: [])
+    config = {
+        "tiers": {
+            "leger": [
+                "meta-llama/llama-3.2-3b-instruct:free",
+                "gemini-3.5-flash-free",
+            ]
+        },
+        "routing_policy": {"excluded_models": []},
+    }
+    _tier, allowed = gateway._resolve_tier_models("leger", config)
+    assert "meta-llama/llama-3.2-3b-instruct:free" not in allowed
+    assert "gemini-3.5-flash-free" in allowed
+
+
+def test_exclusions_defaut_filtrent_prefixe_dashscope(gateway, monkeypatch):
+    """D-8 : un dashscope/* inconnu de la liste exacte est quand même filtré."""
+    import core.models_db as models_db
+
+    monkeypatch.setattr(models_db, "get_models_for_tier", lambda _tier: [])
+    config = {
+        "tiers": {
+            "fort": [
+                "dashscope/modele-invente",
+                "deepseek-reasoner",
+            ]
+        },
+        "routing_policy": {"excluded_models": []},
+    }
+    _tier, allowed = gateway._resolve_tier_models("fort", config)
+    assert "dashscope/modele-invente" not in allowed
+    assert "deepseek-reasoner" in allowed
+
+
+def test_gateway_plus_de_slugs_or_free(gateway):
+    """Les slugs :free ne sont plus des providers — plus de 404 en tête de cascade."""
+    assert "meta-llama/llama-3.3-70b-instruct:free" not in gateway.providers
+    assert "meta-llama/llama-3.2-3b-instruct:free" not in gateway.providers
+    if "openrouter" in gateway.providers:
+        assert "openrouter/auto" in gateway.providers
 
 
 def test_tier_sans_double_wrapping(gateway):

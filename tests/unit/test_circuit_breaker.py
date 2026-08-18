@@ -4,7 +4,13 @@ tests/unit/test_circuit_breaker.py — Tests de non-régression du Circuit Break
 Couvre notamment le bug C1 (audit V12) : le registre global doit exposer
 `_registry`, `_registry_lock` et `to_dict()`, attendus par
 core/llm_gateway.get_circuit_breakers_status().
+
+Couvre aussi [#T352] : le délai de réouverture progressif (30 s, 1 min, 2 min…,
+plafonné) et sa remise à la base après un succès en HALF_OPEN. Tous les tests
+de ce lot utilisent un temps INJECTÉ (monkeypatch de time.time) — aucun sleep.
 """
+
+import logging
 
 import pytest
 
@@ -145,3 +151,128 @@ def test_live_latency_penalty_is_capped():
     very_slow_cb.record_success(latency=60.0)  # 60s, extrême
 
     assert get_live_latency_penalty("routing-latency-model-very-slow") == LIVE_LATENCY_MAX_PENALTY
+
+
+# ──────────────────────────────────────────────────────────────────
+# [#T352] Délai de réouverture progressif
+# ──────────────────────────────────────────────────────────────────
+
+def _horloge_injectee(monkeypatch, start: float = 1000.0):
+    """Remplace time.time par une horloge contrôlée (liste mutable à incrémenter)."""
+    fake_time = [start]
+    monkeypatch.setattr("core.llm.circuit_breaker.time.time", lambda: fake_time[0])
+    return fake_time
+
+
+def test_delai_reouverture_croit_entre_ouvertures_consecutives(monkeypatch):
+    """TEST CENTRAL : un service qui échoue en boucle voit son délai CROÎTRE d'une ouverture à l'autre.
+
+    Au moins trois paliers vérifiés (30 s → 1 min → 2 min → 4 min). Les ré-ouvertures
+    passent par la transition réelle OPEN → HALF_OPEN (délai écoulé) → échec → OPEN,
+    pilotée par le temps injecté.
+    """
+    fake_time = _horloge_injectee(monkeypatch)
+    cb = CircuitBreaker(name="t352-progressif", failure_threshold=1, recovery_timeout=30.0)
+
+    # 1re ouverture (depuis CLOSED) : base inchangée
+    cb.record_failure(Exception("boom"))
+    assert cb.recovery_timeout == 30.0
+    assert cb._consecutive_trips == 1
+
+    # 2e ouverture consécutive : délai écoulé → HALF_OPEN → échec → ré-ouverture → 1 min
+    fake_time[0] += 31.0
+    assert cb.state == CircuitBreakerState.HALF_OPEN
+    cb.record_failure(Exception("boom"))
+    assert cb.recovery_timeout == 60.0
+
+    # 3e ouverture consécutive : 2 min
+    fake_time[0] += 61.0
+    assert cb.state == CircuitBreakerState.HALF_OPEN
+    cb.record_failure(Exception("boom"))
+    assert cb.recovery_timeout == 120.0
+
+    # 4e ouverture consécutive : 4 min
+    fake_time[0] += 121.0
+    assert cb.state == CircuitBreakerState.HALF_OPEN
+    cb.record_failure(Exception("boom"))
+    assert cb.recovery_timeout == 240.0
+
+
+def test_delai_reouverture_plafonne_sans_depasser_le_max():
+    """Le délai croissant est plafonné : il ne dépasse jamais max_recovery_timeout."""
+    cb = CircuitBreaker(
+        name="t352-plafond",
+        failure_threshold=1,
+        recovery_timeout=30.0,
+        max_recovery_timeout=180.0,
+    )
+    # 30, 60, 120, puis plafonné à 180 à partir de la 4e ouverture
+    for _ in range(10):
+        cb.record_failure(Exception("boom"))
+        cb._state = CircuitBreakerState.HALF_OPEN
+    assert cb._consecutive_trips == 10
+    assert cb.recovery_timeout == 180.0
+
+
+def test_succes_en_half_open_remet_le_delai_a_la_base(monkeypatch):
+    """TEST JUMEAU : un succès en HALF_OPEN remet le délai à sa valeur de base.
+
+    Sans cela, un incident passager pénaliserait un provider sain pendant une
+    demi-heure — pire que le défaut d'origine.
+    """
+    fake_time = _horloge_injectee(monkeypatch)
+    cb = CircuitBreaker(name="t352-jumeau", failure_threshold=1, recovery_timeout=30.0)
+
+    # Faire croître le délai jusqu'à 2 min (3 ouvertures consécutives)
+    cb.record_failure(Exception("boom"))
+    fake_time[0] += 31.0
+    assert cb.state == CircuitBreakerState.HALF_OPEN
+    cb.record_failure(Exception("boom"))
+    fake_time[0] += 61.0
+    assert cb.state == CircuitBreakerState.HALF_OPEN
+    cb.record_failure(Exception("boom"))
+    assert cb.recovery_timeout == 120.0
+    assert cb._consecutive_trips == 3
+
+    # Succès en HALF_OPEN → remise à la base et fermeture
+    fake_time[0] += 121.0
+    assert cb.state == CircuitBreakerState.HALF_OPEN
+    cb.record_success()
+    assert cb.state == CircuitBreakerState.CLOSED
+    assert cb.recovery_timeout == 30.0
+    assert cb._consecutive_trips == 0
+
+
+def test_premiere_ouverture_inchangee_pour_appelant_sans_params():
+    """La première ouverture reste à 30 s pour un appelant qui ne passe que name.
+
+    Rétro-compatibilité : `get_or_create(name)` seul doit conserver exactement le
+    comportement d'aujourd'hui (seuil 3, délai de base 30 s).
+    """
+    cb = CircuitBreaker.get_or_create("t352-premiere-ouverture")
+    cb.record_failure(Exception("boom"))
+    cb.record_failure(Exception("boom"))
+    cb.record_failure(Exception("boom"))
+    assert cb.state == CircuitBreakerState.OPEN
+    assert cb.recovery_timeout == 30.0
+    assert cb._consecutive_trips == 1
+
+
+def test_delai_retenu_journalise_a_chaque_ouverture(caplog):
+    """Le délai retenu est journalisé à chaque ouverture (vérifiable en prod)."""
+    cb = CircuitBreaker(name="t352-log", failure_threshold=1, recovery_timeout=30.0)
+    with caplog.at_level(logging.ERROR, logger="core.llm.circuit_breaker"):
+        cb.record_failure(Exception("boom"))
+    assert "pour 30s" in caplog.text
+    assert "ouverture consécutive n°1" in caplog.text
+
+
+def test_get_stats_expose_la_progression():
+    """get_stats() expose les nouveaux champs de progression pour l'observabilité."""
+    cb = CircuitBreaker(name="t352-stats", failure_threshold=1, recovery_timeout=30.0)
+    cb.record_failure(Exception("boom"))
+    stats = cb.get_stats()
+    assert stats["recovery_timeout"] == 30.0
+    assert stats["base_recovery_timeout"] == 30.0
+    assert stats["max_recovery_timeout"] == CircuitBreaker.DEFAULT_MAX_RECOVERY_TIMEOUT
+    assert stats["consecutive_trips"] == 1

@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.app_state import broadcast_event, get_app_state
+from core.app_state import _cle_execution, broadcast_event, get_app_state
 from core.auth import optional_auth
 from core.llm_gateway import LLMGateway, load_config
 from core.serializers import global_state_to_dict
@@ -29,7 +29,6 @@ from services.execute_service import (
     build_ha_mode_failure_response,
     execute_ha_service,
     get_execute_timeout,
-    match_ha_command,
     prompt_has_domotic_action,
     resolve_ha_command_for_execute,
     should_block_full_pipeline,
@@ -77,7 +76,7 @@ def _ha_conversational_response(prompt: str) -> str | None:
     if words & _HA_GREETING_TOKENS or any(
         p in norm for p in ("comment vas", "ca va", "ça va", "qui es tu", "qui es-tu")
     ):
-        return "Bonjour Axel, que veux-tu contrôler ?"
+        return "Bonjour, que veux-tu contrôler ?"
 
     if words & _HA_THANKS_TOKENS or norm.startswith("merci"):
         return "De rien. Que veux-tu contrôler ?"
@@ -90,6 +89,10 @@ def _ha_conversational_response(prompt: str) -> str | None:
 
 class RunRequestBody(BaseModel):
     objective: str
+    # [#T324] Clé de concurrence : session_id fourni par le client. À défaut,
+    # la clé d'exécution retombe sur la source de la requête (voir
+    # core.app_state._cle_execution).
+    session_id: str | None = None
 
 
 class ExecuteRequestBody(BaseModel):
@@ -104,6 +107,9 @@ class ExecuteRequestBody(BaseModel):
     source: dict = {}  # Ex: {"type": "tab5", "mode": "ha", "tts_enabled": true}
     tier: str | None = None
     model: str | None = None
+    # [#T324] Clé de concurrence : session_id fourni par le client. À défaut,
+    # la clé d'exécution retombe sur la source de la requête.
+    session_id: str | None = None
 
 
 @router.post("/api/run")
@@ -115,16 +121,14 @@ async def run_task(body: RunRequestBody):
     state = get_app_state()
     session_id = f"bg_{uuid.uuid4().hex[:8]}"
 
-    async with state.execution_lock:
-        if state.execution_state.get("status") == "running":
-            raise HTTPException(status_code=400, detail="Une exécution de tâche est déjà en cours.")
-        state.execution_state.update({
-            "status": "running",
-            "objective": body.objective,
-            "session_id": session_id,
-            "engine_state": None,
-            "error_message": None
-        })
+    # [#T324] Clé de concurrence par session : le verrou n'est plus global.
+    # Deux DAG de sessions DIFFÉRENTES peuvent tourner en parallèle ; une même
+    # session ne s'exécute jamais deux fois (409 doublon) et le plafond global
+    # de concurrence est respecté.
+    execution_key = _cle_execution(body.session_id, None)
+    refus = await state.begin_execution(execution_key, body.objective)
+    if refus is not None:
+        raise HTTPException(status_code=refus["status_code"], detail=refus["detail"])
 
     # Enregistrer immédiatement le début de session en BDD
     try:
@@ -137,11 +141,13 @@ async def run_task(body: RunRequestBody):
         """Callback SSE pour diffusion temps réel."""
         state.execution_state["engine_state"] = global_state_to_dict(engine.state) if engine else None
         if event_type == "orchestration_completed":
-            state.execution_state["status"] = data.get("status", "success")
+            await state.set_execution_status(execution_key, data.get("status", "success"))
         await broadcast_event(event_type, data)
 
     from services.pipeline_service import run_engine_background
-    asyncio.create_task(run_engine_background(body.objective, _on_event, session_id=session_id))
+    asyncio.create_task(run_engine_background(
+        body.objective, _on_event, session_id=session_id, execution_key=execution_key
+    ))
     return {
         "message": "Tâche démarrée en arrière-plan.",
         "status": "running",
@@ -156,7 +162,8 @@ async def _try_ha_state_query_shortcut(
 ) -> dict | None:
     """
     Question d'état domotique (« la clim est allumée ? », « le volet est ouvert ? »,
-    « il fait combien dans le salon ? »), AVANT le verrou global et le routeur.
+    « il fait combien dans le salon ? »), AVANT le registre d'exécution et le
+    routeur.
 
     Lecture live HA en Zero-LLM. Doit passer AVANT le court-circuit d'action car
     « la lumière est allumée ? » contient un marqueur d'action (« allumée ») qui
@@ -256,7 +263,8 @@ async def _try_ha_deterministic_shortcut(
     session_id: str,
 ) -> dict | None:
     """
-    Court-circuit domotique déterministe, AVANT le verrou global et le routeur.
+    Court-circuit domotique déterministe, AVANT le registre d'exécution et le
+    routeur.
 
     Tente le match ha_commands.json (exact/fuzzy) + matchers volet/clim/pièce.
     Si une commande est reconnue, exécute le service HA et renvoie la réponse
@@ -324,6 +332,129 @@ async def _try_ha_deterministic_shortcut(
     return result
 
 
+async def _handle_discussion_mode(
+    body: "ExecuteRequestBody",
+    request_source,
+    session_id: str,
+) -> dict:
+    """
+    Mode Discussion (`mode=chat`) : le tour part vers `vocal_host`, AVANT le
+    registre d'exécution et AVANT le routeur — même traitement que les trois
+    court-circuits domotiques ci-dessus.
+
+    Suite de #T324, qui a rendu le verrou par session : le portillon est posé
+    avant le CHOIX du chemin, or ce chemin-ci ne touche pas l'Engine partagé
+    (`handle_discussion` construit sa propre passerelle et ne lit que
+    l'historique de SA conversation). Deux conséquences, toutes deux évitées
+    en sortant du portillon :
+      - il consommait un créneau du plafond `MOTEUR_EXECUTION_MAX_CONCURRENCY`
+        (défaut 3) pendant toute sa durée : trois tours vocaux en vol
+        suffisaient à refuser un DAG de l'IHM ;
+      - la clé d'exécution du Tab5 retombe sur son `device_id` faute de
+        `session_id` : un second tour vocal pendant qu'un premier est en cours
+        se prenait un 409 « doublon de session ».
+
+    `router.analyze_request()` n'est plus appelé non plus : son résultat était
+    JETÉ sur ce chemin (le `routing_type` retenu vient de `host_result`, et ni
+    `initial_payload` ni `starting_agent` n'y servent).
+
+    Retourne TOUJOURS un résultat (réponse ou repli) : `mode=chat` ne redescend
+    jamais dans la cascade domotique — c'était déjà le cas, les deux sorties de
+    la branche d'origine étant des `return`.
+    """
+    from core import token_tracker
+    from core.vocal_host import handle_discussion
+
+    state = get_app_state()
+    suffix = request_source.get_system_prompt_suffix()
+    execute_timeout = get_execute_timeout(request_source, "casual_chat")
+    conv_id = request_source.conversation_id
+
+    log_vocal_request(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    logger.info("[EXECUTE] 💬 Mode discussion → vocal_host")
+
+    if conv_id:
+        from core.vocal_session import record_vocal_turn
+        record_vocal_turn(
+            conv_id, "user", body.user_prompt,
+            source_mode="chat", device_id=request_source.device_id,
+        )
+
+    with VocalAuditTimer() as timer:
+        try:
+            host_result = await asyncio.wait_for(
+                handle_discussion(
+                    user_prompt=body.user_prompt,
+                    session_id=session_id,
+                    gateway=LLMGateway(),
+                    token_tracker=token_tracker,
+                    fast_path_cache=state.fast_path_cache,
+                    system_prompt_suffix=suffix,
+                    conversation_id=conv_id,
+                    device_id=request_source.device_id,
+                    tier_override=body.tier,
+                    model_override=body.model,
+                ),
+                timeout=execute_timeout,
+            )
+        except Exception as chat_err:
+            logger.warning(f"[EXECUTE] Discussion fast path échoué : {chat_err}")
+            result = build_chat_mode_failure_response(session_id)
+            log_vocal_response(
+                session_id=session_id,
+                user_prompt=body.user_prompt,
+                source_type=request_source.type.value,
+                source_mode=request_source.mode.value,
+                routing_type="discussion_chat_failure",
+                agents_used=["discussion_chat"],
+                response_text=result["response"],
+                latency_ms=timer.elapsed_ms,
+                tts_enabled=request_source.tts_enabled,
+                device_id=request_source.device_id,
+            )
+            return result
+
+        response_text = host_result.response_text
+        if conv_id and not host_result.async_job_id:
+            from core.vocal_session import record_vocal_turn
+            record_vocal_turn(
+                conv_id, "assistant", response_text,
+                source_mode="chat", device_id=request_source.device_id,
+            )
+        agents_used = host_result.agents_used
+        routing_type = host_result.routing_type
+        log_source_decision(request_source, routing_type)
+
+        result = _build_fast_path_response(session_id, body.user_prompt, response_text)
+        result["history"][0]["agent_name"] = agents_used[0]
+        result["history"][0]["metadata"] = {
+            "routing_type": routing_type,
+            "model_tier": "leger",
+            **host_result.metadata,
+        }
+        result["agents_used"] = agents_used
+        log_vocal_response(
+            session_id=session_id,
+            user_prompt=body.user_prompt,
+            source_type=request_source.type.value,
+            source_mode=request_source.mode.value,
+            routing_type=routing_type,
+            agents_used=agents_used,
+            response_text=response_text,
+            latency_ms=timer.elapsed_ms,
+            tts_enabled=request_source.tts_enabled,
+            device_id=request_source.device_id,
+        )
+        return result
+
+
 @router.post("/api/execute")
 async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
     """
@@ -333,9 +464,9 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
     session_id = f"chat_{uuid.uuid4().hex[:10]}"
     request_source = parse_source(body.source)
 
-    # ── Fast paths domotiques (hors verrou global + hors routeur) ──
-    # Ni la lecture d'état ni une commande reconnue ne doivent bloquer l'IHM
-    # (verrou global → 409) ou payer le slow-path LLM du routeur.
+    # ── Fast paths domotiques (hors registre d'exécution + hors routeur) ──
+    # Ni la lecture d'état ni une commande reconnue ne doivent prendre un
+    # créneau d'exécution (→ 409) ni payer le slow-path LLM du routeur.
     if request_source.mode == ModeType.HA:
         # 1) Question d'état AVANT l'action (« la lumière est allumée ? » contient
         #    « allumée », qui serait sinon pris pour un turn_on).
@@ -352,16 +483,20 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
         if shortcut is not None:
             return shortcut
 
-    async with state.execution_lock:
-        if state.execution_state.get("status") == "running":
-            raise HTTPException(
-                status_code=409,
-                detail="Une exécution est déjà en cours. Attendez sa fin ou utilisez /api/stop."
-            )
-        state.execution_state.update({
-            "status": "running", "objective": body.user_prompt,
-            "engine_state": None, "error_message": None,
-        })
+    # ── Mode Discussion : hors registre d'exécution et hors routeur ──
+    # Ce chemin ne touche pas l'Engine partagé : il n'a donc pas de créneau à
+    # prendre sur le plafond de concurrence, et le Tab5 n'a pas à se faire
+    # refuser un second tour vocal en « doublon de session ». L'analyse du
+    # routeur était de toute façon jetée. Suite de #T324.
+    if request_source.mode == ModeType.CHAT:
+        return await _handle_discussion_mode(body, request_source, session_id)
+
+    # [#T344] Le créneau de concurrence n'est PLUS pris ici : il ne protège que
+    # run_full_pipeline. Les cinq chemins légers (casual_chat, HA déterministe,
+    # fuzzy, repli LLM, small-talk) retournent avant et ne doivent consommer
+    # aucun créneau du plafond — sinon trois requêtes légères en vol refuseraient
+    # un vrai DAG de l'IHM. Le portillon est donc posé juste avant le pipeline.
+    execution_key = _cle_execution(body.session_id, request_source)
 
     suffix = request_source.get_system_prompt_suffix()
     execute_timeout = get_execute_timeout(request_source, "default")
@@ -378,6 +513,33 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
     routing_type = "default"
     agents_used: list[str] = []
     response_text = ""
+
+    # [#T344] Vérification précoce du DOUBLON de session, SANS consommer de
+    # créneau et SANS vérifier le plafond : on ne paie pas `analyze_request`
+    # (LLM) pour une requête qui sera refusée en doublon de toute façon. Le
+    # plafond n'est PAS vérifié ici — un chemin léger ne doit jamais être refusé
+    # parce que des exécutions lourdes saturent le plafond. La protection réelle
+    # reste `begin_execution`, re-vérifiée atomiquement juste avant le pipeline.
+    refus_precoce = await state.check_duplicate(execution_key)
+    if refus_precoce is not None:
+        raise HTTPException(
+            status_code=refus_precoce["status_code"], detail=refus_precoce["detail"]
+        )
+
+    # Statut terminal de la session, appliqué par le finally (end_execution).
+    final_status = "success"
+    final_error = None
+    final_engine_state = None
+
+    # [#T344] Contre-pression dreamer : le créneau de concurrence ne couvre que
+    # le pipeline complet, mais le dreamer doit rester silencieux pendant TOUTE
+    # activité utilisateur, chemins légers compris. Un compteur de requêtes en
+    # vol, distinct du registre de concurrence, maintient
+    # execution_state["status"] == "running" tant qu'une requête tourne.
+    # `creneau_pris` mémorise si begin_execution a réellement été appelé : le
+    # finally ne libère jamais une entrée qu'on n'a pas créée.
+    creneau_pris = False
+    await state.begin_request(objective=body.user_prompt)
 
     try:
         with VocalAuditTimer() as timer:
@@ -396,86 +558,8 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
             initial_payload.metadata["system_prompt_suffix"] = suffix
             log_source_decision(request_source, routing_type)
 
-            # ── Mode Discussion (chat) : vocal_host → chat sync ou job async ──
-            if request_source.mode == ModeType.CHAT:
-                logger.info("[EXECUTE] 💬 Mode discussion → vocal_host")
-                execute_timeout = get_execute_timeout(request_source, "casual_chat")
-                conv_id = request_source.conversation_id
-                if conv_id:
-                    from core.vocal_session import record_vocal_turn
-                    record_vocal_turn(
-                        conv_id, "user", body.user_prompt,
-                        source_mode="chat", device_id=request_source.device_id,
-                    )
-                try:
-                    from core import token_tracker
-                    from core.vocal_host import handle_discussion
-
-                    host_result = await asyncio.wait_for(
-                        handle_discussion(
-                            user_prompt=body.user_prompt,
-                            session_id=session_id,
-                            gateway=LLMGateway(),
-                            token_tracker=token_tracker,
-                            fast_path_cache=state.fast_path_cache,
-                            system_prompt_suffix=suffix,
-                            conversation_id=conv_id,
-                            device_id=request_source.device_id,
-                            tier_override=body.tier,
-                            model_override=body.model,
-                        ),
-                        timeout=execute_timeout,
-                    )
-                    response_text = host_result.response_text
-                    if conv_id and not host_result.async_job_id:
-                        from core.vocal_session import record_vocal_turn
-                        record_vocal_turn(
-                            conv_id, "assistant", response_text,
-                            source_mode="chat", device_id=request_source.device_id,
-                        )
-                    agents_used = host_result.agents_used
-                    routing_type = host_result.routing_type
-                    async with state.execution_lock:
-                        state.execution_state["status"] = "success"
-                    result = _build_fast_path_response(session_id, body.user_prompt, response_text)
-                    result["history"][0]["agent_name"] = agents_used[0]
-                    result["history"][0]["metadata"] = {
-                        "routing_type": routing_type,
-                        "model_tier": "leger",
-                        **host_result.metadata,
-                    }
-                    result["agents_used"] = agents_used
-                    log_vocal_response(
-                        session_id=session_id,
-                        user_prompt=body.user_prompt,
-                        source_type=request_source.type.value,
-                        source_mode=request_source.mode.value,
-                        routing_type=routing_type,
-                        agents_used=agents_used,
-                        response_text=response_text,
-                        latency_ms=timer.elapsed_ms,
-                        tts_enabled=request_source.tts_enabled,
-                        device_id=request_source.device_id,
-                    )
-                    return result
-                except Exception as chat_err:
-                    logger.warning(f"[EXECUTE] Discussion fast path échoué : {chat_err}")
-                    async with state.execution_lock:
-                        state.execution_state["status"] = "success"
-                    result = build_chat_mode_failure_response(session_id)
-                    log_vocal_response(
-                        session_id=session_id,
-                        user_prompt=body.user_prompt,
-                        source_type=request_source.type.value,
-                        source_mode=request_source.mode.value,
-                        routing_type="discussion_chat_failure",
-                        agents_used=["discussion_chat"],
-                        response_text=result["response"],
-                        latency_ms=timer.elapsed_ms,
-                        tts_enabled=request_source.tts_enabled,
-                        device_id=request_source.device_id,
-                    )
-                    return result
+            # NB : le mode Discussion (`mode=chat`) est traité en amont par
+            # `_handle_discussion_mode()` — avant le registre d'exécution.
 
             if routing_type == "casual_chat" and request_source.mode == ModeType.HA:
                 logger.info("[EXECUTE] mode=ha bloque casual_chat → fast paths HA")
@@ -506,8 +590,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                         timeout=execute_timeout,
                     )
                     agents_used = ["fast_path"]
-                    async with state.execution_lock:
-                        state.execution_state["status"] = "success"
                     result = _build_fast_path_response(session_id, body.user_prompt, response_text)
                     log_vocal_response(
                         session_id=session_id,
@@ -525,8 +607,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                 except Exception as fast_err:
                     logger.warning(f"[EXECUTE] Fast path échoué : {fast_err}")
                     if should_block_full_pipeline(request_source):
-                        async with state.execution_lock:
-                            state.execution_state["status"] = "success"
                         result = build_ha_mode_failure_response(session_id)
                         log_vocal_response(
                             session_id=session_id,
@@ -555,8 +635,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                     )
                     if ok:
                         agents_used = ["ha_deterministic"]
-                        async with state.execution_lock:
-                            state.execution_state["status"] = "success"
                         result = build_ha_fast_path_response(
                             session_id,
                             response_text,
@@ -603,8 +681,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                             )
                             if ok:
                                 agents_used = ["ha_fuzzy"]
-                                async with state.execution_lock:
-                                    state.execution_state["status"] = "success"
                                 result = build_ha_fast_path_response(
                                     session_id,
                                     response_text,
@@ -646,8 +722,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                         )
                         if ok:
                             agents_used = ["ha_llm_fallback"]
-                            async with state.execution_lock:
-                                state.execution_state["status"] = "success"
                             result = build_ha_fast_path_response(
                                 session_id,
                                 response_text,
@@ -680,8 +754,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                 if conv_reply:
                     logger.info(f"[EXECUTE] 💬 HA conversational → {conv_reply[:60]}")
                     agents_used = ["ha_conversational"]
-                    async with state.execution_lock:
-                        state.execution_state["status"] = "success"
                     result = build_ha_fast_path_response(
                         session_id,
                         conv_reply,
@@ -705,8 +777,6 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                 # Mode domotique : ne jamais lancer le pipeline complet
                 if should_block_full_pipeline(request_source):
                     logger.info("[EXECUTE] mode=ha — pipeline bloqué, réponse d'échec courte")
-                    async with state.execution_lock:
-                        state.execution_state["status"] = "success"
                     result = build_ha_mode_failure_response(session_id)
                     log_vocal_response(
                         session_id=session_id,
@@ -737,17 +807,32 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                     "tier": body.tier, "model": body.model
                 }
 
-            pipeline_timeout = execute_timeout if request_source.mode == ModeType.CHAT else 120.0
+            # `mode=chat` n'arrive jamais ici (traité par `_handle_discussion_mode`
+            # en amont) : ce chemin est celui des sources IHM/IDE/domotique.
+            pipeline_timeout = 120.0
 
             async def _on_event(event_type: str, data: Any, engine=None):
                 if engine:
                     state.execution_state["engine_state"] = global_state_to_dict(engine.state)
                 if event_type == "orchestration_completed":
-                    state.execution_state["status"] = data.get("status", "success")
+                    await state.set_execution_status(execution_key, data.get("status", "success"))
                 try:
                     await broadcast_event(event_type, data)
                 except Exception:
                     pass
+
+            # [#T344] Portillon d'exécution posé UNIQUEMENT ici, juste avant le
+            # pipeline complet : c'est le seul chemin restant qui touche l'Engine
+            # partagé. Les cinq chemins légers ont retourné avant — ils ne
+            # consomment aucun créneau du plafond (mais restent couverts par le
+            # compteur de requêtes en vol, contre-pression du dreamer).
+            # [#T324] Verrou d'exécution PAR SESSION : deux sessions différentes
+            # peuvent s'exécuter en parallèle ; une même session ne s'exécute
+            # jamais deux fois (409 doublon) ; le plafond global est respecté.
+            refus = await state.begin_execution(execution_key, body.user_prompt)
+            if refus is not None:
+                raise HTTPException(status_code=refus["status_code"], detail=refus["detail"])
+            creneau_pris = True
 
             result = await run_full_pipeline(
                 user_prompt=body.user_prompt,
@@ -759,9 +844,8 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                 timeout_seconds=pipeline_timeout,
             )
 
-            async with state.execution_lock:
-                state.execution_state["status"] = result.get("status", "success")
-                state.execution_state["engine_state"] = result.get("engine_state")
+            final_status = result.get("status", "success")
+            final_engine_state = result.get("engine_state")
 
             agents_used = result.get("agents_used") or []
             response_text = result.get("response", "")
@@ -779,12 +863,35 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
             )
             return result
 
+    except HTTPException:
+        # [#T344] Un 409 (doublon de session ou plafond) levé par le portillon
+        # juste avant le pipeline doit remonter tel quel, pas être avalé par le
+        # repli d'erreur générique. Le finally libère le compteur et, si
+        # nécessaire, l'éventuel créneau déjà pris.
+        raise
     except Exception as e:
-        async with state.execution_lock:
-            state.execution_state["status"] = "error"
-            state.execution_state["error_message"] = str(e)
+        final_status = "error"
+        final_error = str(e)
         logger.error(f"[EXECUTE] Erreur inattendue : {e}")
         return {"status": "error", "error": f"❌ {str(e)}"}
+    finally:
+        # [#T344] Libération GARANTIE sur tous les chemins :
+        #   - le compteur de requêtes en vol est TOUJOURS décrémenté (contre-
+        #     pression du dreamer), que le chemin ait pris un créneau ou non ;
+        #   - l'entrée du registre n'est libérée QUE si `creneau_pris` (on ne
+        #     libère jamais une entrée qu'on n'a pas créée — les chemins légers
+        #     n'ont rien dans le registre).
+        await state.end_request()
+        if creneau_pris:
+            # [#T324] Libération systématique de l'entrée de session (try/finally):
+            # aucune fuite dans le registre, même sur exception. La vue agrégée
+            # reste "running" si une autre session tourne encore.
+            await state.end_execution(
+                execution_key,
+                status=final_status,
+                engine_state=final_engine_state,
+                error_message=final_error,
+            )
 
 
 # ── Routes additionnelles (évite de patcher gui_server.py sur le Deck) ──
@@ -818,10 +925,10 @@ async def vocal_abort(body: VocalAbortBody, _auth=Depends(optional_auth)):
         conversation_id=body.conversation_id,
         device_id=body.device_id,
     )
-    async with state.execution_lock:
-        if state.execution_state.get("status") == "running":
-            state.execution_state["status"] = "success"
-            state.execution_state["error_message"] = "vocal_abort"
+    # [#T324] Force le déblocage : libère TOUTES les entrées du registre pour
+    # ne laisser aucune session bloquée pour toujours (garde-fou anti-fuite),
+    # puis pose la vue agrégée en "success".
+    await state.clear_executions(status="success", error_message="vocal_abort")
     return {
         "aborted": count,
         "active_before": list_active_vocal_streams(),

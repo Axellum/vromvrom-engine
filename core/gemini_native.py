@@ -45,6 +45,21 @@ THOUGHT_SIGNATURE_API_FIELD = "thoughtSignature"
 THOUGHT_SIGNATURE_INTERNAL_KEY = "_thought_signature"
 
 
+def _http_error_detail(e: requests.exceptions.HTTPError) -> tuple[str, str]:
+    """Détaille une HTTPError pour le journal : (code HTTP, corps de réponse).
+
+    Quand `e.response` est présent, on journalise le code et le corps comme
+    avant. Quand il est ABSENT (erreur de transport, DNS, timeout…), on ne peut
+    pas parler de « code HTTP » : on journalise donc le type et le message de
+    l'exception — sinon l'erreur réelle disparaît du journal (mesuré : 78
+    occurrences de « Erreur HTTP ? » en 36 h, sans exception visible).
+    """
+    if e.response is not None:
+        return str(e.response.status_code), e.response.text[:500]
+    # Pas de réponse : l'information vit dans l'exception elle-même.
+    return type(e).__name__, str(e)
+
+
 class GeminiStructuredError(RuntimeError):
     """Réponse structurée Gemini inexploitable — #T265.
 
@@ -187,8 +202,7 @@ class GeminiCacheManager:
                 return None
 
         except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response else "?"
-            body = e.response.text[:500] if e.response else ""
+            status, body = _http_error_detail(e)
             logger.warning(
                 f"[GEMINI CACHE] ❌ Erreur HTTP {status} lors de la création du cache : {body}"
             )
@@ -693,8 +707,7 @@ class GeminiNativeProvider(LLMProvider):
                 self._key_pool.report_success(active_key)
 
         except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response else "?"
-            body = e.response.text[:500] if e.response else ""
+            status, body = _http_error_detail(e)
             logger.error(f"[GEMINI NATIF] Erreur HTTP {status} : {body}")
 
             # Si c'est une erreur de cache (404 = cache expiré), retenter sans cache
@@ -1075,8 +1088,7 @@ class GeminiNativeProvider(LLMProvider):
             return {"success": False, "error": "Aucune partie audio trouvée dans la réponse"}
 
         except requests.exceptions.HTTPError as e:
-            status = e.response.status_code if e.response else "?"
-            body = e.response.text[:300] if e.response else ""
+            status, body = _http_error_detail(e)
             logger.error(f"[GEMINI TTS] Erreur HTTP {status} : {body}")
             return {"success": False, "error": f"HTTP {status}: {body}"}
         except Exception as e:

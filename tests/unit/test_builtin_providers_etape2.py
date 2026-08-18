@@ -65,8 +65,8 @@ _CHAMPS_PROVIDER = ("name", "type", "api_endpoint", "confidentiality", "cascade_
 
 def test_nombre_de_plugins_et_ids_providers_uniques():
     ids = [p.descriptor.id for p in BUILTIN_PROVIDER_PLUGINS]
-    assert len(ids) == len(set(ids)) == 17
-    # Les 16 convertis + le pilote de l'étape 1.
+    assert len(ids) == len(set(ids)) == 18
+    # Les 16 convertis + le pilote de l'étape 1 + AJEAN (declaration #AJEAN).
     assert "mistral" in ids
 
 

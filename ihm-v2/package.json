@@ -1,0 +1,41 @@
+{
+  "name": "ihm-moteur-v2",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "IHM v2 du Moteur Multi-Agents (refonte React/Vite/TS — spec docs/audits/spec_refonte_hmi.md)",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:v2": "tsc -b && vite build --base=/v2/",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.101.4",
+    "@xyflow/react": "^12.11.2",
+    "chart.js": "^4.4.7",
+    "highlight.js": "^11.11.1",
+    "lucide-react": "^1.30.0",
+    "react": "^19.0.0",
+    "react-chartjs-2": "^5.3.0",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1"
+  }
+}

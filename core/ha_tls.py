@@ -12,7 +12,7 @@ Comportement (sécurisé par défaut) :
   - HA_TLS_SERVER_HOSTNAME     → nom d'hôte à vérifier dans le certificat, quand
     `HASS_URL` vise une IP locale mais que le certificat ne couvre qu'un nom DNS
     (cas Freebox : certificat Let's Encrypt `axellum.freeboxos.fr` servi sur
-    192.168.1.x:8123). Équivalent du `--resolve` de curl : on joint l'IP locale
+    192.168.1.10:8123). Équivalent du `--resolve` de curl : on joint l'IP locale
     (rapide, sans dépendance WAN) tout en validant chaîne ET nom du certificat.
 
 ⚠️ DÉPLOIEMENT : si Home Assistant est en HTTPS avec un certificat auto-signé,
@@ -28,11 +28,16 @@ logger = logging.getLogger(__name__)
 
 _FALSY = {"0", "false", "no", "off", "non"}
 
+# Le warning d'opt-out TLS n'est émis qu'une seule fois par démarrage : c'est un
+# choix de configuration, pas un événement. Répété à chaque construction de
+# contexte (jusqu'à ~644 fois en 36 h), il noierait le reste du journal.
+_warning_optout_affiche = False
+
 
 class _PinnedHostnameContext(ssl.SSLContext):
     """Contexte SSL qui vérifie le certificat contre un nom d'hôte imposé.
 
-    `HASS_URL` pointe une IP (192.168.1.x) alors que le certificat ne couvre
+    `HASS_URL` pointe une IP (192.168.1.10) alors que le certificat ne couvre
     qu'un nom DNS ; sans cela la vérification échoue sur « IP address mismatch ».
     Le nom présenté en SNI et vérifié est donc forcé ici, pour tous les appelants
     d'un coup — aucun site d'appel n'a à passer `server_hostname`, y compris
@@ -97,11 +102,16 @@ def ha_ssl_context() -> ssl.SSLContext:
         return ctx
 
     # Opt-out explicite (HA_VERIFY_TLS=false) — seule désactivation TLS du projet.
-    logger.warning(
-        "[HA-TLS] Vérification TLS DÉSACTIVÉE (HA_VERIFY_TLS=false). "
-        "À réserver à un certificat auto-signé sur LAN de confiance ; "
-        "préférer HA_CA_BUNDLE."
-    )
+    # Le warning est émis une seule fois par démarrage (premier appel) : le
+    # comportement TLS, lui, est identique à chaque appel.
+    global _warning_optout_affiche
+    if not _warning_optout_affiche:
+        _warning_optout_affiche = True
+        logger.warning(
+            "[HA-TLS] Vérification TLS DÉSACTIVÉE (HA_VERIFY_TLS=false). "
+            "À réserver à un certificat auto-signé sur LAN de confiance ; "
+            "préférer HA_CA_BUNDLE."
+        )
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE

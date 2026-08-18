@@ -554,6 +554,6 @@
       "qwen3-coder-next",
       "qwen3.6-35b-a3b"
     ],
-    "advantages": "RTX 5070 Ti (16GB VRAM), 9 modèles chargés. Coût zéro, confidentialité totale."
+    "advantages": "GPU locale, modèles chargés. Coût zéro, confidentialité totale."
   }
 }

@@ -1,0 +1,29 @@
+{
+  "_commentaire": [
+    "mcp_config.json.example — Modèle de configuration MCPBridge (#T213).",
+    "Copier vers mcp_config.json (gitignoré, propre à chaque machine) pour que",
+    "core/mcp_bridge.py démarre des serveurs MCP tiers dans le pipeline HTTP.",
+    "Ordre de résolution de MCPBridge : ~/.gemini/antigravity-ide/mcp_config.json,",
+    "puis <racine du repo>/mcp_config.json, puis /config/moteur-master/mcp_config.json.",
+    "Sans fichier, le pont se désactive proprement (warning, aucun outil MCP).",
+    "SÉCURITÉ : ne JAMAIS mettre de secret ici — MCPBridge fusionne os.environ",
+    "dans l'env de chaque serveur, les tokens (GITHUB_TOKEN, HASS_TOKEN...)",
+    "doivent rester dans le .env du moteur.",
+    "Le filtrage des serveurs réellement démarrés par requête est piloté par",
+    "mcp_activation_rules.json (défaut + mots-clés du prompt)."
+  ],
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/workspace"]
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"]
+    }
+  }
+}

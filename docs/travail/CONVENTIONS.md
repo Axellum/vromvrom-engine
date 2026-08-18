@@ -3,7 +3,7 @@
 Seul texte collé dans l'Executor / Reviewer / ToolMaker (`conventions_projet=True`). Pas de liste MCP, pas d'archi, pas de board.
 
 - Commentaires de code en français.
-- Chemins : racine canonique `H:\AuxFilsDesIdees` (E: = junction). Workspace moteur = ce dépôt.
+- Chemins : racine canonique `.` (E: = junction). Workspace moteur = ce dépôt.
 - Windows : pas de `ls`/`grep`/`cat` via le terminal — `read_file` / `write_file` / `dir` / `findstr`.
 - Linux (Deck) : l'inverse — pas de `dir`/`findstr`/`type`.
 - Secrets : jamais en clair. HA/ESPHome → `!secret`. Python → env.

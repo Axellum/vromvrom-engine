@@ -18,6 +18,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import time
 from typing import TYPE_CHECKING
 
@@ -45,6 +46,140 @@ DEFAULT_AVG_TOKENS_PER_DAG_TASK = 3000
 # [#T295] Plafond GLOBAL sur la TAILLE TOTALE de relevant_context après toute agrégation
 # 40 000 caractères ≈ 10 000 tokens — garantit que le contexte d'une tâche ne sature jamais le prompt LLM
 TOTAL_CONTEXT_MAX_CHARS = 40_000
+
+# Délai par défaut du watchdog asynchrone d'une tâche DAG, si absent de
+# config.json et de l'environnement. Inchangé par rapport au comportement
+# historique (120 s) pour ne surprendre personne : c'est la valeur qui
+# s'appliquait en dur avant la mise en configuration (#T380).
+DEFAULT_DAG_TASK_TIMEOUT_S = 120.0
+
+# Nom de la clé dans config.json pour le délai de base (en secondes).
+CONFIG_DAG_TASK_TIMEOUT_KEY = "dag_task_timeout_s"
+
+# Nom de la clé dans config.json pour le délai par tier de modèle
+# (dict `{"leger": 120, "moyen": 180, "fort": 300, ...}` en secondes).
+CONFIG_DAG_TASK_TIMEOUT_BY_TIER_KEY = "dag_task_timeout_by_tier"
+
+# Variable d'environnement surchargeant le délai de base.
+ENV_DAG_TASK_TIMEOUT_S = "MOTEUR_DAG_TASK_TIMEOUT_S"
+
+# Préfixe des variables d'environnement surchargeant le délai d'un tier donné.
+# Ex. `MOTEUR_DAG_TASK_TIMEOUT_TIER_FORT_S=300` surcharge le tier "fort".
+ENV_DAG_TASK_TIMEOUT_TIER_PREFIX = "MOTEUR_DAG_TASK_TIMEOUT_TIER_"
+
+# Tiers de modèle reconnus (même vocabulaire que `config.json` → `tiers`).
+_TIERS_RECONNUS = ("leger", "moyen", "fort", "automatique")
+
+
+def _lire_flottant_config(
+    config: dict, cle: str, defaut: float, prefixe_env: str | None = None
+) -> float:
+    """
+    Lit une durée (en secondes) depuis config.json, puis depuis l'environnement.
+
+    Précédence : variable d'environnement > config.json > `defaut`. Une valeur
+    illisible (non numérique, négative) est ignorée avec un avertissement au
+    lieu de faire planter le moteur : le watchdog reste actif avec le défaut.
+    """
+    valeur = None
+    if prefixe_env:
+        brut_env = os.environ.get(prefixe_env, "").strip()
+        if brut_env:
+            try:
+                valeur = float(brut_env)
+            except ValueError:
+                logger.warning(
+                    f"[DAG] ⚠️ {prefixe_env} illisible ({brut_env!r}) : valeur config/défaut retenue."
+                )
+    if valeur is None:
+        brut_config = config.get(cle)
+        if brut_config is not None:
+            try:
+                valeur = float(brut_config)
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"[DAG] ⚠️ config.json '{cle}' illisible ({brut_config!r}) : défaut retenu."
+                )
+    if valeur is None or valeur <= 0:
+        return defaut
+    return valeur
+
+
+def _delai_watchdog_seconds(task_payload: "TaskPayload", config: dict | None = None) -> float:
+    """
+    Délai du watchdog asynchrone pour UNE tâche du DAG (en secondes).
+
+    Le délai n'est plus un littéral unique : il dépend du tier de modèle de la
+    tâche, pour ne pas tuer une lecture de sources + synthèse LLM de tier fort
+    (ex. `explore_code`, `read_source_files`) qui dépasse 120 s sans rien avoir
+    d'anormal, tout en gardant le watchdog serré sur les tâches triviales.
+
+    Précédence :
+    1. surcharge explicite de la tâche (`watchdog_timeout_s` dans les metadata) ;
+    2. délai par tier : variable d'environnement `MOTEUR_DAG_TASK_TIMEOUT_TIER_<TIER>_S`,
+       puis `dag_task_timeout_by_tier` de config.json ;
+    3. délai de base : `MOTEUR_DAG_TASK_TIMEOUT_S`, puis `dag_task_timeout_s` de
+       config.json ;
+    4. défaut inchangé : 120 s.
+
+    Le watchdog n'est JAMAIS désactivé ici : `timeout=None` transformerait un
+    lot raté en lot éternel, ce qui est pire (garde-fou #T380).
+    """
+    if config is None:
+        try:
+            from core.llm_gateway import load_config
+            config = load_config()
+        except Exception:
+            config = {}
+
+    # 1. Surcharge explicite du payload (délai par tâche, pas par tier).
+    surcharge = (task_payload.metadata or {}).get("watchdog_timeout_s")
+    if surcharge is not None:
+        try:
+            valeur = float(surcharge)
+            if valeur > 0:
+                return valeur
+        except (TypeError, ValueError):
+            pass
+
+    # 2. Délai par tier de modèle de la tâche.
+    tier = (task_payload.metadata or {}).get("model_tier")
+    if tier and str(tier).strip().lower() in _TIERS_RECONNUS:
+        tier_cle = str(tier).strip().lower()
+        # Variable d'environnement d'abord : `MOTEUR_DAG_TASK_TIMEOUT_TIER_FORT_S`.
+        brut_env = os.environ.get(ENV_DAG_TASK_TIMEOUT_TIER_PREFIX + tier_cle.upper() + "_S", "").strip()
+        if brut_env:
+            try:
+                valeur = float(brut_env)
+                if valeur > 0:
+                    return valeur
+            except ValueError:
+                logger.warning(
+                    f"[DAG] ⚠️ {ENV_DAG_TASK_TIMEOUT_TIER_PREFIX}{tier_cle.upper()}_S "
+                    f"illisible ({brut_env!r}) : défaut retenu."
+                )
+        # Puis config.json → `dag_task_timeout_by_tier`.
+        par_tier = config.get(CONFIG_DAG_TASK_TIMEOUT_BY_TIER_KEY)
+        if isinstance(par_tier, dict):
+            valeur = par_tier.get(tier_cle)
+            if valeur is not None:
+                try:
+                    flottant = float(valeur)
+                    if flottant > 0:
+                        return flottant
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"[DAG] ⚠️ config.json '{CONFIG_DAG_TASK_TIMEOUT_BY_TIER_KEY}.{tier_cle}' "
+                        f"illisible ({valeur!r}) : défaut retenu."
+                    )
+
+    # 3. Délai de base, puis 4. défaut.
+    return _lire_flottant_config(
+        config,
+        CONFIG_DAG_TASK_TIMEOUT_KEY,
+        DEFAULT_DAG_TASK_TIMEOUT_S,
+        prefixe_env=ENV_DAG_TASK_TIMEOUT_S,
+    )
 
 
 class DAGRunner(MapReduceMixin, SubgraphMixin):
@@ -671,21 +806,34 @@ class DAGRunner(MapReduceMixin, SubgraphMixin):
 
         # Invocation protégée — les erreurs HTTP (413, 429, timeout)
         # ne doivent pas crasher tout le DAG mais mettre la tâche en erreur individuelle.
+        # [#T380] Le délai du watchdog est configurable (config.json + env) et peut
+        # être allongé par tier de modèle : une lecture de sources + synthèse LLM de
+        # tier fort dépasse 120 s sans rien avoir d'anormal (ex. `explore_code`,
+        # `read_source_files`, perdus le 17/08 sur ce watchdog unique).
+        timeout_s = _delai_watchdog_seconds(task_payload)
+        t0 = time.monotonic()
         try:
             # Dispatch Swarm : tenter le déport vers un worker distant
-            # Ajout du Circuit Breaker Asynchrone (Watchdog 120s)
+            # Ajout du Circuit Breaker Asynchrone (Watchdog configurable)
             t_upd = await asyncio.wait_for(
                 try_swarm_dispatch(
                     self._engine.state.session_id, task_id, task_payload, target_name, target_agent, on_event
                 ),
-                timeout=120.0
+                timeout=timeout_s
             )
         except TimeoutError:
-            logger.error(f"[DAG] ⏱️ Watchdog déclenché : Timeout de 120s dépassé pour la tâche '{task_id}' (Agent: '{target_name}')")
+            duree_reelle = time.monotonic() - t0
+            logger.error(
+                f"[DAG] ⏱️ Watchdog déclenché : délai de {timeout_s}s dépassé pour la tâche "
+                f"'{task_id}' (Agent: '{target_name}') après {duree_reelle:.1f}s d'exécution."
+            )
             t_upd = StateUpdate(
                 agent_name=target_name,
                 status="error",
-                error_message="Timeout de 120s dépassé (Circuit Breaker Asynchrone)",
+                error_message=(
+                    f"Timeout de {timeout_s}s dépassé (Circuit Breaker Asynchrone) "
+                    f"— durée réelle {duree_reelle:.1f}s, agent '{target_name}'"
+                ),
                 result_data=None,
                 metadata={},
             )

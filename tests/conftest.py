@@ -25,6 +25,52 @@ os.environ.setdefault("MOTEUR_API_KEY", TEST_API_KEY)
 
 from core.state import GlobalState, TaskPayload
 
+# ──────────────────────────────────────────────────────────────────
+# Isolation de la base runtime pour TOUS les tests (#T348)
+# ──────────────────────────────────────────────────────────────────
+#
+# Avant #T348, seul `core/event_store.py` déviait : il calculait son chemin par
+# défaut indépendamment de `core.runtime_db`, si bien qu'un test qui appelait
+# `override_db_path()` croyait être isolé pendant que l'EventStore continuait
+# d'écrire dans la vraie base du dépôt (moteur_runtime.db). Le singleton
+# `get_event_store()` figeait en plus l'instance — et donc le chemin — au
+# premier appel du process.
+#
+# Cette fixture autouse réoriente la base runtime vers un fichier temporaire
+# POUR CHAQUE test, de sorte que rien (EventStore compris) n'écrive jamais dans
+# la base du dépôt. Compatible avec la vingtaine de tests qui appellent déjà
+# `override_db_path()` et restaurent « l'ancien chemin » en sortie (motif
+# `ancien = get_db_path()` … `override_db_path(ancien)`) : comme cette fixture
+# s'exécute AVANT les fixtures du test, l'`ancien` qu'ils capturent est le
+# chemin temporaire ici posé — jamais celui du dépôt. À la sortie du test, la
+# fixture restaure le vrai chemin du dépôt.
+
+
+@pytest.fixture(autouse=True)
+def _isoler_base_runtime(tmp_path):
+    """Récrit `core.runtime_db` vers une base temporaire isolée par test."""
+    from core import runtime_db
+
+    ancien = runtime_db.get_db_path()
+    # Garder le basename `moteur_runtime.db` : test_runtime_db.test_db_path
+    # vérifie ce suffixe (le dossier tmp_path assure déjà l'isolation).
+    chemin_iso = str(tmp_path / "moteur_runtime.db")
+    runtime_db.override_db_path(chemin_iso)
+    try:
+        yield
+    finally:
+        # Fermer le singleton EventStore AVANT de rendre le chemin / de laisser
+        # pytest supprimer tmp_path : sinon la connexion WAL reste ouverte sur
+        # les fichiers -wal/-shm et le cleanup échoue sous Windows (Bugbot #T348).
+        try:
+            from core import event_store as _es
+            if _es._event_store_instance is not None:
+                _es._event_store_instance.close()
+                _es._event_store_instance = None
+        except Exception:
+            pass
+        runtime_db.override_db_path(ancien)
+
 
 @pytest.fixture
 def auth_headers():

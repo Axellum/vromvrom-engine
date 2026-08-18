@@ -16,7 +16,13 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
-from core.acceptance_contract import verifier_contrat
+from core.acceptance_contract import (
+    CLE_ETAT_INITIAL,
+    CLE_SUBSTITUTIONS,
+    cle_critere,
+    normaliser_criteres,
+    verifier_contrat,
+)
 from core.state import ExecutionPhase, StateUpdate, TaskPayload
 
 if TYPE_CHECKING:
@@ -40,13 +46,13 @@ DEFAULT_ESCALATED_TIER = "fort"
 class ReviewLoop:
     """
     Boucle de revue automatique post-DAG.
-    
+
     Workflow :
     1. Agrège les résultats du DAG (snippets des StateUpdates réussis)
     2. Soumet au ReviewerAgent pour évaluation
     3. Si rejeté → Planner génère un plan correctif → Exécution → Re-review
     4. Si approuvé ou max rounds atteint → Fin
-    
+
     Le Reviewer fait un "soft-approve" pour les sévérités minor/info.
     """
 
@@ -62,12 +68,12 @@ class ReviewLoop:
     ) -> bool:
         """
         Exécute la boucle de revue post-DAG.
-        
+
         Args:
             initial_objective: Objectif original de la requête utilisateur.
             max_rounds: Nombre maximum de rounds review-correction.
             on_event: Callback SSE asynchrone pour l'IHM.
-            
+
         Returns:
             True si le code est validé, False si rejeté après tous les rounds.
         """
@@ -85,10 +91,12 @@ class ReviewLoop:
             # répondre, interroger Home Assistant). Mesuré en prod le 10/08 :
             # ce raccourci auto-approuvait le plan et le contrat n'était jamais
             # évalué — c'était le dernier des trois verrous de #T253.
-            criteres = self._criteres_du_plan()
+            criteres, etats_initiaux, substitutions = self._contrat_complet()
             verdict = None
             if criteres:
-                rapport = await asyncio.to_thread(verifier_contrat, criteres)
+                rapport = await asyncio.to_thread(
+                    verifier_contrat, criteres, etats_initiaux=etats_initiaux
+                )
                 if rapport.determinable:
                     verdict = rapport.satisfait
                     logger.info(
@@ -102,6 +110,7 @@ class ReviewLoop:
                             "satisfied": verdict,
                             "failures": len(rapport.echecs),
                             "summary": rapport.resume(),
+                            "substitutions": substitutions,
                             "contexte": "sans_modification_de_fichier",
                         })
 
@@ -134,11 +143,18 @@ class ReviewLoop:
             # tranchent, pas un score de complaisance. Contrat satisfait →
             # validation sans appel LLM ; contrat en échec → correction directe,
             # l'avis d'un modèle ne peut pas contredire un test qui échoue.
-            # Rechargé à chaque round : un plan correctif peut avoir reposé
-            # un contrat plus récent dans l'historique.
-            criteres_contrat = self._criteres_du_plan()
+            #
+            # [Incident du 17/08] Le contrat évalué est l'UNION de tous les
+            # contrats de l'historique : un plan correctif peut enrichir le
+            # contrat, jamais remplacer ni affaiblir celui qui a été posé (ou
+            # approuvé) avant lui. Avant ce correctif, seul le plus récent
+            # était lu — un lot en échec pouvait se réécrire un examen plus
+            # facile à chaque replanification.
+            criteres_contrat, etats_initiaux, substitutions = self._contrat_complet()
             if criteres_contrat:
-                verdict_contrat = await asyncio.to_thread(verifier_contrat, criteres_contrat)
+                verdict_contrat = await asyncio.to_thread(
+                    verifier_contrat, criteres_contrat, etats_initiaux=etats_initiaux
+                )
                 if verdict_contrat.determinable:
                     if on_event:
                         await on_event("contract_checked", {
@@ -146,6 +162,8 @@ class ReviewLoop:
                             "satisfied": verdict_contrat.satisfait,
                             "failures": len(verdict_contrat.echecs),
                             "summary": verdict_contrat.resume(),
+                            "substitutions": substitutions,
+                            "contexte": "revue_post_dag",
                         })
                     if verdict_contrat.satisfait:
                         logger.info(
@@ -287,15 +305,21 @@ class ReviewLoop:
         if os.getenv("MOTEUR_CONTRAT_SUR_ECHEC", "1").strip().lower() in ("0", "false", "off", "no"):
             return None
 
-        criteres = self._criteres_du_plan()
+        criteres, etats_initiaux, substitutions = self._contrat_complet()
         if not criteres:
             return None
 
-        verdict = await asyncio.to_thread(verifier_contrat, criteres)
+        verdict = await asyncio.to_thread(verifier_contrat, criteres, etats_initiaux=etats_initiaux)
         if not verdict.determinable:
+            d_avance = len(verdict.resultats_satisfaits_d_avance)
+            note = (
+                f" — dont {d_avance} satisfait(s) d'avance, exclus du verdict : "
+                "un contrat qui était déjà vrai avant le lot ne prouve rien."
+                if d_avance else ""
+            )
             logger.info(
                 "[REVIEW] [T253] DAG en échec et contrat non déterminable "
-                f"({len(verdict.non_verifiables)} critère(s) non vérifiable(s)) — verdict inchangé."
+                f"({len(verdict.non_verifiables)} critère(s) non vérifiable(s)){note} — verdict inchangé."
             )
             return None
 
@@ -305,36 +329,290 @@ class ReviewLoop:
                 "satisfied": verdict.satisfait,
                 "failures": len(verdict.echecs),
                 "summary": verdict.resume(),
+                "substitutions": substitutions,
                 "contexte": "dag_en_echec",
             })
 
         if verdict.satisfait:
+            # [Incident du 17/08] Un DAG en erreur absous par contrat est un
+            # événement rare et puissant : le journal doit dire EXACTEMENT ce
+            # qui a été évalué et en quoi cela diffère du contrat approuvé.
+            # Avant ce correctif, il fallait fouiller la base SQLite des heures
+            # plus tard pour s'apercevoir que le contrat évalué n'était plus
+            # celui qui avait été approuvé.
             logger.warning(
                 "[REVIEW] [T253] ✅ Le DAG a signalé une erreur, mais le contrat d'acceptation "
                 f"est SATISFAIT ({len(verdict.verifiables)} critère(s) vérifiés) : l'objectif est "
-                "prouvé atteint malgré l'échec d'une tâche."
+                f"prouvé atteint malgré l'échec d'une tâche.\n{self._trace_evaluation(verdict, substitutions)}"
             )
             return True
 
         logger.error(
             "[REVIEW] [T253] ❌ DAG en échec ET contrat non satisfait : "
-            f"{len(verdict.echecs)} critère(s) en échec.\n{verdict.resume()}"
+            f"{len(verdict.echecs)} critère(s) en échec.\n{verdict.resume()}\n"
+            f"{self._trace_evaluation(verdict, substitutions)}"
         )
         return False
 
     def _criteres_du_plan(self) -> list:
         """
-        [#T253] Récupère le contrat d'acceptation posé par le Planner.
+        [#T253] Récupère le contrat d'acceptation évalué par la porte déterministe.
 
-        Il voyage dans les metadata de son StateUpdate ; on prend le plus récent,
-        car un plan correctif peut en avoir reposé un.
+        [Incident du 17/08] Ce n'est PLUS « le plus récent de l'historique » :
+        c'est l'UNION de tous les contrats posés, sans exception. Un plan
+        correctif peut enrichir le contrat, jamais le remplacer
+        ni l'affaiblir — avant ce correctif, chaque échec donnait au lot une
+        occasion de se réécrire un examen plus facile, et le contrat approuvé
+        disparaissait de l'évaluation (mesuré en prod le 17/08 : le fichier
+        livrable exigé par le contrat approuvé n'a jamais été créé, et le lot
+        a été déclaré satisfait sur deux critères portant sur des fichiers qui
+        existaient déjà).
+
+        Retourne des dicts bruts (format des metadata). L'ordre place le
+        contrat le plus récent en tête — enrichissement oblige, c'est lui qui
+        décrit le mieux l'état visé — puis les critères plus anciens jamais
+        retirés : l'ordre ne change rien au verdict, tous sont évalués. Le
+        plancher (contrat d'origine ou restauré) se reconnaît à sa position
+        dans l'historique, pas à sa place dans cette liste.
+        """
+        criteres, _etats, _substitutions = self._contrat_complet()
+        return criteres
+
+    def _entrees_contrat(self) -> list[dict]:
+        """
+        Toutes les entrées de contrat de l'historique, en ordre chronologique.
+
+        La PREMIÈRE entrée est le plancher : le contrat posé par le plan
+        d'origine, ou — après une approbation humaine — celui restauré par
+        `services/approval_resume_service.py` depuis `hitl_pending_approvals`,
+        qui l'injecte en tête d'un historique neuf. Le service de reprise est
+        donc couvert par construction : son contrat restauré est toujours le
+        plancher, et aucun contrat correctif ultérieur ne peut l'évincer.
         """
         from core.acceptance_contract import CLE_CONTRAT
-        for update in reversed(self._engine.state.history):
+        entrees = []
+        for update in self._engine.state.history:
             criteres = (update.metadata or {}).get(CLE_CONTRAT)
             if criteres:
-                return criteres
-        return []
+                entrees.append({
+                    "criteres": criteres,
+                    "etat_initial": (update.metadata or {}).get(CLE_ETAT_INITIAL) or {},
+                    "substitutions": (update.metadata or {}).get(CLE_SUBSTITUTIONS) or [],
+                })
+        return entrees
+
+    def _contrat_complet(self) -> tuple[list, dict[int, bool], list]:
+        """
+        [Incident du 17/08] Construit le contrat effectif à évaluer.
+
+        Retourne `(critères, états initiaux, substitutions appliquées)` :
+        - les critères : union de tous les contrats de l'historique, après
+          application des substitutions déclarées valides ;
+        - les états initiaux : indexés sur la liste NORMALISÉE des critères
+          (comme `verifier_contrat` les ré-indexe), le premier constat posé
+          pour une même clé l'emportant toujours — c'est celui d'avant le
+          travail ;
+        - les substitutions appliquées, pour le journal et les événements.
+        """
+        from core.acceptance_contract import union_contrats
+        entrees = self._entrees_contrat()
+        if not entrees:
+            return [], {}, []
+
+        union = union_contrats([e["criteres"] for e in entrees])
+        normalises = normaliser_criteres(union)
+
+        plancher = normaliser_criteres(entrees[0]["criteres"])
+        substitutions = self._appliquer_substitutions(entrees, union, plancher)
+        if substitutions:
+            # Les critères substitués sortent de l'évaluation — de façon tracée,
+            # journalisée et réversible à la lecture : leurs remplaçants restent
+            # dans l'union et seront évalués à leur place.
+            union = self._retirer_substituees(union, substitutions)
+        normalises = normaliser_criteres(union)
+
+        ajoutes = max(len(normalises) - len(plancher) + len(substitutions), 0)
+        if len(entrees) > 1:
+            logger.info(
+                f"[REVIEW] [CONTRAT] Union de {len(entrees)} contrat(s) de l'historique : "
+                f"plancher approuvé/initial = {len(plancher)} critère(s), "
+                f"contrat effectif = {len(normalises)} critère(s) "
+                f"({ajoutes} ajouté(s) par les plans correctifs, "
+                f"{len(substitutions)} substitution(s) déclarée(s) appliquée(s))."
+            )
+
+        etats = self._etats_initiaux_effectifs(entrees, normalises)
+        return union, etats, substitutions
+
+    @staticmethod
+    def _retirer_substituees(union: list, substitutions: list) -> list:
+        """Écarte de l'union les critères du plancher substitués (tracé, jamais silencieux)."""
+        keys_a_retirer = set()
+        for sub in substitutions:
+            origine = normaliser_criteres(sub.get("origine"))
+            if origine:
+                keys_a_retirer.add(cle_critere(origine[0]))
+        return [
+            brut for brut in union
+            if cle_critere(normaliser_criteres(brut)[0]) not in keys_a_retirer
+        ]
+
+    def _appliquer_substitutions(self, entrees: list, union: list, plancher: list) -> list:
+        """
+        Arbitrage de l'incident du 17/08 : un critère du plancher devenu
+        IMPOSSIBLE (le plan correctif a légitimement changé d'approche) peut
+        être remplacé — mais JAMAIS silencieusement. Chaque substitution doit
+        être déclarée explicitement par le plan correctif, viser un critère du
+        plancher, et son remplaçant doit être présent dans le contrat et ne pas
+        être satisfait d'avance. Toute déclaration invalide est écartée et
+        journalisée : le critère du plancher reste alors évalué tel quel.
+
+        Seuls les plans CORRECTIFS (entrées d'index ≥ 1) peuvent déclarer une
+        substitution : le plancher ne se substitue pas à lui-même.
+        """
+        keys_plancher = {cle_critere(c) for c in plancher}
+        keys_union = {cle_critere(c) for c in normaliser_criteres(union)}
+        etats = self._etats_initiaux_effectifs(entrees, normaliser_criteres(union))
+        normalises_union = normaliser_criteres(union)
+
+        appliquees = []
+        for position, entree in enumerate(entrees):
+            for declaration in entree["substitutions"]:
+                if not isinstance(declaration, dict):
+                    logger.warning("[REVIEW] [CONTRAT] Substitution ignorée : pas un objet.")
+                    continue
+                origine = normaliser_criteres(declaration.get("origine"))
+                remplacant = normaliser_criteres(declaration.get("remplacant"))
+                if not origine or not remplacant:
+                    logger.warning(
+                        f"[REVIEW] [CONTRAT] Substitution ignorée (origine ou remplaçant illisible) : {declaration!r}"
+                    )
+                    continue
+                cle_origine, cle_remplacant = cle_critere(origine[0]), cle_critere(remplacant[0])
+                if position == 0:
+                    logger.warning(
+                        "[REVIEW] [CONTRAT] Substitution ignorée : seul un plan correctif "
+                        "peut déclarer une substitution, pas le contrat d'origine."
+                    )
+                    continue
+                if cle_origine not in keys_plancher:
+                    logger.warning(
+                        "[REVIEW] [CONTRAT] Substitution ignorée : elle ne cible pas un "
+                        f"critère du contrat approuvé — {origine[0].libelle()!r}."
+                    )
+                    continue
+                if cle_remplacant not in keys_union:
+                    logger.warning(
+                        "[REVIEW] [CONTRAT] Substitution ignorée : le critère remplaçant "
+                        f"est absent du contrat — {remplacant[0].libelle()!r}."
+                    )
+                    continue
+                index_remplacant = next(
+                    (i for i, c in enumerate(normalises_union) if cle_critere(c) == cle_remplacant),
+                    None,
+                )
+                if etats.get(index_remplacant):
+                    logger.warning(
+                        "[REVIEW] [CONTRAT] Substitution ignorée : le critère remplaçant "
+                        f"était satisfait d'avance — {remplacant[0].libelle()!r}."
+                    )
+                    continue
+                appliquees.append({
+                    "origine": dict(declaration["origine"]),
+                    "remplacant": dict(declaration["remplacant"]),
+                    "motif": str(declaration.get("motif") or "").strip(),
+                })
+                logger.warning(
+                    "[REVIEW] [CONTRAT] SUBSTITUTION TRACÉE : le critère approuvé "
+                    f"« {origine[0].libelle()} » est remplacé par « {remplacant[0].libelle()} » — "
+                    f"motif : {declaration.get('motif') or 'non renseigné'}. "
+                    "Le critère d'origine n'est plus évalué."
+                )
+        return appliquees
+
+    @staticmethod
+    def _etats_initiaux_effectifs(entrees: list, normalises: list) -> dict[int, bool]:
+        """
+        États initiaux indexés sur la liste normalisée du contrat effectif.
+
+        Les constats des entrées sont posés par rapport à LEUR propre liste
+        normalisée : on repasse par la clé de chaque critère pour ré-indexer.
+        Le PREMIER constat posé pour une clé l'emporte — c'est le plus proche
+        du début du travail. Une clé sans constat n'est jamais marquée
+        « satisfaite d'avance » : le doute rend le jugement plus strict.
+        """
+        constats_par_cle: dict[tuple, bool] = {}
+        for entree in entrees:
+            normaux_entree = normaliser_criteres(entree["criteres"])
+            for index_brut, valeur in (entree["etat_initial"] or {}).items():
+                try:
+                    index = int(index_brut)
+                except (TypeError, ValueError):
+                    continue
+                if 0 <= index < len(normaux_entree):
+                    constats_par_cle.setdefault(cle_critere(normaux_entree[index]), bool(valeur))
+        return {
+            index: constats_par_cle[cle_critere(critere)]
+            for index, critere in enumerate(normalises)
+            if cle_critere(critere) in constats_par_cle
+        }
+
+    def _trace_evaluation(self, verdict, substitutions: list) -> str:
+        """
+        [Incident du 17/08] Trace d'audit du contrat évalué : provenance de
+        chaque critère (plancher approuvé ou plan correctif), critères
+        satisfaits d'avance, substitutions appliquées. Injectée dans le
+        journal à chaque verdict de contrat, pour que la divergence entre
+        contrat évalué et contrat approuvé soit visible sans fouiller la base.
+        """
+        entrees = self._entrees_contrat()
+        lignes = ["[CONTRAT] Trace de l'évaluation :"]
+        if not entrees:
+            lignes.append("  - aucun contrat dans l'historique")
+            return "\n".join(lignes)
+
+        plancher = normaliser_criteres(entrees[0]["criteres"])
+        keys_plancher = {cle_critere(c) for c in plancher}
+        keys_substituees = set()
+        for sub in substitutions:
+            origine = normaliser_criteres(sub.get("origine"))
+            if origine:
+                keys_substituees.add(cle_critere(origine[0]))
+
+        correctifs = 0
+        for resultat in verdict.resultats:
+            cle = cle_critere(resultat.critere)
+            if cle in keys_plancher:
+                provenance = "plancher (contrat d'origine/approuvé)"
+            else:
+                correctifs += 1
+                provenance = "plan correctif (ajouté après le contrat d'origine)"
+            note = " [satisfait d'avance — exclu du verdict]" if resultat.critere.satisfait_d_avance else ""
+            # Les critères fichier montrent aussi leur cible : la description
+            # seule peut masquer QUEL chemin a échoué — c'est précisément ce
+            # qu'on reprochait au journal d'avant l'incident.
+            cible = (
+                f" — {resultat.critere.valeur}"
+                if resultat.critere.type in ("fichier_contient", "fichier_existe") else ""
+            )
+            lignes.append(f"  - {resultat.critere.libelle()}{cible} ← {provenance}{note}")
+
+        if correctifs:
+            lignes.append(
+                f"  ⚠️ {correctifs} critère(s) ne figurent PAS dans le contrat d'origine "
+                f"({len(plancher)} critère(s)) : ils ont été posés par un plan correctif."
+            )
+        if keys_substituees:
+            lignes.append(
+                f"  ⚠️ {len(keys_substituees)} critère(s) du contrat d'origine substitué(s) "
+                "(voir les lignes SUBSTITUTION TRACÉE ci-dessus)."
+            )
+        for sub in substitutions:
+            lignes.append(
+                f"  - substitution : « {sub['origine'].get('valeur')} » → "
+                f"« {sub['remplacant'].get('valeur')} » ({sub.get('motif') or 'motif non renseigné'})"
+            )
+        return "\n".join(lignes)
 
     @staticmethod
     def _update_depuis_contrat(verdict) -> StateUpdate:
@@ -398,7 +676,7 @@ class ReviewLoop:
     async def _build_review_context(self) -> str:
         """
         Agrège les résultats réussis du DAG pour le Reviewer.
-        
+
         Si les tâches produisent une interface (détecté via metadata
         'produces_ui' ou mots-clés dans l'objectif), un screenshot est capturé
         et analysé par le VisualQAService pour enrichir le contexte de review.
@@ -583,8 +861,8 @@ class ReviewLoop:
                         item_path = os.path.join(project_root, item)
                         if os.path.isdir(item_path) and os.path.exists(os.path.join(item_path, ".git")):
                             git_dirs.append(item_path)
-                except Exception:
-                    pass
+                except Exception as err:
+                    logger.debug(f"[REVIEW] Détection des dépôts Git impossible : {err}")
 
             moteur_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if moteur_dir not in git_dirs and os.path.exists(os.path.join(moteur_dir, ".git")):
@@ -593,7 +871,7 @@ class ReviewLoop:
             for git_dir in git_dirs:
                 result = subprocess.run(
                     ["git", "status", "--porcelain"],
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    capture_output=True,
                     text=True, cwd=git_dir, encoding='utf-8', errors='ignore'
                 )
                 if result.returncode == 0:

@@ -27,6 +27,12 @@ avertissement est journalisé quand le catalogue indique `supports_tools = 0`.
     restent sur le chemin bufferisé : le flux ne portant que du texte, un
     appel d'outil tronqué en morceaux serait ininterprétable par le client.
 
+`usage` (#T357) : le champ ne porte QUE des comptages de tokens réels remontés
+par le provider amont ; quand il n'y en a pas, il est entièrement omis (il est
+facultatif côté OpenAI). Il n'est jamais estimé — auparavant le chemin
+non-streamé y publiait un comptage de MOTS, sur lequel les clients calaient leur
+fenêtre de contexte et leur budget.
+
 Limites connues (un agent de code comme OpenCode/Cline s'y heurtera) :
     - `/v1/models` n'expose pas les options par modèle (reasoning effort,
       thinking mode, température imposée).
@@ -345,14 +351,109 @@ def _extraire_reponse(brut: Any) -> tuple[str, list | None]:
     return ("" if brut is None else str(brut)), None
 
 
+def _entier_de_comptage(valeur: Any) -> int | None:
+    """Retourne `valeur` si c'est un comptage de tokens exploitable, sinon None."""
+    # `bool` est un `int` en Python : un True s'inviterait comme « 1 token ».
+    if isinstance(valeur, bool) or not isinstance(valeur, int):
+        return None
+    return valeur
+
+
+# Schémas d'usage non-OpenAI qui circulent dans le moteur, et le nom OpenAI de
+# chaque compteur. RENOMMAGE STRICT : aucune valeur n'est dérivée ni calculée.
+_SCHEMAS_USAGE_ETRANGERS = (
+    # Gemini natif — `usageMetadata`, réellement remonté par
+    # gemini_native.generate_stream() sur son chunk final.
+    {
+        "prompt_tokens": "promptTokenCount",
+        "completion_tokens": "candidatesTokenCount",
+        "total_tokens": "totalTokenCount",
+    },
+    # Anthropic natif.
+    {
+        "prompt_tokens": "input_tokens",
+        "completion_tokens": "output_tokens",
+    },
+)
+
+
+def _normaliser_usage(usage_brut: Any) -> dict | None:
+    """
+    Rend un `usage` exploitable par un client OpenAI, ou None s'il n'y en a pas.
+
+    [#T357] Règle centrale : **on ne fabrique jamais de chiffre**. Soit le
+    provider amont a renvoyé un comptage réel de tokens, soit le champ `usage`
+    est entièrement omis de la réponse — il est facultatif dans l'API OpenAI, et
+    un chiffre faux est pire qu'un chiffre absent puisque le client pilote sa
+    fenêtre de contexte et son budget avec. Le comptage en MOTS qui remplissait
+    ce champ annonçait plusieurs fois moins que la réalité (prompt médian mesuré
+    le 17/08 sur 630 appels : 67 523 tokens réels).
+
+    Trois schémas existent côté providers :
+      - OpenAI (`prompt_tokens`…) : transmis **tel quel**, extras compris
+        (`prompt_cache_hit_tokens`, `prompt_tokens_details`…) ;
+      - Gemini natif (`usageMetadata`) et Anthropic natif (`input_tokens`…) :
+        les compteurs sont RENOMMÉS vers les noms OpenAI. `total_tokens` n'est
+        posé que si le provider l'a fourni — il n'est pas recalculé.
+    """
+    if not isinstance(usage_brut, dict):
+        return None
+
+    # Déjà au format OpenAI : rien à traduire, on ne touche à rien.
+    if (_entier_de_comptage(usage_brut.get("prompt_tokens")) is not None
+            or _entier_de_comptage(usage_brut.get("completion_tokens")) is not None):
+        return usage_brut
+
+    for schema in _SCHEMAS_USAGE_ETRANGERS:
+        traduit = {}
+        for cle_openai, cle_source in schema.items():
+            valeur = _entier_de_comptage(usage_brut.get(cle_source))
+            if valeur is not None:
+                traduit[cle_openai] = valeur
+        # Un `total_tokens` seul ne dit pas au client ce qu'il a consommé en
+        # entrée : on exige au moins un des deux compteurs principaux.
+        if "prompt_tokens" in traduit or "completion_tokens" in traduit:
+            return traduit
+
+    return None
+
+
+def _extraire_usage_reel(brut: Any, usage_sink: dict | None = None) -> dict | None:
+    """
+    Récupère l'usage réel porté par la réponse d'un provider (chemin bufferisé).
+
+    `generate()` retourne aujourd'hui soit une chaîne, soit le `message` OpenAI
+    quand le modèle appelle un outil. Dans le cas chaîne, l'usage réel de la
+    réponse HTTP est enregistré en base par `_record_usage()` côté provider mais
+    ne peut pas être porté par le type de retour : les providers
+    OpenAI-compatibles le déposent alors dans le dict `_usage_sink` fourni par
+    l'appelant (canal latéral propre à la requête — jamais d'état partagé sur
+    l'instance). `brut` reste prioritaire (cas tool_calls, où le dict porte
+    déjà l'usage) ; à défaut on lit le sink. Aucun des deux ne porte rien →
+    None, et le champ sera omis — surtout pas une estimation de repli.
+    """
+    if isinstance(brut, dict):
+        usage = _normaliser_usage(brut.get("usage"))
+        if usage is not None:
+            return usage
+    if isinstance(usage_sink, dict):
+        return _normaliser_usage(usage_sink.get("usage"))
+    return None
+
+
 def _make_completion_response(model: str, content: str, finish_reason: str = "stop",
-                               input_tokens: int = 0, output_tokens: int = 0,
-                               tool_calls: list | None = None) -> dict:
-    """Construit une réponse OpenAI-compatible (non-streaming)."""
+                               tool_calls: list | None = None,
+                               usage: dict | None = None) -> dict:
+    """
+    Construit une réponse OpenAI-compatible (non-streaming).
+
+    [#T357] `usage` n'est posé que si le provider amont a fourni un comptage
+    réel (cf. `_normaliser_usage`) ; sinon la clé est absente de la réponse.
+    """
     message: dict[str, Any] = {"role": "assistant", "content": content or None}
     if tool_calls:
         message["tool_calls"] = tool_calls
-    return {
+    reponse: dict[str, Any] = {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "created": int(time.time()),
@@ -362,12 +463,10 @@ def _make_completion_response(model: str, content: str, finish_reason: str = "st
             "message": message,
             "finish_reason": finish_reason,
         }],
-        "usage": {
-            "prompt_tokens": input_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        },
     }
+    if usage:
+        reponse["usage"] = usage
+    return reponse
 
 
 def _make_stream_chunk(model: str, delta_content: str, finish_reason: str | None = None,
@@ -392,8 +491,9 @@ def _make_stream_chunk(model: str, delta_content: str, finish_reason: str | None
         }],
     }
     if usage:
-        # Usage réel propagé quand le provider le remonte (stream_options
-        # include_usage) ; absent sinon, comme avant.
+        # [#T357] Usage réel uniquement (déjà passé par `_normaliser_usage`) :
+        # aucun chunk ne porte de comptage inventé, le champ est simplement
+        # absent quand le provider n'a rien remonté.
         chunk["usage"] = usage
     return f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
@@ -414,36 +514,51 @@ async def _streamer_texte(provider, model_name: str, system_prompt: str, transcr
     transformée en réponse d'erreur HTTP (les en-têtes sont déjà partis) : on
     termine le flux proprement (chunk final + [DONE]) et on journalise —
     l'erreur n'est pas avalée en silence.
+
+    [#T343-C] L'étiquette d'agent est posée ICI, pas sur la route : la route
+    rend `StreamingResponse` immédiatement et c'est Starlette qui consomme le
+    générateur APRÈS, hors du bloc `with`. Posée autour de l'itération, elle
+    atteint le thread du pool via le pont `iterate_in_threadpool`
+    (anyio.to_thread.run_sync copie le contexte, vérifié à la mesure) —
+    c'est là que `record_usage` écrit la ligne de dépense.
     """
     usage_reel = None
     tokens_emis = 0
-    try:
-        async for item in iterate_in_threadpool(provider.generate_stream(
-            system_prompt, transcript,
-            messages=messages_provider,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            session_id=session_id,
-        )):
-            token = (item or {}).get("token") or ""
-            if token:
-                tokens_emis += 1
-                yield _make_stream_chunk(model_name, token)
-            if item.get("usage"):
-                usage_reel = item["usage"]
-            if item.get("done"):
-                break
-    except Exception as e:
-        # En-têtes HTTP déjà partis : impossible de répondre en erreur HTTP. On
-        # ferme le flux proprement pour que le client ne reste pas en attente
-        # d'un chunk qui ne viendra jamais.
-        logger.error(
-            f"[OPENAI_PROXY] Streaming interrompu après {tokens_emis} token(s) "
-            f"émis : {e}"
-        )
-        yield _make_stream_chunk(model_name, "", finish_reason="stop", usage=usage_reel)
-        yield "data: [DONE]\n\n"
-        return
+    from core.agent_trace import agent_courant
+    with agent_courant("proxy_v1"):
+        try:
+            async for item in iterate_in_threadpool(provider.generate_stream(
+                system_prompt, transcript,
+                messages=messages_provider,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                session_id=session_id,
+            )):
+                token = (item or {}).get("token") or ""
+                if token:
+                    tokens_emis += 1
+                    yield _make_stream_chunk(model_name, token)
+                # [#T357] Le contrat `generate_stream` est {"token", "done",
+                # "usage"} mais tous les providers ne parlent pas le schéma
+                # OpenAI : gemini_native remonte un `usageMetadata`
+                # (promptTokenCount…), qui transmis tel quel donnerait au client
+                # un `usage` dont aucune clé attendue n'existe.
+                usage_candidat = _normaliser_usage(item.get("usage"))
+                if usage_candidat:
+                    usage_reel = usage_candidat
+                if item.get("done"):
+                    break
+        except Exception as e:
+            # En-têtes HTTP déjà partis : impossible de répondre en erreur HTTP. On
+            # ferme le flux proprement pour que le client ne reste pas en attente
+            # d'un chunk qui ne viendra jamais.
+            logger.error(
+                f"[OPENAI_PROXY] Streaming interrompu après {tokens_emis} token(s) "
+                f"émis : {e}"
+            )
+            yield _make_stream_chunk(model_name, "", finish_reason="stop", usage=usage_reel)
+            yield "data: [DONE]\n\n"
+            return
     yield _make_stream_chunk(model_name, "", finish_reason="stop", usage=usage_reel)
     yield "data: [DONE]\n\n"
 
@@ -545,6 +660,13 @@ async def chat_completions(request: ChatCompletionRequest):
         # client l'envoie) et étiquette d'agent (Cline/Continue consomment hors
         # de tout agent — même motif que coding_front #T308).
         from core.agent_trace import agent_courant
+        # [#T357] Canal latéral d'usage réel : un dict propre à la requête,
+        # déposé dans les kwargs sous `_usage_sink`. Les providers
+        # OpenAI-compatibles y écrivent l'usage de la réponse HTTP quand
+        # generate() rend une simple chaîne (le type de retour ne peut pas le
+        # porter). Les providers qui ne le connaissent pas l'ignorent —
+        # l'usage reste alors omis, jamais estimé.
+        usage_sink: dict[str, Any] = {}
         with agent_courant("proxy_v1"):
             brut = await asyncio.to_thread(
                 provider.generate,
@@ -554,30 +676,37 @@ async def chat_completions(request: ChatCompletionRequest):
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
                 session_id=request.session_id,
+                _usage_sink=usage_sink,
                 **options_outils,
             )
 
         response_text, tool_calls = _extraire_reponse(brut)
+        # [#T357] Usage réel s'il est porté par la réponse du provider ou par
+        # le sink, sinon None : le champ sera omis, jamais estimé.
+        usage_reel = _extraire_usage_reel(brut, usage_sink)
         finish_reason = "tool_calls" if tool_calls else "stop"
 
         if request.stream:
             # Outils en streaming : la réponse complète (appel d'outil compris)
-            # part en un seul chunk — le flux ne porte que du texte.
+            # part en un seul chunk — le flux ne porte que du texte. C'est le cas
+            # normal d'un client agentique : le chunk final doit donc porter
+            # l'usage réel quand il existe (#T357).
             async def _stream_gen():
                 yield _make_stream_chunk(model_name, response_text, tool_calls=tool_calls)
-                yield _make_stream_chunk(model_name, "", finish_reason=finish_reason)
+                yield _make_stream_chunk(
+                    model_name, "", finish_reason=finish_reason, usage=usage_reel,
+                )
                 yield "data: [DONE]\n\n"
             return StreamingResponse(_stream_gen(), media_type="text/event-stream")
         else:
-            # Comptage approximatif (mots), inchangé — le comptage réel de tokens
-            # reste porté par les providers via core.token_tracker.
-            tokens_in = max(1, len((system_prompt + "\n" + transcript).split()))
-            tokens_out = max(1, len(response_text.split()))
+            # [#T357] Plus de comptage de MOTS présenté comme des tokens : ce
+            # champ pilotait la fenêtre de contexte et le budget du client avec
+            # un chiffre plusieurs fois trop bas. Sans usage amont, pas de clé.
             return JSONResponse(_make_completion_response(
                 model_name, response_text,
                 finish_reason=finish_reason,
-                input_tokens=tokens_in, output_tokens=tokens_out,
                 tool_calls=tool_calls,
+                usage=usage_reel,
             ))
 
     except ModeleInconnuError as e:

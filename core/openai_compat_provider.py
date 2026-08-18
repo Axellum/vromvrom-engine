@@ -23,6 +23,7 @@ Créé le : 2026-06-04 (Audit V9 P0.1)
 import asyncio
 import json
 import logging
+import os
 import threading
 from typing import Any
 
@@ -38,6 +39,47 @@ logger = logging.getLogger(__name__)
 # Au-delà, l'extrait est tronqué : un corps d'erreur d'API tient en quelques lignes,
 # et certains renvoient le prompt en écho — inutile d'en inonder le journal.
 _MAX_CORPS_ERREUR = 500
+
+# [T316] Repli du plafond de sortie par défaut des providers OpenAI-compatibles.
+# Une génération en boucle peut partir jusqu'au plafond par défaut du provider
+# (Cerebras 40 000 tokens — mesuré en prod le 16/08) sans qu'aucun appelant n'ait
+# posé de `max_tokens`. On applique donc un plafond par défaut, dérivé du
+# `context_output` du catalogue (core.models_db.get_model) ; ce repli ne sert que
+# pour les modèles absents du catalogue ou à `context_output` nul. Surchargeable
+# par la variable d'environnement `MOTEUR_MAX_OUTPUT_TOKENS` (entier > 0).
+_DEFAULT_MAX_OUTPUT_TOKENS = 8192
+
+
+def _repli_max_output_tokens() -> int:
+    """Plafond de sortie de repli des providers OpenAI-compatibles (#T316).
+
+    Lit `MOTEUR_MAX_OUTPUT_TOKENS` (entier strictement positif) ; sinon
+    `_DEFAULT_MAX_OUTPUT_TOKENS`. N'est utilisé que quand le modèle est absent du
+    catalogue ou à `context_output` nul — jamais quand l'appelant fournit
+    `max_tokens`.
+    """
+    brut = os.environ.get("MOTEUR_MAX_OUTPUT_TOKENS", "").strip()
+    if brut.isdigit() and int(brut) > 0:
+        return int(brut)
+    return _DEFAULT_MAX_OUTPUT_TOKENS
+
+
+def _tokens_cache_hit(usage: dict) -> int:
+    """Compteur de tokens d'entrée servis par le cache (#T347).
+
+    L'API le renvoie sous deux formes : `prompt_cache_hit_tokens` (DeepSeek) ou
+    `prompt_tokens_details.cached_tokens` (forme normalisée OpenAI, renvoyée par
+    d'autres providers compatibles). La première a la priorité ; à défaut la
+    seconde ; absent → 0. On ne suppose JAMAIS un taux de cache : seul le
+    compteur renvoyé par l'API fait foi.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    cache_hit = usage.get("prompt_cache_hit_tokens")
+    if cache_hit is not None:
+        return int(cache_hit) if cache_hit else 0
+    details = usage.get("prompt_tokens_details") or {}
+    return int(details.get("cached_tokens", 0) or 0)
 
 
 def lever_pour_statut(response, *, provider: str = "?", modele: str = "?") -> None:
@@ -280,6 +322,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 usage.get("prompt_tokens", 0),
                 usage.get("completion_tokens", 0),
                 session_id=session_id,
+                cache_hit_tokens=_tokens_cache_hit(usage),
             )
         except Exception as e:
             logger.debug(f"[{self.provider_name}] Erreur token_tracker : {e}")
@@ -297,6 +340,29 @@ class OpenAICompatibleProvider(LLMProvider):
             )
         except Exception as e:
             logger.debug(f"[{self.provider_name}] Erreur estimation streaming : {e}")
+
+    def _max_tokens_par_defaut(self) -> int:
+        """Plafond de sortie par défaut du modèle (#T316).
+
+        Dérivé du `context_output` du catalogue (`core.models_db.get_model`),
+        avec repli sur `MOTEUR_MAX_OUTPUT_TOKENS` (puis 8192) si le modèle est
+        absent du catalogue ou à `context_output` nul. N'est appliqué QUE quand
+        l'appelant ne fournit pas `max_tokens` : un appelant qui en pose un n'est
+        jamais écrasé (voir les trois méthodes de génération).
+        """
+        try:
+            from core.models_db import get_model
+            modele = get_model(self.model)
+            if modele:
+                ctx_output = modele.get("context_output")
+                if ctx_output:
+                    return int(ctx_output)
+        except Exception as e:
+            logger.debug(
+                f"[{self.provider_name}] get_model({self.model}) indisponible "
+                f"({e}) — repli sur le défaut."
+            )
+        return _repli_max_output_tokens()
 
     # ──────────────────────────────────────────────────────────────
     # generate() — Appel standard (non-streaming)
@@ -330,9 +396,13 @@ class OpenAICompatibleProvider(LLMProvider):
         if kwargs.get("tool_choice") is not None:
             payload["tool_choice"] = kwargs["tool_choice"]
 
-        # Support du max_tokens si fourni
+        # [T316] Plafond de sortie : celui de l'appelant s'il en pose un, sinon le
+        # défaut dérivé du catalogue (context_output) — pour borner une génération
+        # en boucle qui partirait jusqu'au plafond par défaut du provider.
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
+        else:
+            payload["max_tokens"] = self._max_tokens_par_defaut()
 
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate)")
         # Utilisation du pool HTTP persistant (réutilisé entre les appels)
@@ -343,7 +413,20 @@ class OpenAICompatibleProvider(LLMProvider):
         lever_pour_statut(response, provider=self.provider_name, modele=self.model)
 
         resp_json = response.json()
-        self._record_usage(resp_json.get("usage"), session_id=kwargs.get("session_id"))
+        usage = resp_json.get("usage")
+        self._record_usage(usage, session_id=kwargs.get("session_id"))
+
+        # Canal latéral d'usage réel : l'appelant peut passer un dict récepteur
+        # via `_usage_sink` (préfixe "_" : jamais transmis au payload HTTP).
+        # generate() rend une chaîne dans le cas courant — le type de retour ne
+        # peut donc pas porter l'usage, et AUCUN appelant existant ne change :
+        # sans sink, le comportement est strictement identique. Le dict est propre
+        # à la requête (créé par l'appelant), donc aucune course entre requêtes
+        # concurrentes. L'usage est écrit TEL QUE renvoyé par le provider :
+        # aucun comptage n'est estimé ni recalculé.
+        _usage_sink = kwargs.get("_usage_sink")
+        if _usage_sink is not None and isinstance(_usage_sink, dict) and usage:
+            _usage_sink["usage"] = usage
 
         message = resp_json["choices"][0]["message"]
 
@@ -383,6 +466,8 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["tool_choice"] = kwargs["tool_choice"]
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
+        else:
+            payload["max_tokens"] = self._max_tokens_par_defaut()
 
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_async)")
         # httpx n'accepte pas le tuple (connect, read) de requests → convertir.
@@ -400,6 +485,12 @@ class OpenAICompatibleProvider(LLMProvider):
         await asyncio.to_thread(
             self._record_usage, resp_json.get("usage"), kwargs.get("session_id")
         )
+
+        # Même canal latéral que generate() : miroir fidèle du chemin synchrone,
+        # pour que le contrat d'usage soit identique quelle que soit la variante.
+        _usage_sink = kwargs.get("_usage_sink")
+        if _usage_sink is not None and isinstance(_usage_sink, dict) and resp_json.get("usage"):
+            _usage_sink["usage"] = resp_json["usage"]
 
         message = resp_json["choices"][0]["message"]
         if "tool_calls" in message:
@@ -429,6 +520,8 @@ class OpenAICompatibleProvider(LLMProvider):
 
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
+        else:
+            payload["max_tokens"] = self._max_tokens_par_defaut()
 
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_structured)")
         # Pool HTTP persistant
@@ -467,9 +560,13 @@ class OpenAICompatibleProvider(LLMProvider):
     def generate_stream(self, system_prompt: str, user_prompt: str, **kwargs):
         """
         Streaming natif via stream=true (Server-Sent Events).
-        
+
         Yields:
-            dict: {"token": str, "done": bool, "usage": dict|None}
+            dict: {"token": str, "done": bool, "usage": dict|None} pour le texte
+            de réponse, ou {"reasoning": str, "done": False, "usage": None} pour
+            le raisonnement (#T346). Les deux canaux ne sont JAMAIS mélangés dans
+            un même chunk yieldé : ce qui part sous "reasoning" ne doit jamais se
+            retrouver dans la réponse rendue ni au TTS.
         """
         messages = kwargs.get("messages")
         if messages:
@@ -493,6 +590,14 @@ class OpenAICompatibleProvider(LLMProvider):
             "stream_options": {"include_usage": True},
         }
 
+        # [T316] Plafond de sortie : celui de l'appelant s'il en pose un, sinon le
+        # défaut dérivé du catalogue (context_output) — même garde-fou anti-boucle
+        # que dans generate() / generate_async() / generate_structured().
+        if "max_tokens" in kwargs:
+            payload["max_tokens"] = kwargs["max_tokens"]
+        else:
+            payload["max_tokens"] = self._max_tokens_par_defaut()
+
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_stream)")
         # Pool HTTP persistant (stream=True via Session)
         _http = SharedHTTPPool.get_session()
@@ -503,23 +608,33 @@ class OpenAICompatibleProvider(LLMProvider):
         lever_pour_statut(response, provider=self.provider_name, modele=self.model)
 
         total_tokens = ""
+        total_raisonnement = ""
         real_usage = None
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: "):
                 continue
             data_str = line[6:].strip()
             if data_str == "[DONE]":
-                yield {"token": "", "done": True, "usage": None}
                 break
             try:
                 chunk = json.loads(data_str)
                 # Chunk final avec stream_options.include_usage : "choices"
-                # vide/absent, "usage" rempli — capturé mais rien à yield dessus.
+                # vide/absent, "usage" rempli — capturé puis remonté à l'appelant
+                # sur le chunk de clôture ci-dessous.
                 chunk_usage = chunk.get("usage")
                 if chunk_usage:
                     real_usage = chunk_usage
                 choices = chunk.get("choices") or []
                 delta = choices[0].get("delta", {}) if choices else {}
+                # [#T346] Canal raisonnement dédié : DeepSeek émet la pensée sous
+                # `delta.reasoning_content` (deepseek-reasoner), d'autres compatibles
+                # sous `delta.reasoning`. Ignoré jusque-là, le raisonnement était
+                # perdu à la lecture du chunk. On le yield sur son propre canal —
+                # JAMAIS mélangé à `token`, sinon il finirait au TTS dans le salon.
+                raisonnement = delta.get("reasoning_content") or delta.get("reasoning") or ""
+                if raisonnement:
+                    total_raisonnement += raisonnement
+                    yield {"reasoning": raisonnement, "done": False, "usage": None}
                 token = delta.get("content", "")
                 if token:
                     total_tokens += token
@@ -527,6 +642,10 @@ class OpenAICompatibleProvider(LLMProvider):
             except json.JSONDecodeError:
                 continue
 
+        # L'écriture en base AVANT le yield de clôture : les consommateurs
+        # (proxy, pipeline, IHM) cassent leur boucle dès `done=True` et ne
+        # relancent jamais le générateur — une écriture placée après le yield
+        # ne serait pas exécutée de manière fiable.
         if real_usage:
             # Le provider a bien renvoyé l'usage réel via stream_options —
             # pas besoin d'estimer.
@@ -536,18 +655,32 @@ class OpenAICompatibleProvider(LLMProvider):
                 real_usage.get("prompt_tokens", 0),
                 real_usage.get("completion_tokens", 0),
                 session_id=kwargs.get("session_id"),
+                cache_hit_tokens=_tokens_cache_hit(real_usage),
             )
         else:
             # Provider ignore stream_options.include_usage (pas tous ne le
-            # supportent) : repli sur l'estimation chars/4.
+            # supportent) : repli sur l'estimation chars/4, EN BASE UNIQUEMENT.
+            # Le raisonnement compte dans les tokens de sortie facturés : il
+            # entre dans l'estimation (sans jamais entrer dans la réponse).
             self._estimate_and_record_stream_usage(
-                messages, total_tokens, session_id=kwargs.get("session_id"),
+                messages, total_tokens + total_raisonnement, session_id=kwargs.get("session_id"),
             )
+
+        # Chunk de clôture : il porte l'usage RÉEL quand le provider l'a
+        # renvoyé via stream_options.include_usage, et None sinon. L'éventuelle
+        # estimation de repli calculée pour la base n'y figure JAMAIS :
+        # aucun comptage n'est estimé ni recalculé pour le client.
+        yield {"token": "", "done": True, "usage": real_usage}
 
 
 # ──────────────────────────────────────────────────────────────────
 # Registre de configuration des 9 providers OpenAI-compatibles
 # ──────────────────────────────────────────────────────────────────
+
+# Modèle réellement chargé par AJEAN (llama.cpp b10451, llama-server.exe).
+# Constante unique : le nom est celui que llama-server expose sur /v1/models,
+# c'est-à-dire le nom du fichier .gguf sans l'extension. À ne pas disperser.
+AJEAN_DEFAULT_MODEL = "Qwen2.5-14B-Instruct-1M-Q4_K_M"
 
 # Ce dictionnaire permet de créer n'importe quel provider OpenAI-compatible
 # avec une seule ligne de configuration au lieu de ~130 lignes de classe.
@@ -579,10 +712,10 @@ OPENAI_COMPAT_PROVIDERS = {
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
         "env_key": "OPENROUTER_API_KEY",
-        "default_model": "meta-llama/llama-3.3-70b-instruct:free",
+        "default_model": "openrouter/auto",
         "description": "OpenRouter — Accès modèles gratuits et payants",
         "extra_headers": {
-            "HTTP-Referer": "https://github.com/AuxFilsDesIdees/moteur_agents",
+            "HTTP-Referer": "https://github.com/Axellum/vromvrom-engine",
             "X-Title": "Moteur Agents V9",
         },
     },
@@ -627,17 +760,41 @@ OPENAI_COMPAT_PROVIDERS = {
         "base_url": "http://127.0.0.1:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "qwen2.5-coder:7b",
-        "description": "Ollama Local PC — Inférence locale ultra-rapide sur RTX 5070 Ti",
+        "description": "Ollama Local PC — Inférence locale ultra-rapide sur GPU locale",
     },
     "ollama_pc": {
-        # Même IP LAN que LMStudioProvider (192.168.1.x, carte "Ethernet 4") — contrairement
+        # Même IP LAN que LMStudioProvider (192.168.1.10, carte "Ethernet 4") — contrairement
         # à ollama_local (127.0.0.1), joignable depuis le Deck en prod. Prérequis côté PC :
         # Ollama démarré avec OLLAMA_HOST=0.0.0.0 (ou au moins .84) + pare-feu Windows ouvert
         # sur 11434 pour le LAN, sinon connect timeout (repli cloud silencieux, pas d'erreur bruyante).
-        "base_url": "http://192.168.1.x:11434/v1/chat/completions",
+        "base_url": "http://192.168.1.10:11434/v1/chat/completions",
         "env_key": "OLLAMA_API_KEY",  # Pas de clé requise pour l'instance locale
         "default_model": "domotique-qwen7b:q4",
-        "description": "Ollama PC via LAN — joignable depuis le Deck (RTX 5070 Ti, fine-tune domotique)",
+        "description": "Ollama PC via LAN — joignable depuis le Deck (GPU locale, fine-tune domotique)",
+    },
+    # === AJEAN (llama.cpp / llama-server) — déclaratif, NON branché en cascade ===
+    # Runtime llama.cpp du PC d'Axel (b10451, Qwen2.5-14B-Instruct-1M-Q4_K_M), API
+    # OpenAI-compatible sur le port 8080. Deux entrées symétriques : le PC d'Axel
+    # (192.168.1.10, joignable depuis le Deck) et le Deck lui-même (127.0.0.1, pour sa
+    # propre instance à venir). Hôtes déclarés par IP privée/loopback, JAMAIS par nom
+    # DNS : `LLMGateway._est_hote_local` (core/llm_gateway.py) classe toute IP privée
+    # comme locale (#T337, mode privacy_level=local_only) alors qu'un nom d'hôte serait
+    # traité comme externe/cloud. Pas de clé d'API : llama.cpp n'authentifie pas.
+    # ⚠️ PRÉREQUIS RÉSEAU (action d'Axel, hors périmètre) : llama-server écoute encore
+    # --host 127.0.0.1, donc 192.168.1.10:8080 est injoignable depuis le Deck. Il faut
+    # basculer sur 0.0.0.0 et ouvrir le pare-feu Windows sur 8080. Tant que ce n'est
+    # pas fait, ces providers échouent en connect timeout (repli cloud silencieux).
+    "ajean_pc": {
+        "base_url": "http://192.168.1.10:8080/v1/chat/completions",
+        "env_key": "AJEAN_API_KEY",  # Pas de clé requise : llama.cpp n'authentifie pas
+        "default_model": AJEAN_DEFAULT_MODEL,
+        "description": "AJEAN PC via LAN — llama.cpp 14B (RTX, contexte 1M), joignable depuis le Deck",
+    },
+    "ajean_deck": {
+        "base_url": "http://127.0.0.1:8080/v1/chat/completions",
+        "env_key": "AJEAN_API_KEY",  # Pas de clé requise : llama.cpp n'authentifie pas
+        "default_model": AJEAN_DEFAULT_MODEL,
+        "description": "AJEAN Deck — llama.cpp 14B local (127.0.0.1), instance à venir",
     },
 }
 

@@ -185,7 +185,7 @@ class ClaudeInstructionsWrapper(LLMProvider):
 class LMStudioProvider(LLMProvider):
     """Provider pour l'exécution locale (Garantie de confidentialité, coût 0)."""
 
-    def __init__(self, base_url: str = "http://${LM_STUDIO_HOST:-192.168.1.x}:1234/v1/chat/completions"):
+    def __init__(self, base_url: str = "http://192.168.1.10:1234/v1/chat/completions"):
         self.base_url = base_url
         self.headers = {"Content-Type": "application/json"}
 
@@ -259,11 +259,11 @@ class OllamaDeckProvider(LLMProvider):
     Compatible API OpenAI (format identique à LMStudioProvider).
     """
 
-    DECK_HOSTS = ["${DECK_HOST:-192.168.1.x}", "${DECK_HOST_WIFI:-192.168.1.x}"]  # Ethernet prioritaire, Wi-Fi fallback
+    DECK_HOSTS = ["192.168.1.20", "192.168.1.21"]  # Ethernet exemple, Wi-Fi fallback
 
     def __init__(
         self,
-        host: str = "${DECK_HOST:-192.168.1.x}",
+        host: str = "192.168.1.20",
         port: int = 11434,
         model_name: str = "phi3:mini",
     ):

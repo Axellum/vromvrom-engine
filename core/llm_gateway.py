@@ -13,11 +13,13 @@ des relations avec les autres modules de ce groupe (elo_scorer, budget_guard,
 key_pool, semantic_cache...).
 """
 import copy
+import ipaddress
 import json
 import logging
 import os
 import threading
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,51 @@ from core.llm.providers.deepseek import (
     _make_claude,
 )
 from core.llm.providers.gemini import GeminiCLIProvider, GeminiProvider
+
+# Décision Axel 13/08 : hors cascade auto, accès explicite `get_provider()` inchangé.
+# - slugs OpenRouter :free → 404 mesuré
+# - Claude API native → crédit à sec (HTTP 400)
+# - claude-fable-5 → déjà D-4 (anti auto-escalade)
+# - Dashscope → 401 + CGU backend (D-8) : préfixe filtré aussi (voir _est_exclu_cascade)
+EXCLUSIONS_CASCADE_DEFAUT = frozenset({
+    "claude-fable-5",
+    "claude-sonnet-5",
+    "claude-opus-4-8-direct",
+    "claude-haiku-4-5-direct",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "dashscope",
+    "dashscope/qwen3.7-plus",
+    "dashscope/qwen3.6-plus",
+    "dashscope/qwen3.5-plus",
+    "dashscope/qwen3-max-2026-01-23",
+    "dashscope/qwen3-coder-next",
+    "dashscope/qwen3-coder-plus",
+    "dashscope/kimi-k2.5",
+    "dashscope/glm-5",
+    "dashscope/glm-4.7",
+    "dashscope/MiniMax-M2.5",
+})
+
+# D-8 Axel 13/08 : clé 401 + CGU Alibaba (pas de backend auto). Ne pas instancier.
+DASHSCOPE_ACTIF = False
+
+# [T337] Niveau de confidentialité lu depuis l'environnement.
+#   - vide (défaut)            : comportement historique inchangé au bit près.
+#   - "local_only"             : AUCUNE requête ne part vers un provider cloud — seuls
+#                                les modèles servis par un provider LOCAL sont retenus, et
+#                                si aucun n'est disponible le tier ÉCHOUE (fail-closed),
+#                                jamais de repli silencieux vers le cloud.
+# Surchargeable par appel via le paramètre `privacy_level` de get_provider_for_tier().
+MOTEUR_PRIVACY_LEVEL_ENV = "MOTEUR_PRIVACY_LEVEL"
+MOTEUR_PRIVACY_LOCAL_ONLY = "local_only"
+
+
+def _est_exclu_cascade(model_id: str, excluded: set[str]) -> bool:
+    """Exclusion exacte + préfixe dashscope/ (catalogue Deck peut encore avoir un routing_tier)."""
+    if model_id in excluded:
+        return True
+    return model_id == "dashscope" or model_id.startswith("dashscope/")
 
 # Import du provider natif Gemini (caching + grounding)
 try:
@@ -171,7 +218,14 @@ class LLMGateway:
             os.environ.get("DASHSCOPE_API_KEY")
             or os.environ.get("BAILIAN_CODING_PLAN_API_KEY")
         )
-        if not dashscope_key:
+        if not DASHSCOPE_ACTIF:
+            if dashscope_key:
+                logger.info(
+                    "[LLMGateway] Dashscope désactivé (D-8 Axel 13/08) — "
+                    "clé présente mais providers non instanciés (401 + CGU backend)."
+                )
+            dashscope_key = None
+        elif not dashscope_key:
             logger.info(
                 f"[LLMGateway] {missing_key_message('DASHSCOPE_API_KEY')} — "
                 "le Coding Plan Alibaba (DashScope) sera désactivé. "
@@ -191,7 +245,7 @@ class LLMGateway:
 
         # Instanciation des 9 providers OpenAI-compatibles via la factory
         # Remplace ~1500 lignes de classes dupliquées par des appels config-driven
-        from core.openai_compat_provider import OPENAI_COMPAT_PROVIDERS, OpenAICompatibleProvider
+        from core.openai_compat_provider import AJEAN_DEFAULT_MODEL, OPENAI_COMPAT_PROVIDERS, OpenAICompatibleProvider
 
         def _make_compat(provider_id: str, model: str, api_key: str, timeout: tuple = None) -> OpenAICompatibleProvider:
             """Crée un provider OpenAI-compatible à partir du registre centralisé."""
@@ -268,12 +322,14 @@ class LLMGateway:
             })
 
         # --- OpenRouter ---
+        # 13/08 : les slugs :free Llama sont morts (HTTP 404 « unavailable for
+        # free »). Décision Axel : un seul modèle câblé, `openrouter/auto`.
         _openrouter = {}
         if openrouter_key:
+            _or_auto = _make_compat("openrouter", "openrouter/auto", openrouter_key)
             _openrouter = {
-                "openrouter": _make_compat("openrouter", "meta-llama/llama-3.3-70b-instruct:free", openrouter_key),
-                "meta-llama/llama-3.3-70b-instruct:free": _make_compat("openrouter", "meta-llama/llama-3.3-70b-instruct:free", openrouter_key),
-                "meta-llama/llama-3.2-3b-instruct:free": _make_compat("openrouter", "meta-llama/llama-3.2-3b-instruct:free", openrouter_key),
+                "openrouter": _or_auto,
+                "openrouter/auto": _or_auto,
             }
 
         # --- xAI (Grok) ---
@@ -424,7 +480,7 @@ class LLMGateway:
             "domotique-qwen7b:q4": _make_compat("ollama_local", "domotique-qwen7b:q4", "ollama"),
             "qwen2.5-coder:7b": _make_compat("ollama_local", "qwen2.5-coder:7b", "ollama"),
             "deepseek-r1:8b": _make_compat("ollama_local", "deepseek-r1:8b", "ollama"),
-            # Variante joignable en LAN (${LM_STUDIO_HOST:-192.168.1.x}) depuis le Deck — cf. commentaire
+            # Variante joignable en LAN (192.168.1.10) depuis le Deck — cf. commentaire
             # dans OPENAI_COMPAT_PROVIDERS["ollama_pc"]. Utilisée par le fast path vocal
             # (FAST_PATH_PROVIDERS) pour du local-first même quand le moteur tourne sur le Deck.
             # Timeout dédié (connect 2s, read 15s) — PAS la famille "lmstudio" (120s de read) :
@@ -434,6 +490,19 @@ class LLMGateway:
             # de la marge pour basculer sur le cloud dans le budget, plutôt que de faire
             # attendre l'utilisateur ~30-90s en silence sur un cold start.
             "ollama_pc": _make_compat("ollama_pc", "domotique-qwen7b:q4", "ollama", timeout=(2.0, 15.0)),
+
+            # === AJEAN (llama.cpp / llama-server, port 8080) — déclaratif, NON branché ===
+            # Deux hôtes symétriques : le PC local (192.168.1.10) et le Deck (127.0.0.1).
+            # Déclarés par IP, jamais par nom DNS, pour rester dans la famille locale
+            # (#T337, `_est_hote_local`). Modèle par défaut = AJEAN_DEFAULT_MODEL (le
+            # réellement chargé). Timeout de connexion COURT (2s), comme ollama_pc : un
+            # hôte local éteint doit échouer vite et basculer sur le cloud. À ce jour
+            # llama-server écoute encore --host 127.0.0.1 : ajean_pc est donc injoignable
+            # depuis le Deck tant qu'Axel n'a pas basculé sur 0.0.0.0 + pare-feu ouvert.
+            # Pas encore mis en tête de cascade (FAST_PATH_PROVIDERS intact) : l'ouverture
+            # réseau est une décision d'exploitation en attente.
+            "ajean_pc": _make_compat("ajean_pc", AJEAN_DEFAULT_MODEL, "ajean", timeout=(2.0, 15.0)),
+            "ajean_deck": _make_compat("ajean_deck", AJEAN_DEFAULT_MODEL, "ajean", timeout=(2.0, 15.0)),
         }
 
         self.providers: dict[str, LLMProvider] = {
@@ -452,7 +521,7 @@ class LLMGateway:
 
             "local": LMStudioProvider(),
             # === STEAM DECK EDGE AI (Ollama RDNA2) ===
-            # Endpoint réseau local : http://${DECK_HOST:-192.168.1.x}:11434
+            # Endpoint réseau local : http://192.168.1.10:11434
             # Disponibilité vérifiée dynamiquement via ping_available()
             # Tiers recommandés : parsing_logs, yaml_format, resume_court
             "deck_ollama":       OllamaDeckProvider(),                              # phi3:mini par défaut
@@ -688,9 +757,12 @@ class LLMGateway:
     def stream(self, provider_name: str, system_prompt: str, user_prompt: str, **kwargs):
         """
         Streaming token-par-token via le provider spécifié.
-        
+
         Yields:
-            dict: {"token": str, "done": bool, "usage": dict|None}
+            dict: {"token": str, "done": bool, "usage": dict|None}, ou
+            {"reasoning": str, "done": False, "usage": None} quand le modèle
+            émet son raisonnement (#T346) — les chunks passent tels quels, le
+            gateway ne mélange JAMAIS le raisonnement avec les tokens.
         """
         provider = self.get_provider(provider_name)
         yield from provider.generate_stream(system_prompt, user_prompt, **kwargs)
@@ -739,24 +811,64 @@ class LLMGateway:
             allowed_models = default_map.get(actual_tier, ["gemini-3.5-flash"])
 
         # [routing_policy] Exclusions volontaires du routage automatique, quelle
-        # que soit la source (config.json OU models_registry.db). Cas d'usage :
-        # claude-fable-5 est délibérément hors tiers (décision Axel 07/2026,
-        # anti auto-escalade vers le modèle le plus cher) — ce filtre garantit
-        # qu'un ajout ultérieur en DB (routing_tier) ne le réintroduira pas.
-        # L'accès EXPLICITE via get_provider("claude-fable-5") reste possible.
+        # que soit la source (config.json OU models_registry.db). Fusionné avec
+        # EXCLUSIONS_CASCADE_DEFAUT : le config.json du Deck est préservé au
+        # deploy, le défaut code doit donc suffire. Accès explicite inchangé.
         excluded = set(config.get("routing_policy", {}).get("excluded_models", []))
-        if excluded:
-            filtered = [m for m in allowed_models if m not in excluded]
-            if len(filtered) != len(allowed_models):
-                logger.info(
-                    f"[LLMGateway] routing_policy : modèle(s) exclu(s) du tier '{actual_tier}' : "
-                    f"{sorted(set(allowed_models) - set(filtered))}"
-                )
-            allowed_models = filtered
+        excluded |= EXCLUSIONS_CASCADE_DEFAUT
+        filtered = [m for m in allowed_models if not _est_exclu_cascade(m, excluded)]
+        if len(filtered) != len(allowed_models):
+            logger.info(
+                f"[LLMGateway] routing_policy : modèle(s) exclu(s) du tier '{actual_tier}' : "
+                f"{sorted(set(allowed_models) - set(filtered))}"
+            )
+        allowed_models = filtered
 
         return actual_tier, allowed_models
 
-    def get_provider_for_tier(self, tier: str, config: dict, elo_order: list = None) -> tuple[str, FallbackProvider]:
+    # [T337] Famille « locale » : un provider est local si son endpoint (`base_url`)
+    # pointe vers un hôte LOOPBACK ou une IP privée LAN (RFC 1918). C'est un critère
+    # INTRINSÈQUE au provider, pas une liste de noms de modèles recopiée à la main :
+    # un futur modèle Ollama ajouté au catalogue est automatiquement local car son
+    # `base_url` reste local, sans aucune retouche ici. Les providers cloud, eux, ont
+    # tous un `base_url` https:// vers un domaine public → jamais classés locaux.
+    @staticmethod
+    def _est_hote_local(host: str) -> bool:
+        """True si l'hôte d'un endpoint est loopback ou une IP privée LAN."""
+        if not host:
+            return False
+        host_lower = host.lower().strip("[]")
+        if host_lower in ("localhost", "::1"):
+            return True
+        try:
+            ip = ipaddress.ip_address(host_lower)
+        except ValueError:
+            # Hôte non-IP (nom DNS) : considéré comme externe / non-local.
+            return False
+        return ip.is_loopback or ip.is_private
+
+    def _is_local_provider(self, name: str) -> bool:
+        """
+        Détermine si le provider enregistré sous `name` appartient à la famille locale,
+        en inspectant le `base_url` du provider BRUT (sous son wrapper éventuel).
+        """
+        provider = self.providers.get(name.lower())
+        if provider is None:
+            return False
+        # Déballer le wrapper ClaudeInstructionsWrapper pour atteindre le provider réel.
+        if isinstance(provider, ClaudeInstructionsWrapper):
+            provider = provider.provider
+        base_url = getattr(provider, "base_url", None)
+        if not base_url:
+            return False
+        try:
+            host = urlparse(base_url).hostname
+        except Exception:
+            return False
+        return self._est_hote_local(host)
+
+    def get_provider_for_tier(self, tier: str, config: dict, elo_order: list = None,
+                              privacy_level: str | None = None) -> tuple[str, FallbackProvider]:
         """
         Résout un Tier en un FallbackProvider contenant les modèles configurés pour ce Tier, triés dynamiquement.
 
@@ -768,7 +880,26 @@ class LLMGateway:
         [T133] Le scoring coût/quota/latence est délégué à ProviderScorer
         (core/provider_scorer.py, ex God Object de 150+ lignes) — cette méthode ne
         fait plus que résoudre le tier, instancier les providers et trier.
+
+        [T337] Mode confidentialité « local_only » (FAIL-CLOSED) :
+        `privacy_level` (optionnel, défaut None) force le niveau de confidentialité
+        par appel SANS toucher les appelants existants :
+          - None (défaut)       → on lit la variable d'environnement MOTEUR_PRIVACY_LEVEL.
+          - "local_only"        → ne retient QUE les modèles servis par un provider LOCAL
+                                  (famille locale déterminée par l'endpoint, cf.
+                                  `_is_local_provider`). Si AUCUN modèle local n'est
+                                  disponible dans le tier, on LÈVE une erreur explicite
+                                  journalisée : le moteur NE retombe JAMAIS sur un provider
+                                  cloud « pour que ça marche quand même ». Un mode
+                                  confidentialité qui se dégrade en silence est pire que pas
+                                  de mode du tout.
+          - toute autre valeur  → comportement historique inchangé.
         """
+        # [T337] Priorité : paramètre d'appel explicite > variable d'environnement.
+        if privacy_level is None:
+            privacy_level = os.environ.get(MOTEUR_PRIVACY_LEVEL_ENV, "")
+        local_only = (privacy_level == MOTEUR_PRIVACY_LOCAL_ONLY)
+
         actual_tier, allowed_models = self._resolve_tier_models(tier, config)
 
         providers_list = []
@@ -777,10 +908,17 @@ class LLMGateway:
                 # [#T212] Résolution brute : le FallbackProvider construit ci-dessous
                 # applique déjà le Circuit Breaker sur chaque modèle de la liste.
                 provider = self._get_raw_provider(model)
-                providers_list.append((model, provider))
             except ValueError:
                 logger.warning(f"Modèle {model} non disponible ou clé API manquante.")
                 continue
+            # [T337] En mode local_only, on écarte tout modèle servi par un provider CLOUD.
+            if local_only and not self._is_local_provider(model):
+                logger.info(
+                    f"[LLMGateway] privacy_level=local_only : modèle cloud écarté du tier "
+                    f"'{tier}' : {model}"
+                )
+                continue
+            providers_list.append((model, provider))
 
         from core.provider_scorer import ProviderScorer
         scorer = ProviderScorer([m for m, _ in providers_list])
@@ -789,6 +927,15 @@ class LLMGateway:
         logger.info(f"[LLMGateway] Tier '{tier}' (actual: '{actual_tier}') -> allowed_models: {allowed_models} -> trié (prioritaire d'abord): {[p[0] for p in providers_list]}")
 
         if not providers_list:
+            # [T337] FAIL-CLOSED : en mode local_only, un tier sans modèle local est une
+            # erreur EXPLICITE — jamais de repli silencieux vers le cloud. L'utilisateur
+            # croirait sa donnée locale alors qu'elle partirait chez un tiers.
+            if local_only:
+                raise ValueError(
+                    f"privacy_level=local_only : aucun modèle local disponible dans le tier "
+                    f"'{tier}' (actual: '{actual_tier}'). Modèles candidats: {allowed_models}. "
+                    f"Aucune requête ne part vers un provider cloud."
+                )
             for fallback_model in ["gemini-3.5-flash", "deepseek-chat", "local"]:
                 try:
                     providers_list.append((fallback_model, self._get_raw_provider(fallback_model)))
@@ -969,7 +1116,7 @@ def load_config(force_reload: bool = False) -> dict:
             # [#T202] Clone Git dédié aux tâches DreamCoder (branches task/*).
             # Vide = repli sur le dossier du moteur (poste de dev). Sur le Deck
             # (prod overlay sans dépôt légitime), pointer le clone dédié, ex:
-            # /home/deck/dev_station/moteur_agents_dreamcoder
+            # /opt/vromvrom-engine_dreamcoder
             "dreamcoder_repo_path": "",
         }
     }

@@ -41,6 +41,87 @@ def test_classify_deep():
     assert intent == VocalIntent.DEEP
 
 
+# ─────────────────────────────────────────────────────────────
+# [#T351] Reconnaissance des demandes météo / agenda formulées
+# naturellement (sans le mot-clé attendu), mesurées en prod via
+# vocal_audit_log, + non-régression sur bavardage et commandes HA.
+# ─────────────────────────────────────────────────────────────
+
+# Phrases réelles du vocal_audit_log : aucune ne contient « météo »
+# ni « agenda », pourtant l'outil (web / calendrier) existe.
+_REAL_METEO_AGENDA_PHRASES = [
+    "Quand est-ce que je travaille",
+    "Quel temps il fait demain ?",
+    "C'est quand la prochaine fois que je travaille",
+]
+
+
+@pytest.mark.parametrize(
+    "phrase, attendu",
+    [
+        ("Quand est-ce que je travaille", VocalIntent.CALENDAR),
+        ("Quel temps il fait demain ?", VocalIntent.WEB),
+        ("C'est quand la prochaine fois que je travaille", VocalIntent.CALENDAR),
+        # Variantes du corpus #T351
+        ("est-ce qu'il va pleuvoir", VocalIntent.WEB),
+        ("il fait combien dehors", VocalIntent.WEB),
+        ("je bosse quand", VocalIntent.CALENDAR),
+    ],
+)
+def test_classify_formulations_naturelles(phrase, attendu):
+    """#T351 — les demandes naturelles vont vers l'intention qui possède l'outil."""
+    intent, _ = classify_vocal_intent(phrase)
+    assert intent == attendu
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "raconte-moi une blague",
+        "comment tu vas",
+    ],
+)
+def test_classify_bavardage_reste_chat(phrase):
+    """#T351 — le bavardage ordinaire ne doit pas être détourné vers web/calendrier."""
+    assert classify_vocal_intent(phrase)[0] == VocalIntent.CHAT
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "allume la lumière du salon",
+        "allume la lumière ce soir",
+    ],
+)
+def test_classify_commande_ha_ne_part_pas_calendrier_ni_web(phrase):
+    """#T351 — une commande domotique ne part NI au calendrier NI au web.
+
+    « ce soir » a été retiré de _CALENDAR_MARKERS : trop court, il détournait
+    « allume la lumière ce soir » vers le calendrier.
+    """
+    intent, _ = classify_vocal_intent(phrase)
+    assert intent == VocalIntent.CHAT
+
+
+def test_classify_est_purement_local():
+    """#T351 — la classification d'intention ne fait AUCUN appel de gateway.
+
+    C'est une fonction déterministe à base de mots-clés : aucun aller-retour
+    LLM avant la classification (88 % des réponses vocales sortent en < 1 s).
+    """
+    with patch("core.vocal_host._run_sync_discussion") as mock_discussion, \
+         patch("core.vocal_host._try_zero_llm_ha_command") as mock_ha, \
+         patch("core.vocal_host._try_zero_llm_ha_state") as mock_state:
+        for phrase in _REAL_METEO_AGENDA_PHRASES + [
+            "raconte-moi une blague",
+            "allume la lumière du salon",
+        ]:
+            classify_vocal_intent(phrase)
+    mock_discussion.assert_not_called()
+    mock_ha.assert_not_called()
+    mock_state.assert_not_called()
+
+
 def test_files_prefers_gmail():
     from core.vocal_jobs import _files_prefers_gmail
 
@@ -163,14 +244,19 @@ async def test_files_specialist_drive():
 
 @pytest.mark.asyncio
 async def test_handle_discussion_web_sync():
-    """WEB repasse par le spécialiste grounding (sync)."""
+    """WEB repasse par le spécialiste grounding (sync).
+
+    NB : on utilise une demande web NON météo (« dernier modèle ») : les
+    demandes météo sont désormais interceptées en Zero-LLM par
+    `services/ha_weather_query` (voir test_ha_weather_query).
+    """
     with patch(
         "core.vocal_jobs.run_vocal_specialist",
         new_callable=AsyncMock,
-        return_value="Demain à Paris, 24 degrés et ensoleillé.",
+        return_value="Le dernier modèle de Gemini est disponible."
     ):
         result = await handle_discussion(
-            user_prompt="Quelle météo demain ?",
+            user_prompt="Quel est le dernier modèle sorti de Gemini ?",
             session_id="sess_web",
             gateway=MagicMock(),
             token_tracker=MagicMock(),
@@ -178,7 +264,7 @@ async def test_handle_discussion_web_sync():
         )
     assert result.async_job_id is None
     assert result.routing_type == "vocal_host_web"
-    assert "24" in result.response_text or "Paris" in result.response_text
+    assert "Gemini" in result.response_text or "modèle" in result.response_text
 
 
 @pytest.mark.asyncio
@@ -235,3 +321,45 @@ async def test_handle_discussion_chat_sync():
     assert result.routing_type == "discussion_chat"
     assert result.async_job_id is None
     assert "Salut" in result.response_text
+
+
+# ── [#T365] Le champ horaire du travail doit atteindre le calendrier ──
+
+@pytest.mark.parametrize("phrase", [
+    # Formulations mesurées en prod le 17/08, toutes routées `chat` (score 0) et
+    # dont 4 recevaient « Je n'ai pas accès à ton agenda » alors que l'accès marche.
+    "A quelle heure je commence a travailler demain ?",
+    "C'est quand mon prochain jour de repos ?",
+    "je finis a quelle heure demain ?",
+    "j'ai quoi de prevu ce week-end ?",
+    "Quel est mon planning de la semaine ?",
+])
+def test_formulations_horaires_routees_calendrier(phrase):
+    from core.vocal_host import VocalIntent, classify_vocal_intent
+    intent, score = classify_vocal_intent(phrase)
+    assert intent == VocalIntent.CALENDAR, f"{phrase!r} doit aller au calendrier"
+    assert score > 0
+
+
+@pytest.mark.parametrize("phrase", [
+    # Garde-fou : les marqueurs sont volontairement longs pour éviter ceci.
+    "je commence a comprendre la relativite",
+    "raconte-moi une blague tres courte",
+    "c'est quoi un volet roulant ?",
+])
+def test_pas_de_faux_positif_calendrier(phrase):
+    from core.vocal_host import VocalIntent, classify_vocal_intent
+    intent, _ = classify_vocal_intent(phrase)
+    assert intent != VocalIntent.CALENDAR
+
+
+def test_consigne_chat_interdit_de_nier_agenda_et_domotique():
+    """
+    Le chat ne voit pas les autres chemins et niait des capacités réelles :
+    « je n'ai pas accès à ton agenda », « je n'ai pas la capacité de contrôler
+    le Tab 5 » — alors que 29 commandes HA ont abouti en 30 jours.
+    """
+    from core.vocal_host import _INTENT_SUFFIX, VocalIntent
+    consigne = _INTENT_SUFFIX[VocalIntent.CHAT]
+    assert "JAMAIS" in consigne
+    assert "agenda" in consigne and "domotique" in consigne

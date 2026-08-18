@@ -35,6 +35,16 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def _est_entite_morte(entity_info: dict) -> bool:
+    """
+    [T356] Une entité HA est « morte » quand son état est `unavailable` ou
+    `unknown` : l'appareil n'exécutera aucune commande. Une entité vivante doit
+    l'emporter sur une morte à score de correspondance voisin.
+    """
+    return (entity_info.get("state") or "") in ("unavailable", "unknown")
+
+
 # Domaines HA éligibles au fuzzy match (commandes physiques uniquement)
 HA_ELIGIBLE_DOMAINS = {"light", "switch", "cover", "fan", "climate", "media_player", "input_boolean"}
 
@@ -63,8 +73,16 @@ FUZZY_AMBIGUITY_DELTA = 0.08
 # Durée de vie du cache des entités en secondes
 ENTITY_CACHE_TTL = 60.0
 
+# [T356] Pénalité appliquée au score d'une entité `unavailable`/`unknown`.
+# Strictement SUPÉRIEURE à FUZZY_AMBIGUITY_DELTA (0.08) : une morte pénalisée
+# sort de la fenêtre d'ambiguïté avec la vivante, qui est alors choisie sans
+# refus. Sans ça, un doublon mort (ex. six light.sonoff_* indisponibles)
+# resterait dans la fenêtre et bloquerait tout choix. Reste modérée : une morte
+# seule candidate à un score élevé (ex. 0.80 → 0.70) reste retenue.
+_PENALITE_ENTITE_MORTE = 0.10
+
 # URL LM Studio pour les embeddings (PC dev par défaut ; override via .env Deck)
-LM_STUDIO_URL = os.environ.get("LM_STUDIO_URL", "http://192.168.1.x:1234").rstrip("/")
+LM_STUDIO_URL = os.environ.get("LM_STUDIO_URL", "http://192.168.1.10:1234").rstrip("/")
 LM_STUDIO_EMBED_MODEL = "nomic-embed-text"
 LM_STUDIO_EMBED_TIMEOUT = 3.0  # secondes
 
@@ -120,7 +138,7 @@ class HAFuzzyMatcher:
     def __init__(self, ha_url: str, ha_token: str):
         """
         Args:
-            ha_url: URL de l'instance HA (ex: https://192.168.1.x:8123)
+            ha_url: URL de l'instance HA (ex: https://192.168.1.10:8123)
             ha_token: Long-lived access token HA
         """
         self.ha_url = ha_url.rstrip("/")
@@ -286,6 +304,10 @@ class HAFuzzyMatcher:
                         "friendly_name": friendly_name,
                         "normalized_name": self._normalize(friendly_name),
                         "normalized_id": self._normalize(entity_id.split(".")[-1]),
+                        # [T356] État brut (on/off/unavailable/unknown) : sert à
+                        # départager deux entités de score voisin au profit de la
+                        # vivante.
+                        "state": state.get("state"),
                     }
 
                 self._entity_cache = cache
@@ -320,7 +342,15 @@ class HAFuzzyMatcher:
         bonus = 0.15 if (entity_info["normalized_name"]
                          and entity_info["normalized_name"] in normalized_prompt) else 0.0
 
-        return min(1.0, max(score_name, score_id) + bonus)
+        score = min(1.0, max(score_name, score_id) + bonus)
+        # [T356] À score de correspondance égal ou très proche, une entité
+        # VIVANTE doit l'emporter sur une entité morte (doublons indisponibles
+        # qui concurrencent les entités réelles). La pénalité, strictement
+        # supérieure au delta d'ambiguïté, fait sortir la morte de la fenêtre :
+        # la vivante est choisie sans refus.
+        if _est_entite_morte(entity_info):
+            score = max(0.0, score - _PENALITE_ENTITE_MORTE)
+        return score
 
     @staticmethod
     def _is_ambiguous(scores: list[float], threshold: float) -> bool:

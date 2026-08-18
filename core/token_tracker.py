@@ -345,7 +345,7 @@ def init_session(session_id: str, objective: str):
     except Exception as e:
         logger.warning(f"[TOKEN TRACKER] Erreur init_session SQLite : {e}")
 
-def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session_id: str = None, cost_usd: float = None, agent_name: str = None):
+def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session_id: str = None, cost_usd: float = None, agent_name: str = None, cache_hit_tokens: int = 0):
     """Enregistre la consommation de tokens pour un modèle donné directement dans SQLite.
 
     [#T296] `agent_name` : à défaut d'être passé explicitement, il est lu dans la
@@ -353,6 +353,12 @@ def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session
     call-sites des providers n'ont donc rien à transporter — un provider ne
     connaît de toute façon pas l'agent. Reste None hors agent (routeur,
     collecteur de quotas, script direct) : une absence légitime, pas un défaut.
+
+    [#T347] `cache_hit_tokens` : nombre de tokens d'entrée servis par le cache
+    (compteur renvoyé par l'API, cf. `prompt_cache_hit_tokens` /
+    `prompt_tokens_details.cached_tokens`). Ces tokens sont facturés au tarif
+    cache (`price["cache"]`) au lieu du tarif d'entrée plein. Défaut 0 : les ~15
+    call-sites qui ne passent rien gardent leur coût au centime près.
     """
     if prompt_tokens <= 0 and completion_tokens <= 0:
         return
@@ -368,7 +374,15 @@ def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session
     if cost_usd is not None:
         cost = cost_usd
     else:
-        cost = (prompt_tokens * price["input"]) + (completion_tokens * price["output"])
+        # [T347] Les tokens d'entrée servis par le cache sont facturés au tarif
+        # cache, le reste de l'entrée au tarif plein, la sortie à son tarif.
+        cache_hit_tokens = max(0, min(cache_hit_tokens, prompt_tokens))
+        cache_miss = prompt_tokens - cache_hit_tokens
+        cost = (
+            (cache_miss * price["input"])
+            + (cache_hit_tokens * price["cache"])
+            + (completion_tokens * price["output"])
+        )
 
     try:
         from core.session_history import record_token_usage
@@ -381,6 +395,7 @@ def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session
             session_id=session_id,
             channel=channel,
             agent_name=agent_name,
+            cache_hit_tokens=cache_hit_tokens,
         )
     except Exception as e:
         logger.warning(f"[TOKEN TRACKER] Erreur record_usage SQLite : {e}")

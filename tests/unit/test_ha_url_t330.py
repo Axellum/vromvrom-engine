@@ -1,7 +1,7 @@
 """
 tests/unit/test_ha_url_t330.py — plus aucune URL HA en clair en dur (#T330).
 
-Mesuré le 12/08 : `http://192.168.1.x:8123` était écrit en dur comme valeur
+Mesuré le 12/08 : `http://192.168.1.10:8123` était écrit en dur comme valeur
 de repli à 9 endroits (5 fichiers) — une URL en clair vers un serveur qui
 n'écoute qu'en HTTPS : un défaut FAUX. Home Assistant refoule le clair sans
 répondre (`RemoteDisconnected`, cf. #T329), et ces valeurs finissaient
@@ -60,19 +60,19 @@ def test_ha_url_en_repli(monkeypatch):
 
 def test_hass_url_definie_comportement_inchange(monkeypatch):
     """Avec HASS_URL définie, les sites se comportent exactement comme avant."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
-    assert get_ha_url() == "https://192.168.1.x:8123"
+    assert get_ha_url() == "https://192.168.1.10:8123"
 
     from core.tab5_pusher import Tab5Pusher
     pusher = Tab5Pusher()
-    assert pusher.ha_url == "https://192.168.1.x:8123"
+    assert pusher.ha_url == "https://192.168.1.10:8123"
 
     from core.vocal_tools import _ha_credentials
-    assert _ha_credentials() == ("https://192.168.1.x:8123", "jeton-de-test")
+    assert _ha_credentials() == ("https://192.168.1.10:8123", "jeton-de-test")
 
     from api.routes.ha import _get_ha_credentials
-    assert _get_ha_credentials() == ("https://192.168.1.x:8123", "jeton-de-test")
+    assert _get_ha_credentials() == ("https://192.168.1.10:8123", "jeton-de-test")
 
 
 # ── Sans variables : chaque site échoue en nommant la variable ───────────────
@@ -176,8 +176,8 @@ def test_aucune_url_ha_en_dur_dans_le_code_runtime():
         if any(part in exclus for part in p.parts):
             continue
         for i, ligne in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-            if '"http://192.168.1.x:8123"' in ligne \
-                    or '"https://192.168.1.x:8123"' in ligne:
+            if '"http://192.168.1.10:8123"' in ligne \
+                    or '"https://192.168.1.10:8123"' in ligne:
                 coupables.append(f"{p.relative_to(racine)}:{i}")
     assert not coupables, (
         "URL HA en dur réintroduite dans le code runtime (utiliser "

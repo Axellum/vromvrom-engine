@@ -28,7 +28,8 @@ Garde-fous :
     requêtes de solde serait un amplificateur de panne, pas une surveillance.
   - UNE alerte par franchissement, jamais une par cycle : l'hystérésis
     (confirmation + sortie) est persistée en base ; un solde qui reste bas
-    dix cycles produit UNE alerte, pas dix.
+    dix cycles produit UNE alerte, pas dix. Seule une notification ÉCHOUÉE
+    est retentée au cycle suivant (#T343-B).
   - JAMAIS de secret dans une alerte : ni clé, ni token, même tronqué. Le
     provider, l'id de la clé (un nom d'environnement, pas sa valeur) et le
     chiffre suffisent.
@@ -44,6 +45,13 @@ import os
 import time
 
 logger = logging.getLogger(__name__)
+
+# [#T343-B] Sérialise les cycles concurrents : la boucle de fond et le bouton
+# IHM (POST /api/quotas/alertes/cycle) peuvent s'exécuter en même temps. Sans
+# verrou, pendant l'aller-retour de `notifier_alerte`, un second cycle lirait
+# un état pas encore persisté (en_alerte=0) et renotifierait — deux
+# notifications pour un seul franchissement, la garantie de #T334 rompue.
+_verrou_cycle = asyncio.Lock()
 
 # ── Réglages par environnement (aucune modification de code) ─────────────────
 
@@ -266,7 +274,20 @@ async def executer_cycle_alerte(resume: dict | None = None) -> dict:
         bout de `sortie_cycles()`, l'état est levé et le franchissement
         suivant pourra de nouveau alerter ;
       - au-dessus du seuil, pas en alerte → compteurs remis à zéro.
+
+    #T343-B : la sortie exige des cycles CONSÉCUTIFS (un franchissement en
+    cours de sortie annule la sortie) ; l'état « en alerte » n'est persisté
+    qu'après une notification passée (ou en mode observation) — un échec
+    laisse la confirmation acquise et le cycle suivant retente.
     """
+    # Voir `_verrou_cycle` : les deux appelants (boucle, bouton IHM) passent
+    # ici, et le verrou couvre lecture → décision → notification → écriture.
+    async with _verrou_cycle:
+        return await _cycle_alerte(resume)
+
+
+async def _cycle_alerte(resume: dict | None) -> dict:
+    """Corps du cycle, exécuté sous `_verrou_cycle`."""
     if resume is None:
         # Lecture seule de la base : AUCUN appel aux API de facturation.
         from core.models_db import get_quota_summary
@@ -279,14 +300,16 @@ async def executer_cycle_alerte(resume: dict | None = None) -> dict:
     en_alerte = etat["en_alerte"]
     cycles_sous = etat["cycles_sous_seuil"]
     cycles_au_dessus = etat["cycles_au_dessus"]
+    derniere_alerte_ts = etat["derniere_alerte_ts"]
 
     if alertes:
+        # Un franchissement pendant une sortie en cours ANNULE la sortie :
+        # lever l'alerte exige des cycles CONSÉCUTIFS au-dessus du seuil.
+        cycles_au_dessus = 0
         if not en_alerte:
             cycles_sous += 1
-            cycles_au_dessus = 0
             if cycles_sous >= max(confirmation_cycles(), 1):
                 nouvelle_alerte = True
-                en_alerte = 1
         # déjà en alerte : on ne re-notifie pas, compteurs stables
     else:
         cycles_sous = 0
@@ -298,14 +321,6 @@ async def executer_cycle_alerte(resume: dict | None = None) -> dict:
         else:
             cycles_au_dessus = 0
 
-    _ecrire_etat(
-        en_alerte=en_alerte,
-        cycles_sous_seuil=cycles_sous,
-        cycles_au_dessus=cycles_au_dessus,
-        dernier_cycle_ts=maintenant,
-        derniere_alerte_ts=maintenant if nouvelle_alerte else etat["derniere_alerte_ts"],
-    )
-
     notifiee = False
     if nouvelle_alerte:
         message = formater_message(alertes)
@@ -314,6 +329,14 @@ async def executer_cycle_alerte(resume: dict | None = None) -> dict:
             len(alertes), ", ".join(sorted({a["api_key_id"] for a in alertes})),
         )
         notifiee = await notifier_alerte(message)
+        # L'état « en alerte » n'est persisté qu'après une notification passée
+        # (ou en mode observation) : un échec laisse en_alerte=0 avec la
+        # confirmation déjà acquise, donc le cycle suivant RETENTE au lieu
+        # d'enterrer l'alerte. Réémission bornée à l'échec : une fois notifiée,
+        # en_alerte=1 et plus aucune re-notification (#T343-B).
+        if notifiee or mode_observation():
+            en_alerte = 1
+            derniere_alerte_ts = maintenant
     elif alertes:
         logger.info(
             "[ALERTE QUOTAS] En alerte (déjà notifiée) : %d clé(s) sous tension — "
@@ -325,6 +348,14 @@ async def executer_cycle_alerte(resume: dict | None = None) -> dict:
             "[ALERTE QUOTAS] Retour sous les seuils : %d/%d cycle(s) de sortie.",
             cycles_au_dessus, sortie_cycles(),
         )
+
+    _ecrire_etat(
+        en_alerte=en_alerte,
+        cycles_sous_seuil=cycles_sous,
+        cycles_au_dessus=cycles_au_dessus,
+        dernier_cycle_ts=maintenant,
+        derniere_alerte_ts=derniere_alerte_ts,
+    )
 
     return {
         "alertes": [a["api_key_id"] for a in alertes],

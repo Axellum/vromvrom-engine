@@ -23,6 +23,7 @@ Auteur : Antigravity IDE + Axel — 2026-06-04
 import asyncio
 import hashlib
 import logging
+import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -63,7 +64,7 @@ def apply_workload_override(config: dict, tier: str | None = None, model: str | 
 # ══════════════════════════════════════════════════════════════════
 
 FAST_PATH_SYSTEM_PROMPT = (
-    "Tu es l'assistant vocal d'Axel sur sa tablette. "
+    "Tu es l'assistant vocal de la maison. "
     "Réponds UNIQUEMENT en français, en phrases naturelles (ou un petit tableau texte "
     "si on te le demande). Chaleureux, concis. "
     "INTERDIT : JSON, code, balises, appels d'outils, MCP, function_call, "
@@ -79,7 +80,7 @@ FAST_PATH_SYSTEM_PROMPT = (
 # si quota Cerebras (30 RPM) ou indispo.
 FAST_PATH_PROVIDERS = [
     "gpt-oss-120b",
-    "ollama_pc",  # Ollama PC (RTX 5070Ti, fine-tune domotique) — local-first ; repli cloud si PC éteint (connect timeout 2s)
+    "ollama_pc",  # Ollama PC (GPU locale, fine-tune domotique) — local-first ; repli cloud si PC éteint (connect timeout 2s)
     "gemini-3.5-flash-free",
     "deepseek-chat",
     "gemini-2.5-flash-free",
@@ -195,16 +196,32 @@ async def run_fast_path(
 
     from core.vocal_tools import provider_supports_openai_tools, run_vocal_tool_loop
 
+    # [#T352] Résolution préalable des candidats en paires (pname, provider)
+    # disponibles. La sonde d'hôte a besoin du provider pour lire son base_url,
+    # et de connaître le nombre de candidats restants pour ne JAMAIS vider la
+    # cascade : si elle écarterait tous les candidats, le dernier est tenté quand
+    # même — mieux vaut payer 2 s que ne rien répondre.
+    candidats_resolus: list[tuple[str, object]] = []
     for entry in candidates:
         if isinstance(entry, tuple):
-            pname, fast_provider = entry
-        else:
-            pname = entry
-            try:
-                fast_provider = gateway.get_provider(pname)
-            except ValueError:
-                logger.debug(f"[FAST_PATH] Provider {pname} non disponible, skip")
-                continue
+            candidats_resolus.append(entry)
+            continue
+        try:
+            candidats_resolus.append((entry, gateway.get_provider(entry)))
+        except ValueError:
+            logger.debug(f"[FAST_PATH] Provider {entry} non disponible, skip")
+
+    for index, (pname, fast_provider) in enumerate(candidats_resolus):
+        # [#T352] Sonde d'accessibilité d'hôte : avant de tenter un provider dont
+        # l'URL pointe vers un hôte du réseau local, on vérifie que la machine
+        # décroche et on passe au suivant si ce n'est pas le cas. Jamais sur le
+        # dernier candidat (ne pas vider la cascade), jamais sur un hôte cloud
+        # (latence variable, DNS, proxys), et toute exception de la sonde = « on
+        # ne sait pas » = on tente le provider comme avant.
+        if index < len(candidats_resolus) - 1 and await _fast_path_hote_muet(
+            gateway, pname, fast_provider
+        ):
+            continue
 
         try:
             # Mini allowlist outils (HA/calendrier/web/mémoire) si provider OpenAI-compat
@@ -253,6 +270,37 @@ async def run_fast_path(
     asyncio.create_task(_persist_fast_path_async(session_id, user_prompt, str(response_text)))
 
     return response_text
+
+
+async def _fast_path_hote_muet(gateway, pname: str, fast_provider) -> bool:
+    """True si l'hôte local du provider ne décroche pas → on le saute (#T352).
+
+    Garde-fous :
+    - ne sonde QUE les hôtes locaux, via le critère `_est_hote_local` du gateway
+      (loopback + IP privée LAN ; tout nom DNS est traité comme externe) — un
+      provider cloud n'est JAMAIS écarté par une sonde TCP ;
+    - toute exception de la sonde (socket, DNS, boucle asyncio) = « on ne sait
+      pas » = on tente le provider comme avant (le doute ne devient pas un refus).
+    """
+    try:
+        from core.llm import provider_health
+
+        base_url = provider_health.base_url_provider(fast_provider)
+        if not base_url:
+            return False
+        hote_port = provider_health.hote_et_port(base_url)
+        if hote_port is None:
+            return False
+        hote, port = hote_port
+        if not gateway._est_hote_local(hote):
+            return False  # hôte cloud : jamais sondé
+        if await provider_health.hote_joignable(base_url):
+            return False  # la machine décroche → on tente
+        logger.info(f"[FAST_PATH] {pname} ignoré : {hote}:{port} ne décroche pas")
+        return True
+    except Exception as _e:
+        logger.debug(f"[FAST_PATH] Sonde hôte ignorée pour {pname} : {_e}")
+        return False
 
 
 async def _persist_fast_path_async(sid: str, prompt: str, result: str, source: str = "") -> None:
@@ -871,7 +919,12 @@ async def _cleanup_mcp(mcp_bridge) -> None:
 # Service : Exécution moteur en background (fire-and-forget)
 # ══════════════════════════════════════════════════════════════════
 
-async def run_engine_background(objective: str, on_event_callback, session_id: str | None = None) -> None:
+async def run_engine_background(
+    objective: str,
+    on_event_callback,
+    session_id: str | None = None,
+    execution_key: str | None = None,
+) -> None:
     """
     Lance le moteur en arrière-plan pour /api/run (fire-and-forget).
     Met à jour execution_state via AppState pendant l'exécution.
@@ -880,6 +933,8 @@ async def run_engine_background(objective: str, on_event_callback, session_id: s
         objective        : Objectif de la tâche
         on_event_callback: Coroutine async appelée à chaque événement moteur
         session_id       : ID de session optionnel pré-généré (V12 B3-Fix)
+        execution_key    : Clé de concurrence #T324 (entrée du registre à
+                           libérer en fin d'exécution, même sur exception).
     """
     from core.app_state import get_app_state
     from core.llm_gateway import (
@@ -919,15 +974,26 @@ async def run_engine_background(objective: str, on_event_callback, session_id: s
             timeout_seconds=duree_session_fond_s(),
         )
 
-        async with state.execution_lock:
-            state.execution_state["status"] = result.get("status", "success")
-            state.execution_state["engine_state"] = result.get("engine_state")
+        final_status = result.get("status", "success")
+        final_engine_state = result.get("engine_state")
+        final_error = None
 
     except Exception as e:
         logger.error(f"[ENGINE_BG] Erreur : {e}")
-        async with state.execution_lock:
-            state.execution_state["status"] = "error"
-            state.execution_state["error_message"] = str(e)
+        final_status = "error"
+        final_engine_state = None
+        final_error = str(e)
+    finally:
+        # [#T324] Libération systématique de l'entrée de session (try/finally) :
+        # aucune fuite dans le registre, même sur exception. La vue agrégée reste
+        # "running" si une autre session tourne encore.
+        if execution_key:
+            await state.end_execution(
+                execution_key,
+                status=final_status,
+                engine_state=final_engine_state,
+                error_message=final_error,
+            )
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1033,10 +1099,28 @@ async def stream_discussion_fast_path_sse(
     tier_override: str | None = None,
     model_override: str | None = None,
     conversation_id: str | None = None,
+    enable_vocal_tools: bool = True,
 ) -> AsyncGenerator[str, None]:
     """
     Générateur SSE pour le mode Discussion vocal (mode=chat).
     Émet token / sentence / done — jamais Planner/DAG.
+
+    [#T346] Événements supplémentaires (additifs, un client qui les ignore
+    fonctionne comme avant) :
+    - thinking      : {"type": "thinking", "text": str} — fragment du
+      raisonnement du modèle, JAMAIS mélangé aux tokens ni au TTS ;
+    - thinking_done : {"type": "thinking_done", "durationMs": int} — émis à la
+      fin de la phase de raisonnement (premier token de réponse ou clôture) ;
+    - tool_call     : {"type": "tool_call", "id": str, "toolName": str,
+      "args": dict} — annonce d'un appel d'outil (statut « running ») ;
+    - tool_result   : {"type": "tool_result", "id": str, "toolName": str,
+      "status": "success"|"error", "resultData": str|None,
+      "errorMessage": str|None, "executionTimeMs": int} — résultat de l'outil.
+
+    `enable_vocal_tools` : les outils (HA/calendrier/web/mémoire) ne sont
+    proposés QU'aux providers qui les supportent
+    (`provider_supports_openai_tools`) ; pour les autres, aucun aller-retour
+    n'est ajouté — le flux reste strictement celui d'avant.
     """
     import json
 
@@ -1045,6 +1129,7 @@ async def stream_discussion_fast_path_sse(
         register_vocal_stream,
         unregister_vocal_stream,
     )
+    from core.vocal_tools import provider_supports_openai_tools, run_vocal_tool_loop
     from core.vocal_tts_cache import sanitize_discussion_tts
 
     register_vocal_stream(session_id, conversation_id=conversation_id)
@@ -1072,26 +1157,115 @@ async def stream_discussion_fast_path_sse(
         accumulated = ""
         sentence_buf = ""
         streamed = False
+        # [#T346] Suivi de la phase de raisonnement : None = pas de pensée en
+        # cours ; sinon l'instant (monotonic) du premier fragment reçu.
+        debut_pensee: float | None = None
 
+        # [#T352] Résolution préalable des candidats en paires (pname, provider),
+        # comme dans `run_fast_path` : la sonde d'hôte a besoin du provider pour
+        # lire son base_url, et de connaître le nombre de candidats restants pour
+        # ne JAMAIS vider la cascade (le dernier est tenté même s'il est muet).
+        candidats_resolus: list[tuple[str, object]] = []
         for entry in _fast_path_provider_candidates(gateway, tier_override, model_override):
+            if isinstance(entry, tuple):
+                # Override de tier : déjà une paire (nom, provider) prête à l'emploi.
+                candidats_resolus.append(entry)
+                continue
+            try:
+                candidats_resolus.append((entry, gateway.get_provider(entry)))
+            except ValueError:
+                logger.debug(f"[STREAM_DISCUSSION] Provider {entry} indisponible, skip")
+
+        for index, (pname, fast_provider) in enumerate(candidats_resolus):
             if is_vocal_aborted(session_id, conversation_id=conversation_id):
                 yield f"data: {json.dumps({'type': 'aborted'}, ensure_ascii=False)}\n\n"
                 return
-            if isinstance(entry, tuple):
-                pname, fast_provider = entry
-                stream_source = fast_provider.generate_stream(
-                    system_prompt, user_prompt, session_id=session_id
+            # [#T352] Sonde d'accessibilité d'hôte : même garde-fous que sur le
+            # chemin non streamé. Jamais sur le dernier candidat (ne pas vider la
+            # cascade), jamais sur un hôte cloud, et toute exception de la sonde =
+            # « on ne sait pas » = on tente le provider comme avant.
+            if index < len(candidats_resolus) - 1 and await _fast_path_hote_muet(
+                gateway, pname, fast_provider
+            ):
+                continue
+
+            # [#T346] Outils vocaux sur le chemin streamé : on RÉUTILISE la
+            # boucle existante `run_vocal_tool_loop` (pas de seconde boucle
+            # d'outils). Ses événements de cycle de vie passent par une queue
+            # au fil de l'eau ; le sentinel None marque la fin de la boucle.
+            # Un provider sans support d'outils ne paie AUCUN surcoût : la
+            # vérification est purement locale, zéro aller-retour.
+            if enable_vocal_tools and provider_supports_openai_tools(fast_provider):
+                queue_evenements: asyncio.Queue = asyncio.Queue()
+
+                # Paramètre par défaut : la clôture est liée à la queue de CE
+                # tour de cascade (B023 — variable réassignée à chaque tour).
+                async def _pousser_evenement_outil(evenement, _queue=queue_evenements):
+                    await _queue.put(evenement)
+
+                tache_outils = asyncio.create_task(run_vocal_tool_loop(
+                    fast_provider,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    session_id=session_id,
+                    on_event=_pousser_evenement_outil,
+                ))
+                tache_outils.add_done_callback(
+                    lambda _t, _queue=queue_evenements: _queue.put_nowait(None)
                 )
-            else:
-                pname = entry
+
+                texte_outils = None
                 try:
-                    gateway.get_provider(pname)
-                except ValueError:
-                    logger.debug(f"[STREAM_DISCUSSION] Provider {pname} indisponible, skip")
+                    while True:
+                        # Un abort vocal doit couper la boucle d'outils comme
+                        # il coupe le flux de tokens (barge-in).
+                        if is_vocal_aborted(session_id, conversation_id=conversation_id):
+                            tache_outils.cancel()
+                            yield f"data: {json.dumps({'type': 'aborted'}, ensure_ascii=False)}\n\n"
+                            return
+                        try:
+                            evenement = await asyncio.wait_for(
+                                queue_evenements.get(), timeout=0.25
+                            )
+                        except TimeoutError:
+                            continue
+                        if evenement is None:
+                            break
+                        yield f"data: {json.dumps(evenement, ensure_ascii=False)}\n\n"
+                    texte_outils = await tache_outils
+                except Exception as outils_err:
+                    logger.warning(
+                        f"[STREAM_DISCUSSION] {pname} boucle outils échouée : {outils_err}"
+                    )
                     continue
-                stream_source = gateway.stream(
-                    pname, system_prompt, user_prompt, session_id=session_id
-                )
+
+                if texte_outils:
+                    logger.info(f"[STREAM_DISCUSSION] Réponse outils → {pname}")
+                    # Le résultat des outils est synthétisé par le modèle : il
+                    # passe par token + sentence comme le reste du flux, mais
+                    # JAMAIS par le cache TTL (états HA changeants — même règle
+                    # que le chemin non streamé `run_fast_path`).
+                    final = sanitize_discussion_tts(texte_outils)
+                    if not final:
+                        final = sanitize_discussion_tts("Désolé, peux-tu reformuler ?")
+                    phrases, reste = _pop_complete_sentences(final)
+                    if reste.strip():
+                        phrases.append(reste.strip())
+                    for phrase in phrases:
+                        yield f"data: {json.dumps({'type': 'token', 'text': phrase}, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps({'type': 'sentence', 'text': phrase}, ensure_ascii=False)}\n\n"
+                    asyncio.create_task(
+                        _persist_fast_path_async(session_id, user_prompt, final)
+                    )
+                    yield f"data: {json.dumps({'type': 'done', 'response': final, 'agents_used': ['discussion_chat']}, ensure_ascii=False)}\n\n"
+                    return
+                # Réponse vide de la boucle d'outils : on retombe sur le stream
+                # direct du même provider (comme run_fast_path retombe sur
+                # generate() quand la boucle rend None).
+
+            stream_source = fast_provider.generate_stream(
+                system_prompt, user_prompt, session_id=session_id
+            )
 
             try:
                 logger.info(f"[STREAM_DISCUSSION] Streaming → {pname}")
@@ -1099,8 +1273,22 @@ async def stream_discussion_fast_path_sse(
                     if is_vocal_aborted(session_id, conversation_id=conversation_id):
                         yield f"data: {json.dumps({'type': 'aborted'}, ensure_ascii=False)}\n\n"
                         return
+                    # [#T346] Canal raisonnement : émis en événement SSE distinct
+                    # (contrat ThinkingBlock). Il n'alimente NI `accumulated` ni
+                    # `sentence_buf` : le raisonnement ne doit JAMAIS partir au
+                    # TTS ni se retrouver dans la réponse rendue ou mise en cache.
+                    raisonnement = chunk.get("reasoning") or ""
+                    if raisonnement:
+                        if debut_pensee is None:
+                            debut_pensee = time.monotonic()
+                        yield f"data: {json.dumps({'type': 'thinking', 'text': raisonnement}, ensure_ascii=False)}\n\n"
                     token = chunk.get("token") or ""
                     if token:
+                        if debut_pensee is not None:
+                            # La réponse commence : la phase de pensée se referme.
+                            duree_ms = int((time.monotonic() - debut_pensee) * 1000)
+                            debut_pensee = None
+                            yield f"data: {json.dumps({'type': 'thinking_done', 'durationMs': duree_ms}, ensure_ascii=False)}\n\n"
                         accumulated += token
                         sentence_buf += token
                         streamed = True
@@ -1111,6 +1299,12 @@ async def stream_discussion_fast_path_sse(
                             if clean:
                                 yield f"data: {json.dumps({'type': 'sentence', 'text': clean}, ensure_ascii=False)}\n\n"
                     if chunk.get("done"):
+                        if debut_pensee is not None:
+                            # Pensée refermée sans texte de réponse (modèle qui
+                            # n'a rien rendu d'autre) : on notifie quand même.
+                            duree_ms = int((time.monotonic() - debut_pensee) * 1000)
+                            debut_pensee = None
+                            yield f"data: {json.dumps({'type': 'thinking_done', 'durationMs': duree_ms}, ensure_ascii=False)}\n\n"
                         break
                 if streamed:
                     fast_path_cache[_cache_key] = accumulated
@@ -1121,6 +1315,7 @@ async def stream_discussion_fast_path_sse(
                 accumulated = ""
                 sentence_buf = ""
                 streamed = False
+                debut_pensee = None
                 continue
 
         if not streamed:

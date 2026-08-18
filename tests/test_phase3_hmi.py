@@ -230,6 +230,45 @@ class TestAgentsCrud:
         res = client.put("/api/agents/antigravity_agent", json={"system_prompt": "x"})
         assert res.status_code == 422
 
+    def _creer_agent_custom_restreint(self, client, name="agent_restreint_t345"):
+        """Crée un agent custom restreint à read_file puis le relit depuis config."""
+        res = client.post("/api/agents", json={
+            "name": name, "label": "Restreint", "tier": "leger",
+            "allowed_tools": ["read_file"],
+        })
+        assert res.status_code == 200
+        return name
+
+    def test_put_allowed_tools_null_leve_la_restriction(self, client, isolated_config):
+        """#T345 — PATCH avec allowed_tools: null explicite → tous les outils (null)."""
+        name = self._creer_agent_custom_restreint(client)
+        res = client.put(f"/api/agents/{name}", json={"allowed_tools": None})
+        assert res.status_code == 200
+        assert res.json()["allowed_tools"] is None
+        saved = json.loads(isolated_config.read_text(encoding="utf-8"))
+        entry = next(e for e in saved["custom_agents"] if e["name"] == name)
+        assert entry["allowed_tools"] is None
+
+    def test_put_sans_allowed_tools_ne_touche_pas_la_restriction(self, client, isolated_config):
+        """#T345 — PATCH sans le champ → la restriction existante est conservée."""
+        name = self._creer_agent_custom_restreint(client)
+        res = client.put(f"/api/agents/{name}", json={"label": "Nouveau nom"})
+        assert res.status_code == 200
+        assert res.json()["allowed_tools"] == ["read_file"]
+        saved = json.loads(isolated_config.read_text(encoding="utf-8"))
+        entry = next(e for e in saved["custom_agents"] if e["name"] == name)
+        assert entry["allowed_tools"] == ["read_file"]
+
+    def test_put_allowed_tools_liste_vide_aucun_outil(self, client, isolated_config):
+        """#T345 — PATCH avec allowed_tools: [] → aucun outil, et surtout pas null."""
+        name = self._creer_agent_custom_restreint(client)
+        res = client.put(f"/api/agents/{name}", json={"allowed_tools": []})
+        assert res.status_code == 200
+        assert res.json()["allowed_tools"] == []
+        saved = json.loads(isolated_config.read_text(encoding="utf-8"))
+        entry = next(e for e in saved["custom_agents"] if e["name"] == name)
+        assert entry["allowed_tools"] == []
+
 
 # ──────────────────────────────────────────────────────────────────
 # #T158 — registre modèles enrichi + toggle/routing-tier

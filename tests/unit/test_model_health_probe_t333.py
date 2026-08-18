@@ -108,7 +108,12 @@ async def test_un_succes_remet_le_compteur_a_zero(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reactivation_quand_le_modele_repond(monkeypatch):
-    """Cycle complet : éteint, puis rallumé de lui-même au retour du service."""
+    """
+    Cycle complet : éteint, puis rallumé de lui-même au retour du service.
+    Depuis l'ajout du backoff, un modèle éteint n'est plus re-testé à chaque
+    cycle : on avance l'horloge au-delà du plafond pour prouver que le re-test a
+    bien lieu et que le succès réactive le modèle.
+    """
     catalogue = _FauxCatalogue([f"m{i}" for i in range(10)])
     _brancher(monkeypatch, catalogue, muets={"m0"})
     for _ in range(sonde.SEUIL_ECHECS):
@@ -116,6 +121,9 @@ async def test_reactivation_quand_le_modele_repond(monkeypatch):
     assert catalogue.statuts["m0"] == "inactive"
 
     _brancher(monkeypatch, catalogue, muets=set())
+    # Simule le temps écoulé jusqu'au re-test (plafond du backoff).
+    base = sonde._maintenant()
+    monkeypatch.setattr(sonde, "_maintenant", lambda: base + sonde.PLAFOND_BACKOFF_S + 1)
     cr = await sonde.executer_cycle()
 
     assert cr["reactives"] == ["m0"]

@@ -204,7 +204,7 @@ def call_api(url: str, method: str = "GET", payload_json: str = None, headers_js
         # (hôtes NON-HA : on ne peut pas préjuger du schéma).
         #
         # Mesuré le 12/08 (session `chat_683ea8b2cd`) : l'agent appelait
-        # `http://192.168.1.x:8123/api/states` alors que Home Assistant n'écoute
+        # `http://192.168.1.10:8123/api/states` alors que Home Assistant n'écoute
         # qu'en HTTPS sur ce port. Le serveur ferme la connexion sans répondre →
         # `RemoteDisconnected` → la tâche échoue après 60,9 s sur une question
         # aussi simple que « quelle température dans le salon ? ».

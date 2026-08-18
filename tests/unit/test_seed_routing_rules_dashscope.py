@@ -54,33 +54,24 @@ def _regles_dashscope(chemin):
 
 
 class TestReglesDashScope:
-    """Le seed expose des recommandations vers le forfait DashScope Coding Plan."""
+    """D-8 : plus aucune recommandation vers Dashscope ; les types code restent d'autres providers."""
 
-    def test_au_moins_une_regle_dashscope(self, base_peuplee):
-        """Au moins une règle pointe vers un modèle du forfait DashScope."""
+    def test_aucune_regle_dashscope(self, base_peuplee):
+        """Le seed ne recommande plus aucun modèle dashscope/*."""
         regles = _regles_dashscope(base_peuplee)
-        assert len(regles) >= 1, "aucune règle de routage vers dashscope/*"
+        assert regles == [], f"règles Dashscope encore présentes : {regles}"
 
     def test_couverture_code_et_agentique(self, base_peuplee):
-        """Les types de tâche code et agentique sont couverts."""
-        types = {r["task_type"] for r in _regles_dashscope(base_peuplee)}
-        for attendu in ("code_generation", "code_complexe", "code_revision", "refactoring", "agentique"):
-            assert attendu in types, f"règle {attendu} manquante pour dashscope/*"
-
-    def test_regles_dashscope_non_orphelines(self, base_peuplee):
-        """Chaque modèle recommandé dashscope/* existe dans la table models."""
+        """Les types de tâche code et agentique restent couverts (repli D-8)."""
         conn = sqlite3.connect(base_peuplee)
-        for r in _regles_dashscope(base_peuplee):
-            modele = conn.execute(
-                "SELECT id FROM models WHERE id = ?", (r["recommended_model"],)
-            ).fetchone()
-            assert modele is not None, (
-                f"règle {r['task_type']} → {r['recommended_model']} orpheline (modèle absent du catalogue)"
-            )
-            assert r["provider_id"] == "dashscope", (
-                f"règle {r['task_type']} : provider_id {r['provider_id']} incohérent"
-            )
+        conn.row_factory = sqlite3.Row
+        types = {
+            r["task_type"]
+            for r in conn.execute("SELECT task_type FROM routing_rules").fetchall()
+        }
         conn.close()
+        for attendu in ("code_generation", "code_complexe", "code_revision", "refactoring", "agentique"):
+            assert attendu in types, f"règle {attendu} manquante après repli D-8"
 
     def test_foreign_key_check_propre(self, base_peuplee):
         """Aucune violation de clé étrangère après le seed complet."""

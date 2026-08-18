@@ -244,7 +244,7 @@ class BudgetGuard:
 
         1. Rotation round-robin parmi les API cloud gratuites/abonnements
            disponibles (gemini-cli-abo, claude-cli-abo, cerebras-free,
-           dashscope-coding, cohere-free, mistral-free, gemini-free) —
+           cohere-free, mistral-free, gemini-free) —
            "lisse" l'usage entre providers au lieu qu'un seul domine
            systématiquement.
         2. Ollama/LM Studio en FILET DE SÉCURITÉ (local, gratuit, mais après
@@ -320,11 +320,7 @@ class BudgetGuard:
             cloud_candidates.append("claude-cli-abo")
         if not _in_cooldown("cerebras-free") and os.getenv("CEREBRAS_API_KEY"):
             cloud_candidates.append("cerebras-free")
-        # Coding Plan Alibaba (Lite) — forfait requêtes, amorti comme un abo.
-        if not _in_cooldown("dashscope-coding") and (
-            os.getenv("DASHSCOPE_API_KEY") or os.getenv("BAILIAN_CODING_PLAN_API_KEY")
-        ):
-            cloud_candidates.append("dashscope-coding")
+        # D-8 Axel 13/08 : Dashscope hors rotation (clé 401 + CGU backend).
         if not _in_cooldown("cohere-free") and os.getenv("COHERE_API_KEY"):
             cloud_candidates.append("cohere-free")
         if not _in_cooldown("mistral-free") and os.getenv("MISTRAL_API_KEY"):

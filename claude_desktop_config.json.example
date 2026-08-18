@@ -8,7 +8,7 @@
       ],
       "env": {
         "GITHUB_TOKEN": "ton_token_ici",
-        "ANTIGRAVITY_HOME": "e:\\AuxFilsDesIdees\\moteur_agents"
+        "ANTIGRAVITY_HOME": "/path/to/vromvrom-engine"
       },
       "disabled": false,
       "autoApprove": []

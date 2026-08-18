@@ -216,14 +216,19 @@ def test_usage_du_generateur_propage_dans_le_dernier_chunk(client):
 # Chemin non-streaming et pont threadpool
 # ──────────────────────────────────────────────────────────────────
 
-def test_non_streaming_rend_exactement_le_meme_json_qu_avant(client):
-    """Le chemin `stream=false` est resté identique : même forme JSON, même
-    comptage approximatif, generate_stream jamais appelé."""
+def test_non_streaming_rend_la_meme_enveloppe_json(client):
+    """Le chemin `stream=false` garde sa forme JSON et n'appelle jamais
+    generate_stream.
+
+    [#T357] Seul le champ `usage` a changé : il portait un comptage de MOTS
+    présenté comme des tokens, il est désormais absent quand le provider ne
+    remonte pas de comptage réel (couvert par
+    tests/unit/test_openai_proxy_usage_t357.py)."""
     reponse = client.post("/v1/chat/completions", json=_requete(stream=False))
 
     assert reponse.status_code == 200
     corps = reponse.json()
-    assert set(corps) == {"id", "object", "created", "model", "choices", "usage"}
+    assert set(corps) == {"id", "object", "created", "model", "choices"}
     assert corps["object"] == "chat.completion"
     assert corps["model"] == "modele-a"
     choix = corps["choices"][0]
@@ -231,9 +236,6 @@ def test_non_streaming_rend_exactement_le_meme_json_qu_avant(client):
     assert choix["index"] == 0
     assert choix["finish_reason"] == "stop"
     assert choix["message"] == {"role": "assistant", "content": "réponse du modèle"}
-    assert corps["usage"]["total_tokens"] == (
-        corps["usage"]["prompt_tokens"] + corps["usage"]["completion_tokens"]
-    )
     assert client.provider.appels_stream == []
 
 

@@ -26,8 +26,8 @@ class RAGEngine:
     """
     def __init__(self, doc_dir: str = None):
         if doc_dir is None:
-            # Recherche relative du dossier contexte_ia à partir de e:\AuxFilsDesIdees\moteur_agents\memory\rag.py
-            # 3 niveaux au-dessus : e:\AuxFilsDesIdees
+            # Recherche relative du dossier contexte_ia à partir de .\memory\rag.py
+            # 3 niveaux au-dessus : .
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             self.doc_dir = os.path.join(base_dir, "contexte_ia")
         else:

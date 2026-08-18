@@ -452,14 +452,14 @@ const MODEL_CATALOG = {
             "RULER": { score: 57.5, unit: "%", rank: "⚠️", desc: "Efficacité de contexte réel (moyenne 50-65%)" }
         },
         perf: { ttft: "<0.08s", throughput: "35–55 tok/s", contextWindow: 1000000, effectiveContext: 550000 },
-        pricing: { type: "local", inputPerM: 0, outputPerM: 0, amortizedPerM: 0, currency: "USD", note: "Coût électricité uniquement. RTX 5070 Ti." },
+        pricing: { type: "local", inputPerM: 0, outputPerM: 0, amortizedPerM: 0, currency: "USD", note: "Coût électricité uniquement. GPU locale." },
         strengths: ["gratuit", "confidentiel 100%", "airgapped", "latence réseau 0"],
         weaknesses: ["attention effondrée >550k (RULER)", "raisonnement limité", "VRAM limitée"],
         bestFor: "Résumés de contexte, extraction JSON/Regex, RAG domotique <500k tokens",
         hallucination_risk: "élevé sur code complexe",
         confidential: true,
-        desc: "Inférence locale sur RTX 5070 Ti. 100% gratuit et confidentiel.",
-        diff: "0.00$/token. RULER 50-65% ⚠️. Airgapped. RTX 5070 Ti + 64 Go RAM.",
+        desc: "Inférence locale sur GPU locale. 100% gratuit et confidentiel.",
+        diff: "0.00$/token. RULER 50-65% ⚠️. Airgapped. GPU locale + 64 Go RAM.",
         usage: "Résumés de contexte, extraction de données, RAG domotique (<500k tokens).",
         cognitiveProfile: "Confidentialité absolue et latence prévisible. Ses capacités s'effondrent sur les problèmes logiques abstraits hors de ses données d'entraînement. Attention: Lost in the Middle au-delà de 500k tokens."
     },

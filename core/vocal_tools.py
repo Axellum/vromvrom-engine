@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from core.agent_trace import etiqueter_agent
@@ -411,6 +412,44 @@ def _parse_tool_args(raw: Any) -> dict[str, Any]:
     return {}
 
 
+# [#T346] Préfixes des textes d'erreur produits par dispatch_vocal_tool() et
+# ses outils. dispatch ne lève JAMAIS : il rend l'erreur en texte. Ces préfixes
+# sont la seule façon de distinguer un échec d'un résultat pour le statut des
+# événements de cycle de vie (ToolCallDisplay).
+_PREFIXES_ERREUR_OUTIL = (
+    "erreur",
+    "refusé",
+    "échec",
+    "entité introuvable",
+    "entity_id invalide",
+    "service_data json invalide",
+    "outil inconnu",
+    "mémoire indisponible",
+    "recherche web indisponible",
+)
+
+
+def _est_resultat_erreur(texte: str) -> bool:
+    """True si le texte rendu par un outil est un message d'erreur (#T346)."""
+    normalise = (texte or "").strip().lower()
+    return any(normalise.startswith(prefixe) for prefixe in _PREFIXES_ERREUR_OUTIL)
+
+
+async def _notifier_evenement(on_event: Any, evenement: dict[str, Any]) -> None:
+    """Transmet un événement de cycle de vie s'il y a un callback (#T346).
+
+    Sans callback (appelant non streamé historique), c'est un no-op : le
+    comportement de la boucle est strictement inchangé. Une défaillance du
+    callback ne doit JAMAIS casser la boucle d'outils.
+    """
+    if on_event is None:
+        return
+    try:
+        await on_event(evenement)
+    except Exception as exc:
+        logger.debug("[VOCAL_TOOLS] callback d'événements en échec : %s", exc)
+
+
 def _assistant_message_for_history(result: dict[str, Any]) -> dict[str, Any]:
     """Ne garde que les champs OpenAI-compat (évite `reasoning` Cerebras rejeté)."""
     msg: dict[str, Any] = {"role": "assistant"}
@@ -431,6 +470,7 @@ async def run_vocal_tool_loop(
     user_prompt: str,
     session_id: str,
     temperature: float = 0.0,
+    on_event: Any = None,
 ) -> str | None:
     """
     Boucle tool-calling (max MAX_TOOL_ROUNDS) puis réponse texte.
@@ -439,6 +479,13 @@ async def run_vocal_tool_loop(
     [#T308] Étiquetée : la boucle consomme hors de tout agent. Le décorateur
     RESTAURE l'étiquette précédente en sortant — indispensable ici, puisque cette
     boucle est invoquée depuis le fast-path, qui a déjà posé la sienne (#T301).
+
+    [#T346] `on_event` : coroutine optionnelle recevant les événements de cycle
+    de vie des outils, au fil de l'eau — appel AVANT l'exécution
+    ({"type": "tool_call", "id", "toolName", "args"}) puis APRÈS
+    ({"type": "tool_result", "id", "toolName", "status", "resultData",
+    "errorMessage", "executionTimeMs"}). Absent (None), le comportement est
+    strictement celui de l'appelant non streamé historique.
     """
     if not provider_supports_openai_tools(provider):
         return None
@@ -514,7 +561,27 @@ async def run_vocal_tool_loop(
             args = _parse_tool_args(fn.get("arguments"))
             tc_id = tc.get("id") or f"call_{name}_{round_idx}"
             logger.info("[VOCAL_TOOLS] round=%s → %s(%s)", round_idx, name, list(args.keys()))
+            # [#T346] Annonce de l'appel AVANT l'exécution (statut « running »
+            # côté ToolCallDisplay), résultat APRÈS avec durée et statut.
+            await _notifier_evenement(on_event, {
+                "type": "tool_call",
+                "id": tc_id,
+                "toolName": name,
+                "args": args,
+            })
+            debut = time.monotonic()
             tool_result = await dispatch_vocal_tool(name, args, session_id=session_id)
+            duree_ms = int((time.monotonic() - debut) * 1000)
+            en_erreur = _est_resultat_erreur(tool_result)
+            await _notifier_evenement(on_event, {
+                "type": "tool_result",
+                "id": tc_id,
+                "toolName": name,
+                "status": "error" if en_erreur else "success",
+                "resultData": None if en_erreur else tool_result[:2000],
+                "errorMessage": tool_result[:500] if en_erreur else None,
+                "executionTimeMs": duree_ms,
+            })
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc_id,

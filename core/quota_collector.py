@@ -372,6 +372,19 @@ def refresh_all_quotas(include_claude: bool = False, force_claude: bool = False)
                 update_real_billing(deepseek_balance_usd=ds_balance)
             except Exception:
                 pass
+            # Historie le solde réel dans billing_history (#T349). Le solde est
+            # déjà en main (aucun appel réseau ajouté) ; la politique d'écriture
+            # (changement OU > 1 h) est portée par insert_balance_snapshot.
+            # Une erreur d'écriture ne fait jamais tomber le refresh : elle est
+            # journalisée et remontée dans result["errors"] (même motif que
+            # l'instantané de quotas, lignes 398-407). Un solde None n'écrit rien.
+            try:
+                from core.session_history import insert_balance_snapshot
+                result["balance_snapshot_rows"] = insert_balance_snapshot("deepseek", ds_balance)
+            except Exception as e:
+                result["balance_snapshot_rows"] = 0
+                result["errors"].append(f"balance_history: {e}")
+                logger.warning(f"[QUOTAS] Erreur relevé solde billing_history : {e}")
         ok = update_quota_realtime("DEEPSEEK_API_KEY", **ds_kwargs)
         if ok: updated += 1
 

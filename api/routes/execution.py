@@ -41,8 +41,12 @@ async def stop_execution():
         if state.execution_state.get("status") != "running":
             raise HTTPException(status_code=400, detail="Aucune exécution en cours à arrêter.")
         _stop_requested = True
-        state.execution_state["status"] = "error"
-        state.execution_state["error_message"] = "Arrêt demandé par l'utilisateur"
+
+    # [#T324] Libère TOUTES les entrées du registre (aucune session ne reste
+    # bloquée) puis pose la vue agrégée en "error". La vue agrégée étant
+    # "running" dès qu'une exécution tourne, le garde-fou ci-dessus est exact
+    # même avec plusieurs sessions en parallèle.
+    await state.clear_executions(status="error", error_message="Arrêt demandé par l'utilisateur")
 
     await broadcast_event("orchestration_completed", {
         "status": "error",
@@ -110,8 +114,8 @@ async def websocket_endpoint(websocket: WebSocket, token: str = Depends(require_
                 state = get_app_state()
                 async with state.execution_lock:
                     if state.execution_state.get("status") == "running":
-                        state.execution_state["status"] = "error"
-                        state.execution_state["error_message"] = "Arrêt WebSocket"
+                        # [#T324] Libère toutes les entrées (aucune session bloquée).
+                        await state.clear_executions(status="error", error_message="Arrêt WebSocket")
                 await websocket.send_json({"type": "ack", "action": "stop"})
             elif action == "get_status":
                 from core.app_state import get_app_state

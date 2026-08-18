@@ -38,6 +38,10 @@ from core.llm.provider_plugin import (
     verifier_interface_transport,
 )
 
+# Modèle réellement chargé par AJEAN (llama.cpp / llama-server). Constante unique,
+# partagée avec le registre core/openai_compat_provider.py — ne pas dupliquer ici.
+from core.openai_compat_provider import AJEAN_DEFAULT_MODEL
+
 _NOTES_EXPERIMENT = "Plan Experiment (Gratuit)"
 
 
@@ -216,11 +220,11 @@ class LMStudioLocalPlugin(ProviderPlugin):
         name='LM Studio (Local)',
         type='local',
         transport='local',
-        api_endpoint='http://192.168.1.x:1234/v1/chat/completions',
-        auth=AuthSpec(kind='none', instructions='Aucune clé : serveur LM Studio sur le LAN (192.168.1.x:1234).'),
+        api_endpoint='http://192.168.1.10:1234/v1/chat/completions',
+        auth=AuthSpec(kind='none', instructions='Aucune clé : serveur LM Studio sur le LAN (192.168.1.10:1234).'),
         confidentiality='total',
         cascade_priority=1.0,
-        notes='RTX 5070 Ti (16GB VRAM), 9 modèles chargés. Coût zéro, confidentialité totale. Curation étape 2 : Zoo local LM Studio déclaré tel quel (9 modèles) : le contenu est dynamique par nature, la découverte live relève de discover_models. Signal : gemma-4-31b = 17 appels, seul modèle local réellement consommé.',
+        notes='GPU locale (16GB VRAM), 9 modèles chargés. Coût zéro, confidentialité totale. Curation étape 2 : Zoo local LM Studio déclaré tel quel (9 modèles) : le contenu est dynamique par nature, la découverte live relève de discover_models. Signal : gemma-4-31b = 17 appels, seul modèle local réellement consommé.',
         models=(
         ModelSpec(
             id='qwen2.5-14b-instruct-1m',
@@ -336,7 +340,7 @@ class OllamaLocalPlugin(_PluginOpenAICompat):
         auth=AuthSpec(kind='none', instructions='Aucune clé : démon Ollama local (127.0.0.1:11434).'),
         confidentiality='total',
         cascade_priority=1.1,
-        notes="Ollama local sur RTX 5070 Ti. Inférence ultra-rapide. Curation étape 2 : 2 modèles du seed + le fine-tune domotique câblé mais absent du catalogue. ollama_pc (LAN 192.168.1.x) reste hors descripteur : c'est un accès distant au MÊME service, pas un provider distinct.",
+        notes="Ollama local sur GPU locale. Inférence ultra-rapide. Curation étape 2 : 2 modèles du seed + le fine-tune domotique câblé mais absent du catalogue. ollama_pc (LAN 192.168.1.10) reste hors descripteur : c'est un accès distant au MÊME service, pas un provider distinct.",
         models=(
         ModelSpec(
             id='qwen2.5-coder:7b',
@@ -382,6 +386,56 @@ class OllamaLocalPlugin(_PluginOpenAICompat):
         if modele not in par_id:
             raise CredentialsManquantes(f"Modèle '{modele}' non déclaré par 'ollama_local'.")
         return self._build_compat('ollama_local', par_id[modele], 'ollama')
+
+
+
+class AjeanPlugin(_PluginOpenAICompat):
+    """Provider AJEAN (llama.cpp / llama-server, port 8080).
+
+    Déclaration purement déclarative : AJEAN n'est PAS encore mis en tête de cascade
+    (FAST_PATH_PROVIDERS intact, `services/pipeline_service.py` non modifié). L'hôte
+    n'écoute pas encore sur le LAN — action d'Axel (basculer llama-server sur 0.0.0.0 +
+    ouvrir le pare-feu 8080). D'ici là, `ajean_pc` échoue en connect timeout et la
+    cascade bascule en silence sur le cloud.
+    """
+
+    _DESCRIPTEUR = ProviderDescriptor(
+        id='ajean_pc',
+        name='AJEAN (llama.cpp PC via LAN)',
+        type='local',
+        transport='openai_compat',
+        api_endpoint='http://192.168.1.10:8080/v1/chat/completions',
+        auth=AuthSpec(kind='none', instructions='Aucune clé : llama.cpp n\'authentifie pas (API OpenAI-compatible, port 8080).'),
+        confidentiality='total',
+        cascade_priority=1.1,
+        notes="AJEAN = llama.cpp (llama-server) sur le PC local, Qwen2.5-14B-Instruct-1M-Q4_K_M. Déclaré par IP LAN (192.168.1.10), jamais par nom DNS, pour rester dans la famille locale (#T337, _est_hote_local). ajean_deck (127.0.0.1) est l'accès loopback au MÊME service — pas un provider distinct, d'où l'absence de descripteur propre (même logique qu'ollama_local/ollama_pc).",
+        models=(
+        ModelSpec(
+            id=AJEAN_DEFAULT_MODEL,
+            display_name='Qwen 2.5 14B Instruct 1M (AJEAN)',
+            tier='local',
+            context_input=32768,
+            context_output=8192,
+            supports_tools=True,
+            supports_json_mode=True,
+            supports_streaming=True,
+            speciality='domotique',
+            recommended_use='Inférence locale llama.cpp — contexte 1M, Q4_K_M sur GPU',
+        ),
+        ),
+    )
+
+    @property
+    def descriptor(self) -> ProviderDescriptor:
+        return self._DESCRIPTEUR
+
+    def build(self, credentials, model=None):
+        # Pas de clé : llama.cpp n'authentifie pas (le gateway passe "ajean").
+        par_id = {m.id: m for m in self.descriptor.models}
+        modele = model or self.descriptor.models[0].id
+        if modele not in par_id:
+            raise CredentialsManquantes(f"Modèle '{modele}' non déclaré par 'ajean_pc'.")
+        return self._build_compat('ajean_pc', par_id[modele], 'ajean')
 
 
 
@@ -968,7 +1022,7 @@ class AnthropicNativePlugin(ProviderPlugin):
         ),
         confidentiality='none',
         cascade_priority=3.4,
-        notes='API native avec accès aux Batchs. ANTHROPIC_API_KEY active — indépendante des quotas Claude Pro CLI. Curation étape 2 : Les 2 modèles du seed, câblés par le gateway. claude-fable-5 reste volontairement hors tiers (routing_policy.excluded_models, décision Axel 07/2026) — le descripteur ne change pas ce statut (routing_tier None).',
+        notes='API native. 13/08 Axel : crédit à sec → hors cascade (EXCLUSIONS_CASCADE_DEFAUT), clé conservée. claude-fable-5 déjà hors tiers (D-4). Accès explicite inchangé.',
         models=(
         ModelSpec(
             id='claude-sonnet-5',
@@ -1303,39 +1357,23 @@ class OpenRouterPlugin(_PluginOpenAICompat):
         ),
         confidentiality='none',
         cascade_priority=2.4,
-        notes='Modèles gratuits et payants. Alternatives en cas de pannes de tiers. Curation étape 2 : Seulement les 2 modèles gratuits câblés par le gateway. Les 9 autres entrées du catalogue local sont offertes mais ni câblées ni appelées — leur activation éventuelle (fan-out maps gratuites, #T245) passera par un ajout explicite ici, pas par du stock dormant.',
+        notes='13/08 Axel : un seul modèle câblé, openrouter/auto. Les slugs Llama :free répondent 404 (unavailable for free). Les autres entrées catalogue restent offertes, non câblées.',
         models=(
         ModelSpec(
-            id='meta-llama/llama-3.3-70b-instruct:free',
-            display_name='Llama 3.3 70B Instruct (Free via OpenRouter)',
-            tier='free',
+            id='openrouter/auto',
+            display_name='OpenRouter Auto',
+            tier='paid',
             routing_tier='moyen',
             context_input=131072,
             context_output=4096,
-            cost_input_per_m=0.0,
-            cost_output_per_m=0.0,
+            cost_input_per_m=0.15,
+            cost_output_per_m=0.60,
             supports_tools=True,
             supports_json_mode=True,
             supports_streaming=True,
             speciality='raisonnement',
-            recommended_use='Raisonnement fort gratuit via OpenRouter',
-            notes='Plan Gratuit (OpenRouter)',
-        ),
-        ModelSpec(
-            id='meta-llama/llama-3.2-3b-instruct:free',
-            display_name='Llama 3.2 3B Instruct (Free via OpenRouter)',
-            tier='free',
-            routing_tier='leger',
-            context_input=131072,
-            context_output=4096,
-            cost_input_per_m=0.0,
-            cost_output_per_m=0.0,
-            supports_tools=True,
-            supports_json_mode=True,
-            supports_streaming=True,
-            speciality='ultra_rapide',
-            recommended_use='Tâches rapides gratuites via OpenRouter',
-            notes='Plan Gratuit (OpenRouter)',
+            recommended_use='Routeur OpenRouter — choisit un modèle vivant, plus de slug :free mort',
+            notes='Décision Axel 13/08. Auto facture le modèle routé (pas gratuit). Coûts catalogue = ordre de grandeur, solde OR = source d\'autorité.',
         ),
         ),
     )
@@ -1856,14 +1894,13 @@ class DashScopePlugin(_PluginOpenAICompat):
         ),
         confidentiality='training',
         cascade_priority=2.5,
-        notes="Coding Plan Lite (¥40/mois, stock) — clé sk-sp-*, endpoint coding-intl. Quota requêtes (pas tokens) : 1200/5h, 9000/sem, 18000/mois. CGU : usage prévu pour outils coding interactifs (pas backend automatisé). Curation étape 2 : L'allowlist exacte renvoyée par GET /v1/models le 26/07, tous câblés. ⚠️ CGU Alibaba : forfait prévu pour outils coding interactifs, usage backend automatisé hors périmètre officiel. C'est ce descripteur qui résout #T242 : la clé étant sur le Deck (#T244), l'enregistrement par plugin fait enfin arriver dashscope dans le catalogue de prod.",
+        notes="D-8 Axel 13/08 : désactivé (401 + CGU backend). Catalogue conservé, routing_tier retiré, gateway n'instancie plus. Clé DASHSCOPE_API_KEY gardée. Réactiver = DASHSCOPE_ACTIF=True dans llm_gateway.py.",
         models=(
         ModelSpec(
             id='dashscope/qwen3.7-plus',
             api_model_id='qwen3.7-plus',
             display_name='Qwen3.7 Plus (Coding Plan)',
             tier='subscription',
-            routing_tier='fort',
             context_input=1000000,
             context_output=65536,
             cost_input_per_m=0.0,
@@ -1881,7 +1918,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='qwen3.6-plus',
             display_name='Qwen3.6 Plus (Coding Plan)',
             tier='subscription',
-            routing_tier='fort',
             context_input=1000000,
             context_output=65536,
             cost_input_per_m=0.0,
@@ -1899,7 +1935,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='qwen3.5-plus',
             display_name='Qwen3.5 Plus (Coding Plan)',
             tier='subscription',
-            routing_tier='moyen',
             context_input=1000000,
             context_output=65536,
             cost_input_per_m=0.0,
@@ -1917,7 +1952,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='qwen3-max-2026-01-23',
             display_name='Qwen3 Max 2026-01-23 (Coding Plan)',
             tier='subscription',
-            routing_tier='fort',
             context_input=262144,
             context_output=65536,
             cost_input_per_m=0.0,
@@ -1934,7 +1968,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='qwen3-coder-next',
             display_name='Qwen3 Coder Next (Coding Plan)',
             tier='subscription',
-            routing_tier='moyen',
             context_input=262144,
             context_output=65536,
             cost_input_per_m=0.0,
@@ -1951,7 +1984,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='qwen3-coder-plus',
             display_name='Qwen3 Coder Plus (Coding Plan)',
             tier='subscription',
-            routing_tier='fort',
             context_input=1000000,
             context_output=65536,
             cost_input_per_m=0.0,
@@ -1968,7 +2000,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='kimi-k2.5',
             display_name='Kimi K2.5 (Coding Plan)',
             tier='subscription',
-            routing_tier='fort',
             context_input=262144,
             context_output=65536,
             cost_input_per_m=0.0,
@@ -1986,7 +2017,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='glm-5',
             display_name='GLM-5 (Coding Plan)',
             tier='subscription',
-            routing_tier='fort',
             context_input=202752,
             context_output=32768,
             cost_input_per_m=0.0,
@@ -2003,7 +2033,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='glm-4.7',
             display_name='GLM-4.7 (Coding Plan)',
             tier='subscription',
-            routing_tier='moyen',
             context_input=202752,
             context_output=32768,
             cost_input_per_m=0.0,
@@ -2020,7 +2049,6 @@ class DashScopePlugin(_PluginOpenAICompat):
             api_model_id='MiniMax-M2.5',
             display_name='MiniMax M2.5 (Coding Plan)',
             tier='subscription',
-            routing_tier='moyen',
             context_input=196608,
             context_output=32768,
             cost_input_per_m=0.0,
@@ -2062,6 +2090,7 @@ BUILTIN_PROVIDER_PLUGINS: tuple[ProviderPlugin, ...] = (
     MistralPlugin(),
     LMStudioLocalPlugin(),
     OllamaLocalPlugin(),
+    AjeanPlugin(),
     GeminiFreePlugin(),
     GeminiPaidPlugin(),
     GeminiCLIPluginInterne(),

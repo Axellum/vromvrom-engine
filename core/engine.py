@@ -52,7 +52,18 @@ HITL_HIGH_RISK_TOOLS = {"write_file", "git_apply_checkpoint", "edit_file"}
 HITL_SIDE_EFFECT_AGENTS = {"ha_agent"}
 # Préfixes de sessions AUTONOMES (aucun humain présent) → bypass d'office,
 # sinon le flux stallerait jusqu'à l'auto-approbation au timeout (5 min).
-HITL_AUTONOMOUS_PREFIXES = ("daemon_", "dreamer_", "routine_", "maint_")
+# `task_` = tâche de backlog jouée par DreamCoder la nuit (`agents/dreamer_agent.py`,
+# `session_id = f"task_{task_id}"`). Il manquait, et c'était le blocage de fond de
+# la session autonome : DreamCoder est le SEUL de ces flux qui écrit vraiment du
+# code, donc le seul dont tous les plans touchent write_file / run_terminal_command
+# — c'est-à-dire dont tous les plans sont « à risque ». Mesuré le 18/08 sur le
+# Deck : 4 tâches lancées, 4 plans corrects produits par le Planner (contrat
+# d'acceptation compris), 4 sorties en `waiting_approval` après 6 s, 4 rollbacks.
+# Personne ne pouvait approuver : le cycle tourne à 3 h du matin.
+# Le garde-fou n'est pas le HITL ici, c'est la chaîne d'après : le travail se fait
+# dans un clone dédié, sur une branche `task/*`, et n'entre dans `master` que par
+# une PR relue à la main.
+HITL_AUTONOMOUS_PREFIXES = ("daemon_", "dreamer_", "routine_", "maint_", "task_")
 # Préfixes de sessions INTERACTIVES (un humain est présent, l'IHM gère l'approbation).
 HITL_INTERACTIVE_PREFIXES = ("chat_", "stream_", "gui_session_")
 
@@ -102,6 +113,15 @@ class Engine:
         # branche éphémère — le travail approuvé y attend sa décision.
         self._suspension_request_id: str | None = None
         self._git_branch_courante: str | None = None
+        # [#T379] Cause de l'échec décidée par le moteur (DAG en erreur, revue
+        # rejetée, contrat non satisfait, rejet HITL, budget/plafond). Une fin
+        # d'exécution doit dire POURQUOI elle a échoué : le booléen has_error
+        # seul perd cette information. Les chemins qui terminent l'exécution
+        # (run_full_pipeline en tête, approval_resume_service en reprise) la
+        # lisent pour écrire le statut terminal avec un message qui nomme la
+        # cause — incident du 17/08 : trois exécutions terminées sans que leur
+        # session ne porte jamais ni statut terminal ni date de fin.
+        self.cause_echec: str | None = None
         # Workflow-as-Code : transitions dynamiques depuis le graphe JSON
         from core.workflow_executor import WorkflowExecutor
         self._workflow_executor = WorkflowExecutor()
@@ -222,6 +242,8 @@ class Engine:
         git_branch = None
         has_error = False
         tasks_status: dict = {}
+        # [#T379] Nouvelle exécution : le verdict précédent ne doit pas survivre.
+        self.cause_echec = None
 
         # [P2-3.4] Budget global d'exécution (tokens + durée + coût), partagé avec
         # le DAG runner pour plafonner TOUTE la requête. Durée/coût opt-in via config.
@@ -312,6 +334,12 @@ class Engine:
                         "current_agent": current_agent_name,
                     })
                 has_error = True
+                # [#T379] Nommer la cause : la session doit pouvoir dire
+                # pourquoi elle s'est arrêtée.
+                self.cause_echec = (
+                    f"Plafond de boucle atteint ({MAX_AGENT_HANDOFFS} handoffs "
+                    f"agent-à-agent) — arrêt anti-boucle."
+                )
                 break
 
             agent = self.agents.get(current_agent_name)
@@ -334,6 +362,11 @@ class Engine:
                         budget.event_payload(violation, blocked=current_agent_name),
                     )
                 has_error = True
+                # [#T379] Nommer la cause : la session doit pouvoir dire
+                # pourquoi elle s'est arrêtée.
+                self.cause_echec = (
+                    f"Budget d'exécution dépassé ({violation['reason']}) — arrêt propre."
+                )
                 break
 
             # Mise à jour de la phase
@@ -437,6 +470,12 @@ class Engine:
                 )
                 if not wf_error_tasks:
                     has_error = True
+                    # [#T379] Nommer la cause : la session doit pouvoir dire
+                    # pourquoi elle s'est arrêtée.
+                    self.cause_echec = (
+                        f"Erreur de l'agent '{current_agent_name}' sans branche de "
+                        f"récupération : {(update.error_message or 'détail indisponible')[:200]}"
+                    )
                     break
 
                 logger.info(
@@ -556,6 +595,9 @@ class Engine:
 
         if decision == DECISION_REJETE:
             logger.warning("[ENGINE] Plan rejeté par l'utilisateur (HITL).")
+            # [#T379] Le rejet humain est une fin d'exécution à part entière :
+            # nommer la cause pour que la session close dise ce qui s'est passé.
+            self.cause_echec = "Plan rejeté par l'utilisateur (HITL)."
             if self.on_event:
                 await self.on_event("plan_rejected", {
                     "reason": "Rejeté par l'utilisateur via HITL"
@@ -588,13 +630,27 @@ class Engine:
 
         Returns:
             (tasks_status, has_error), comme `execute_dag`, mais après contrôles.
+
+        [#T379] Chaque porte de sortie qui décide has_error nomme aussi sa
+        cause dans `self.cause_echec` : le chemin de reprise après approbation
+        n'a QUE ce retour pour écrire le statut terminal de la session, et un
+        booléen ne distingue pas un DAG en échec d'une revue rejetée ni d'un
+        contrat non satisfait.
         """
+        # [#T379] Nouveau verdict : remise à plat de la cause (une exécution
+        # passée par une branche d'erreur #T219 peut très bien réussir ici).
+        self.cause_echec = None
         tasks_status, has_error = await self._dag_runner.execute_dag(
             tasks=dag_tasks,
             max_session_tokens=max_session_tokens,
             on_event=self.on_event,
             budget=budget,  # [P2-3.4] budget partagé (tokens+durée+coût)
         )
+        if has_error:
+            n_echecs = sum(
+                1 for s in (tasks_status or {}).values() if s in ("error", "blocked")
+            )
+            self.cause_echec = f"Échec d'exécution du DAG : {n_echecs} tâche(s) en erreur."
 
         # ── Review post-DAG ──
         if not has_error and tasks_status:
@@ -606,6 +662,11 @@ class Engine:
                 )
                 if not approved:
                     has_error = True
+                    # [#T379] Rejet du Reviewer : fin d'exécution négative, nommée.
+                    self.cause_echec = (
+                        "Revue post-DAG rejetée par le Reviewer après épuisement "
+                        "des rounds de correction."
+                    )
         elif has_error and tasks_status:
             # [#T253] DAG en échec : la revue LLM est sautée (payer un avis de
             # complaisance après un échec n'a pas de sens), mais le contrat
@@ -617,6 +678,9 @@ class Engine:
             verdict = await self._review_loop.contrat_seul(on_event=self.on_event)
             if verdict is True:
                 has_error = False
+                # [#T379] Le contrat a prouvé l'objectif atteint : plus d'échec,
+                # donc plus de cause d'échec.
+                self.cause_echec = None
                 # Absoudre aussi les statuts d'erreur pour la finalisation Git :
                 # `_finalize_git` exige que TOUTES les tâches soient « success »,
                 # sinon rollback même quand le contrat a prouvé l'objectif atteint.
@@ -627,6 +691,13 @@ class Engine:
                     "[ENGINE] [T253] Contrat satisfait malgré DAG en erreur — "
                     "session et branche Git traitées comme succès."
                 )
+            elif verdict is False:
+                # [#T379] Le contrat CONFIRME l'échec : c'est lui la cause
+                # décisive (plus précise que « une tâche est en erreur »).
+                self.cause_echec = (
+                    "Contrat d'acceptation non satisfait après échec du DAG."
+                )
+            # verdict None (rien de vérifiable) : la cause du DAG est conservée.
 
         # Enregistrement des skills après un DAG réussi
         if not has_error:
@@ -1124,11 +1195,17 @@ class Engine:
         prod le 11/08 : un plan approuvé fusionnait sans qu'aucun de ses
         2 critères ne soit vérifié.
 
-        Même règle de lecture que `ReviewLoop._criteres_du_plan` : le plus
-        récent gagne, un plan correctif ayant pu en reposer un.
+        [Incident du 17/08] On lit le PREMIER contrat de l'historique, pas le
+        plus récent : c'est celui posé par le plan soumis à approbation, et
+        c'est lui qui deviendra le PLANCHER à la reprise (injecté en tête de
+        l'historique par `approval_resume_service`). Le HITL ne suspend et ne
+        rejoue que le plan d'origine — jamais un plan correctif — donc le
+        contrat persisté doit être celui qui est approuvé. (Avant ce
+        correctif, la docstring renvoyait vers « le plus récent gagne », la
+        règle même qui a laissé un plan correctif évincer le contrat approuvé.)
         """
         from core.acceptance_contract import CLE_CONTRAT
-        for update in reversed(self.state.history):
+        for update in self.state.history:
             criteres = (update.metadata or {}).get(CLE_CONTRAT)
             if criteres:
                 return criteres

@@ -51,7 +51,7 @@ def test_ha_list_prefers_alive_entities(monkeypatch):
         {"entity_id": "sensor.sonoff_salon_temperature",
          "state": "unavailable",
          "attributes": {"friendly_name": "01 Salon Temperature"}},
-        {"entity_id": "sensor.thermometre_salon_temperature",
+        {"entity_id": "sensor.living_room_temperature",
          "state": "23.3",
          "attributes": {"friendly_name": "Thermometre salon", "unit_of_measurement": "°C"}},
     ]
@@ -66,7 +66,7 @@ def test_ha_list_prefers_alive_entities(monkeypatch):
         with patch.dict("os.environ", {"HASS_TOKEN": "tok", "HASS_URL": "http://ha", "HA_VERIFY_TLS": "false"}):
             out = _tool_ha_list("salon")
 
-    assert "thermometre_salon_temperature" in out       # source vivante conservée
+    assert "living_room_temperature" in out       # source vivante conservée
     assert "sonoff_salon_temperature" not in out         # doublon mort écarté
 
 

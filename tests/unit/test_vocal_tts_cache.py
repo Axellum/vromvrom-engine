@@ -46,3 +46,40 @@ def test_sanitize_keeps_french_sentence():
     ok = "Gemini est une famille de modèles Google, mais je n'ai pas la date exacte de la dernière sortie."
     assert looks_like_tool_or_code_dump(ok) is False
     assert "Gemini" in sanitize_discussion_tts(ok)
+
+
+# ── [#T366] Le LaTeX ne doit pas partir au TTS ──
+
+def test_latex_inline_neutralise():
+    """
+    Phrase exacte mesurée en prod le 17/08 : « donne-moi la formule de la
+    relativité générale » rendait la formule brute, ânonnée symbole par symbole
+    par la synthèse vocale.
+    """
+    brut = (
+        "L'equation s'ecrit "
+        r"\(G_{\mu\nu} + \Lambda\,g_{\mu\nu} = \frac{8\pi G}{c^{4}}\,T_{\mu\nu}\)"
+        " ou G est le tenseur."
+    )
+    sortie = sanitize_discussion_tts(brut)
+    assert "\\" not in sortie and "{" not in sortie
+    assert "la formule" in sortie
+    # La phrase autour est conservée : on remplace, on ne tronque pas.
+    assert "tenseur" in sortie
+
+
+def test_latex_display_neutralise():
+    sortie = sanitize_discussion_tts("Voici : $$E = mc^2$$ tout simplement.")
+    assert "$" not in sortie and "la formule" in sortie
+
+
+def test_prix_en_dollars_non_avale():
+    """Garde-fou : « 5 $ » n'est pas du LaTeX et doit survivre intact."""
+    sortie = sanitize_discussion_tts("Ce cafe coute 5 $ et le the 3 $ seulement.")
+    assert "5 $" in sortie and "3 $" in sortie
+    assert "la formule" not in sortie
+
+
+def test_phrase_normale_inchangee():
+    texte = "La clim est allumee en mode froid."
+    assert sanitize_discussion_tts(texte) == texte

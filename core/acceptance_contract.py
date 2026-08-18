@@ -45,7 +45,28 @@ logger = logging.getLogger(__name__)
 # Clé sous laquelle le Planner transporte son contrat dans les metadata du StateUpdate.
 CLE_CONTRAT = "contrat_acceptation"
 
+# [Incident du 17/08] Clé de l'état initial constaté des critères AU MOMENT où
+# le plan est posé. Un critère déjà vrai AVANT que le lot ne commence n'est pas
+# une preuve de travail : « vérifier qu'un fichier préexistant est accessible »
+# est satisfait quoi que fasse le lot. Le porteur du constat peut être absent
+# (plans antérieurs à ce mécanisme) — par défaut, un critère reste alors
+# considéré comme une preuve possible : le doute ne doit jamais rendre le
+# jugement plus permissif, seulement plus strict.
+CLE_ETAT_INITIAL = "etat_initial_criteres"
+
+# [Incident du 17/08] Clé des substitutions DÉCLARÉES par un plan correctif
+# (un critère du plancher devenu impossible y est remplacé, de façon tracée,
+# par un autre). Jamais de remplacement silencieux : toute substitution passe
+# par une déclaration explicite, journalisée à l'évaluation.
+CLE_SUBSTITUTIONS = "substitutions_acceptation"
+
 TYPES_CONNUS = ("commande", "fichier_contient", "fichier_existe")
+
+# Types de critères dont on peut constater l'état initial à moindre coût :
+# les critères fichier. Les critères `commande` sont exclus du constat : une
+# commande de vérification peut être longue (suite de tests) et la lancer une
+# fois de plus avant chaque lot n'est pas acceptable.
+TYPES_CONSTATABLES = ("fichier_contient", "fichier_existe")
 
 # Délai maximum d'une commande de vérification (une suite de tests peut être longue).
 TIMEOUT_COMMANDE_S = 180
@@ -78,12 +99,19 @@ PREFIXES_AUTORISES: tuple[tuple[str, ...], ...] = (
 
 @dataclass(frozen=True)
 class Critere:
-    """Un critère d'acceptation, normalisé."""
+    """Un critère d'acceptation, normalisé.
+
+    `satisfait_d_avance` est posé à l'ÉVALUATION (jamais par le Planner) quand
+    le constat d'état initial montre que le critère était déjà vrai avant le
+    début du travail : il reste évalué et visible dans le rapport, mais il ne
+    compte ni comme preuve ni comme verdict.
+    """
 
     type: str
     valeur: str
     attendu: str | None = None
     description: str = ""
+    satisfait_d_avance: bool = False
 
     def libelle(self) -> str:
         if self.description:
@@ -111,8 +139,33 @@ class RapportContrat:
     resultats: list[ResultatCritere] = field(default_factory=list)
 
     @property
+    def resultats_satisfaits_d_avance(self) -> list[ResultatCritere]:
+        """Résultats dont le critère était déjà vrai avant le début du lot."""
+        return [r for r in self.resultats if r.critere.satisfait_d_avance]
+
+    @property
+    def echecs_satisfaits_d_avance(self) -> list[ResultatCritere]:
+        """
+        Échecs parmi les critères satisfaits d'avance. Ils ne servent PAS de
+        preuve (comme tout critère satisfait d'avance), mais ils BLOQUENT le
+        verdict : un critère vrai avant le lot qui échoue maintenant est une
+        régression, et elle doit rester visible dans le rapport.
+        """
+        return [r for r in self.echecs if r.critere.satisfait_d_avance]
+
+    @property
     def verifiables(self) -> list[ResultatCritere]:
-        return [r for r in self.resultats if r.satisfait is not None]
+        """
+        Résultats tranchés, HORS critères satisfaits d'avance : ceux-là sont
+        vrais avant même que le lot ne commence et ne prouvent donc rien sur
+        le travail accompli. Incident du 17/08 : un contrat correctif composé
+        uniquement de critères satisfaits d'avance (des fichiers préexistants)
+        avait absous un DAG en erreur.
+        """
+        return [
+            r for r in self.resultats
+            if r.satisfait is not None and not r.critere.satisfait_d_avance
+        ]
 
     @property
     def echecs(self) -> list[ResultatCritere]:
@@ -125,14 +178,27 @@ class RapportContrat:
     @property
     def determinable(self) -> bool:
         """
-        Vrai si le contrat peut trancher. Un contrat vide, ou dont AUCUN critère
-        n'est vérifiable, ne doit pas décider à la place de la revue LLM : dans
-        ce cas l'appelant garde son comportement d'avant.
+        Vrai si le contrat peut trancher. Un contrat vide, dont AUCUN critère
+        n'est vérifiable, ou dont les seuls critères vérifiables étaient
+        satisfaits d'avance, ne doit pas décider à la place de la revue LLM :
+        dans ces cas l'appelant garde son comportement d'avant. Conséquences
+        directes : un contrat entièrement satisfait d'avance ne peut plus
+        absoudre un DAG en erreur (rien n'y prouve le travail du lot) ; et un
+        critère satisfait d'avance qui ÉCHOUE maintenant reste un échec —
+        c'est une régression, et le doute doit toujours aller vers le strict.
         """
         return bool(self.verifiables)
 
     @property
     def satisfait(self) -> bool:
+        """
+        Le contrat est satisfait si au moins un critère PROUVE le travail
+        (vérifiable et non satisfait d'avance) et qu'AUCUN critère n'échoue —
+        y compris parmi les critères satisfaits d'avance : un critère vrai
+        avant le lot qui échoue maintenant est une régression, pas une
+        anecdote. Un critère satisfait d'avance ne peut donc JAMAIS servir de
+        preuve, mais son échec peut toujours faire tomber le verdict.
+        """
         return self.determinable and not self.echecs
 
     def resume(self) -> str:
@@ -140,11 +206,15 @@ class RapportContrat:
         lignes = []
         for r in self.resultats:
             marque = {True: "✅", False: "❌", None: "⚠️"}[r.satisfait]
+            if r.critere.satisfait_d_avance:
+                marque += " (satisfait d'avance — exclu du verdict)"
             lignes.append(f"{marque} {r.critere.libelle()} — {r.detail}")
         entete = (
             f"CONTRAT D'ACCEPTATION : {len(self.echecs)} critère(s) en échec sur "
             f"{len(self.verifiables)} vérifiable(s)"
         )
+        if self.resultats_satisfaits_d_avance:
+            entete += f" ({len(self.resultats_satisfaits_d_avance)} satisfait(s) d'avance, non comptés)"
         if self.non_verifiables:
             entete += f" ({len(self.non_verifiables)} non vérifiable(s), non comptés)"
         return entete + "\n" + "\n".join(lignes)
@@ -185,8 +255,91 @@ def normaliser_criteres(bruts) -> list[Critere]:
             valeur=valeur,
             attendu=str(attendu) if attendu is not None else None,
             description=str(brut.get("description") or "").strip(),
+            # `satisfait_d_avance` n'est JAMAIS lu depuis l'entrée : c'est un
+            # constat d'évaluation calculé depuis l'état initial, pas un champ
+            # que le Planner (ou quiconque) peut s'attribuer à lui-même.
         ))
     return criteres
+
+
+def cle_critere(critere) -> tuple:
+    """
+    Identité d'un critère pour la déduplication de l'union des contrats.
+
+    La description n'en fait PAS partie : deux plans peuvent formuler la même
+    exigence différemment, et c'est l'exigence (type + cible + motif) qui
+    compte. En revanche `attendu` en fait partie : changer le motif attendu
+    d'un `fichier_contient` change l'exigence elle-même — ce n'est pas un
+    doublon, c'est une modification qui doit rester visible.
+    """
+    return (critere.type, critere.valeur, critere.attendu)
+
+
+def union_contrats(listes_criteres: list[list]) -> list[dict]:
+    """
+    [Incident du 17/08] Union des contrats de l'historique.
+
+    Un plan correctif peut ENRICHIR le contrat, jamais le remplacer ni
+    l'affaiblir : chaque critère déjà posé est conservé. La déduplication
+    s'appuie sur `cle_critere` ; la PREMIÈRE occurrence dans l'ordre
+    chronologique gagne, pour préserver la formulation du contrat approuvé et
+    son état initial constaté.
+
+    L'ordre de la liste retournée place les critères du contrat le PLUS
+    RÉCENT en tête, puis ceux des contrats plus anciens — l'ordre ne change
+    rien au verdict (tous sont évalués), mais conserve la forme d'avant pour
+    le premier élément et présente d'abord l'état visé par la dernière
+    correction. Le PLANCHER, lui, ne se reconnaît pas à l'ordre de cette
+    liste : c'est la première entrée de contrat de l'historique.
+
+    Accepte des listes de dicts bruts (format des metadata), en ordre
+    chronologique ; retourne des dicts au même format.
+    """
+    union: dict[tuple, tuple[int, dict]] = {}
+    for position, liste in enumerate(listes_criteres):
+        for brut in liste or []:
+            normalises = normaliser_criteres(brut)
+            if not normalises:
+                continue
+            cle = cle_critere(normalises[0])
+            # setdefault : la première occurrence chronologique gagne, pour
+            # préserver la formulation du contrat approuvé.
+            union.setdefault(cle, (position, dict(brut)))
+    # Contrat le plus récent d'abord ; au sein d'un même contrat, l'ordre
+    # chronologique d'origine est conservé.
+    return [brut for _position, brut in sorted(union.values(), key=lambda p: -p[0])]
+
+
+def constater_etat_initial(criteres_bruts) -> dict[int, bool]:
+    """
+    [Incident du 17/08] Constate l'état des critères fichier AU MOMENT où le
+    plan est posé, AVANT tout travail du lot.
+
+    Retourne `{index du critère: vrai si déjà satisfait}`. Un critère absent
+    du constat (type non constatable, résolution impossible…) n'est PAS
+    considéré satisfait d'avance : le doute doit rendre le jugement plus
+    strict, jamais plus permissif.
+
+    Appelée par le Planner à la pose du plan et par le service de reprise à la
+    restauration du contrat approuvé — dans les deux cas à un instant qui
+    précède l'exécution, ce qui fait du constat une photographie d'avant-travail.
+
+    Accepte des dicts bruts ou des `Critere` déjà normalisés (le Planner vient
+    de normaliser : on ne re-normalise pas deux fois, les index doivent
+    correspondre terme à terme à la liste évaluée plus tard).
+    """
+    normalises = (
+        criteres_bruts
+        if criteres_bruts and isinstance(criteres_bruts[0], Critere)
+        else normaliser_criteres(criteres_bruts)
+    )
+    etats: dict[int, bool] = {}
+    for index, critere in enumerate(normalises):
+        if critere.type not in TYPES_CONSTATABLES:
+            continue
+        resultat = _verifier_fichier(critere)
+        etats[index] = resultat.satisfait is True
+    return etats
 
 
 def _commande_style_windows(commande: str) -> bool:
@@ -314,9 +467,39 @@ def _racine_moteur() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def verifier_contrat(criteres, racine: str | None = None) -> RapportContrat:
+def _marquer_si_satisfait_d_avance(
+    index: int, critere: Critere, resultat: ResultatCritere,
+    etats_initiaux: dict[int, bool] | None,
+) -> ResultatCritere:
+    """
+    Si le constat d'état initial dit que ce critère était déjà vrai avant le
+    lot, retourne un résultat portant un critère marqué `satisfait_d_avance`
+    (le verdict réel et le détail sont conservés pour le rapport et le journal).
+    """
+    if etats_initiaux and etats_initiaux.get(index) and not critere.satisfait_d_avance:
+        marque = Critere(
+            type=critere.type, valeur=critere.valeur, attendu=critere.attendu,
+            description=critere.description, satisfait_d_avance=True,
+        )
+        return ResultatCritere(
+            marque, resultat.satisfait,
+            f"{resultat.detail} — constaté satisfait AVANT le début du travail",
+        )
+    return resultat
+
+
+def verifier_contrat(
+    criteres,
+    racine: str | None = None,
+    etats_initiaux: dict[int, bool] | None = None,
+) -> RapportContrat:
     """
     Exécute tous les critères et retourne le verdict d'ensemble.
+
+    `etats_initiaux` (facultatif) : constat `{index: déjà satisfait}` posé à
+    la soumission du plan. Les critères déjà vrais à cet instant sont marqués
+    « satisfaits d'avance » : évalués et visibles, mais exclus du verdict —
+    un critère vrai avant le travail n'est pas une preuve de travail.
 
     Ne lève jamais : un critère qui explose devient « non vérifiable », parce
     qu'une exception ici bloquerait la boucle de revue au lieu de l'informer.
@@ -325,20 +508,29 @@ def verifier_contrat(criteres, racine: str | None = None) -> RapportContrat:
         criteres = normaliser_criteres(criteres)
 
     rapport = RapportContrat()
-    for critere in criteres or []:
+    for index, critere in enumerate(criteres or []):
         if critere.type == "commande":
-            rapport.resultats.append(_verifier_commande(critere, racine))
+            resultat = _verifier_commande(critere, racine)
         elif critere.type in ("fichier_contient", "fichier_existe"):
-            rapport.resultats.append(_verifier_fichier(critere))
+            resultat = _verifier_fichier(critere)
         else:
-            rapport.resultats.append(ResultatCritere(
+            resultat = ResultatCritere(
                 critere, None, f"type de critère inconnu : {critere.type!r}"
-            ))
+            )
+        rapport.resultats.append(
+            _marquer_si_satisfait_d_avance(index, critere, resultat, etats_initiaux)
+        )
 
     if rapport.resultats:
+        exclus = len(rapport.resultats_satisfaits_d_avance)
+        note = f", {exclus} satisfait(s) d'avance (exclu(s) du verdict)" if exclus else ""
+        if rapport.echecs_satisfaits_d_avance:
+            # Un critère vrai avant le lot qui échoue maintenant : régression.
+            # Elle bloque le verdict — le doute va toujours vers le strict.
+            note += f", dont {len(rapport.echecs_satisfaits_d_avance)} en RÉGRESSION (bloquant(s))"
         logger.info(
             f"[CONTRAT] {len(rapport.verifiables)} critère(s) vérifiable(s), "
-            f"{len(rapport.echecs)} échec(s), {len(rapport.non_verifiables)} non vérifiable(s) "
-            f"→ satisfait={rapport.satisfait}"
+            f"{len(rapport.echecs)} échec(s), {len(rapport.non_verifiables)} non vérifiable(s)"
+            f"{note} → satisfait={rapport.satisfait}"
         )
     return rapport

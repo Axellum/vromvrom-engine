@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -500,6 +501,60 @@ def _save_report(report: dict) -> str:
 # DreamCoder — traitement d'une tâche + boucle de drainage à durée réglable
 # ──────────────────────────────────────────────────────────────────
 
+def _pousser_branche_tache(repo_root: str, branch_name: str,
+                           timeout_s: float = 90.0) -> dict[str, Any]:
+    """
+    Pousse la branche 'task/*' vers `origin` — best effort, JAMAIS bloquant.
+
+    Le commit local EST la valeur produite par la tâche. Un push impossible
+    (clé de déploiement en lecture seule sur le Deck, remote volontairement
+    neutralisé sur la prod, réseau coupé) ne doit pas retransformer une tâche
+    réussie en échec : on journalise la raison et la branche reste récoltable
+    par `scripts/recolte_dreamcoder.py` depuis un poste qui a le droit d'écrire.
+
+    Deux garde-fous, tous deux nés d'un blocage réel :
+      - `GIT_TERMINAL_PROMPT=0` — le clone dédié du Deck a un `origin` en HTTPS
+        sans identifiants ; sans ça, git attendrait une saisie qui ne viendra
+        jamais dans un service systemd.
+      - timeout dur — le push est dans la fenêtre `dreamcoder_max_cycle_minutes`,
+        qui est le budget de TOUTES les tâches du cycle : un push qui pend
+        mangerait le temps des suivantes.
+
+    :return: {"pushed": bool, "raison": str, "detail": str}
+    """
+    from tools.git_safety import _run_git
+
+    # Le dépôt de PROD du Deck neutralise volontairement son push
+    # (`no-push://le-deck-est-une-cible-de-deploiement`, garde-fou du 07/08 :
+    # 23 clés en clair y étaient suivies). Détecté ici pour rendre une raison
+    # lisible plutôt qu'une erreur de transport opaque.
+    code, push_url, _ = _run_git(["remote", "get-url", "--push", "origin"], cwd=repo_root)
+    if code != 0 or not push_url:
+        return {"pushed": False, "raison": "remote_absent", "detail": push_url or ""}
+    if push_url.startswith("no-push://"):
+        return {"pushed": False, "raison": "remote_no_push", "detail": push_url}
+
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    try:
+        res = subprocess.run(
+            ["git", "push", "--set-upstream", "origin", branch_name],
+            cwd=repo_root, capture_output=True, text=True,
+            timeout=timeout_s, env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return {"pushed": False, "raison": "timeout", "detail": f"{timeout_s}s"}
+    except Exception as e:  # transport cassé, git absent, permissions…
+        return {"pushed": False, "raison": "erreur", "detail": str(e)[:300]}
+
+    if res.returncode == 0:
+        return {"pushed": True, "raison": "ok", "detail": ""}
+    return {
+        "pushed": False,
+        "raison": "refuse",
+        "detail": ((res.stderr or "") + (res.stdout or "")).strip()[:300],
+    }
+
+
 async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: str,
                                         orig_branch: str, bg: Any) -> dict[str, Any]:
     """
@@ -519,6 +574,7 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
     result: dict[str, Any] = {
         "task_id": task_id, "title": task["title"], "status": None,
         "branch": None, "cost_usd": 0.0, "tokens_used": 0, "error": None,
+        "push": {"pushed": False, "raison": "non_tente", "detail": ""},
     }
     logger.info(f"[DREAMER] [DreamCoder] Tâche trouvée : ID {task_id} - '{task['title']}'")
     logger.info(f"[DREAMER] [DreamCoder] Provider alloué : {provider}")
@@ -545,7 +601,6 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
         "gemini-cli-abo": "gemini-3.5-flash-high-cli",
         "claude-cli-abo": "claude-sonnet-4.6-thinking-cli",
         "cerebras-free": "gpt-oss-120b",
-        "dashscope-coding": "dashscope/qwen3-coder-next",
         "cohere-free": "command-r-plus-08-2024",
         "mistral-free": "open-mistral-nemo",
         "gemini-free": "gemini-3.5-flash-free",
@@ -598,8 +653,15 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
 
     if branch_name.startswith("Erreur"):
         logger.error(f"[DREAMER] [DreamCoder] Impossible de préparer la branche Git : {branch_name}")
-        await update_task_status(task_id, 'failed', error_message=branch_name)
-        result["status"] = "failed"
+        # `retries` était laissé à 0 sur ce chemin : la tâche n'atteignait
+        # jamais 'abandoned' après 3 échecs, et comme 'failed' n'est pas repris
+        # par get_next_task(), elle restait bloquée sans que rien ne le dise.
+        # Constaté sur le Deck : deux tâches 'failed' / retries=0 depuis juillet.
+        next_retries = task.get("retries", 0) + 1
+        statut = "abandoned" if next_retries >= 3 else "failed"
+        await update_task_status(task_id, statut, error_message=branch_name,
+                                 retries=next_retries)
+        result["status"] = statut
         result["error"] = branch_name
         return result
 
@@ -608,6 +670,7 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
     result["branch"] = branch_name
 
     from core.app_state import get_app_state as _get_app_state
+    from core.fenetres_execution import duree_enveloppe_dreamcoder_s, duree_tache_dreamcoder_s
     from services.pipeline_service import run_full_pipeline
 
     # [#T202] Propager la racine de travail au pipeline (hooks Git/YAML/doc de
@@ -633,6 +696,10 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
 
     try:
         logger.info("[DREAMER] [DreamCoder] Démarrage du pipeline de tâche...")
+        # Les DEUX bornes viennent de core/fenetres_execution.py : sans
+        # `timeout_seconds`, le pipeline reprenait son défaut de 120 s hérité du
+        # chemin interactif, et l'enveloppe de 600 s ci-dessous n'était que
+        # décorative — le vrai plafond d'une tâche de nuit était de 2 minutes.
         pipeline_result = await asyncio.wait_for(
             run_full_pipeline(
                 user_prompt=work_prompt,
@@ -640,9 +707,10 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
                 initial_payload=initial_payload,
                 starting_agent=starting_agent,
                 on_event_callback=sse_callback,
-                config=temp_config
+                config=temp_config,
+                timeout_seconds=duree_tache_dreamcoder_s(),
             ),
-            timeout=600.0  # 10 minutes timeout
+            timeout=duree_enveloppe_dreamcoder_s(),
         )
 
         logger.info(f"[DREAMER] [DreamCoder] Pipeline terminé avec statut: {pipeline_result.get('status')}")
@@ -686,6 +754,19 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
             # Générer le diff
             _, diff_out, _ = await asyncio.to_thread(_run_git, ["diff", "HEAD~1..HEAD"], repo_root)
 
+            # Sortir le travail du Deck : la branche est poussée vers origin dès
+            # qu'elle porte un commit. Best effort — un refus (deploy key en
+            # lecture seule) laisse la tâche 'completed' et la branche récoltable.
+            push_info = await asyncio.to_thread(_pousser_branche_tache, repo_root, branch_name)
+            result["push"] = push_info
+            if push_info["pushed"]:
+                logger.info(f"[DREAMER] [DreamCoder] Branche poussée sur origin : {branch_name}")
+            else:
+                logger.warning(
+                    f"[DREAMER] [DreamCoder] Branche NON poussée ({push_info['raison']}) : "
+                    f"{branch_name} — {push_info['detail'][:160]}"
+                )
+
             # Créer le fichier de rapport de résultats
             results_dir = os.path.join(_ENGINE_ROOT, "checkpoints", "dreamcoder_results")
             os.makedirs(results_dir, exist_ok=True)
@@ -703,7 +784,8 @@ async def _process_one_dreamcoder_task(task: dict, pa_config: dict, provider: st
                         "summary": pipeline_result.get("response", ""),
                         "timestamp": time.time(),
                         "tokens_used": tokens_used,
-                        "cost_usd": cost
+                        "cost_usd": cost,
+                        "push": push_info
                     }, f, indent=2, ensure_ascii=False)
 
             # Mettre à jour la base
@@ -776,7 +858,8 @@ async def _run_dreamcoder_drain_loop(pa_config: dict) -> dict[str, Any]:
     results: dict[str, Any] = {
         "processed": 0, "success": 0, "failed": 0, "abandoned": 0, "paused": 0,
         "total_cost_usd": 0.0, "total_tokens": 0,
-        "branches_awaiting_review": [], "tasks": [], "stopped_reason": None,
+        "branches_awaiting_review": [], "branches_pushed": [],
+        "tasks": [], "stopped_reason": None,
     }
 
     # [#T202] Dépôt de travail du cycle (clone dédié si configuré).
@@ -832,6 +915,11 @@ async def _run_dreamcoder_drain_loop(pa_config: dict) -> dict[str, Any]:
             results["success"] += 1
             if task_result.get("branch"):
                 results["branches_awaiting_review"].append(task_result["branch"])
+                # Distinguer « travail fait » de « travail sorti du Deck » : une
+                # branche non poussée demande une récolte manuelle, et le rapport
+                # de cycle est le seul endroit où ça se voit.
+                if (task_result.get("push") or {}).get("pushed"):
+                    results["branches_pushed"].append(task_result["branch"])
         elif status in ("failed", "abandoned", "paused"):
             results[status] += 1
         # Les tâches 'failed'/'abandoned' sortent naturellement de 'pending' :
@@ -1054,6 +1142,7 @@ async def run_dreamer_cycle(pa_config: dict) -> dict[str, Any]:
                         "total_cost_usd": round(drain_results["total_cost_usd"], 6),
                         "total_tokens": drain_results["total_tokens"],
                         "branches_awaiting_review": drain_results["branches_awaiting_review"],
+                        "branches_pushed": drain_results["branches_pushed"],
                         "stopped_reason": drain_results["stopped_reason"],
                     }
                     if drain_results["processed"] > 0:

@@ -306,6 +306,13 @@ def _ensure_token_table(conn: sqlite3.Connection) -> None:
             agent_name TEXT
         )
     """)
+    # [T347] Migration additive idempotente : la colonne `cache_hit_tokens`
+    # (tokens d'entrée servis par le cache) n'existe pas sur les bases créées
+    # avant cette PR. CREATE TABLE IF NOT EXISTS ne l'ajoute pas aux tables
+    # préexistantes → ALTER TABLE ADD COLUMN, sans perte de ligne.
+    _cols = {r[1] for r in conn.execute("PRAGMA table_info(token_usage)")}
+    if "cache_hit_tokens" not in _cols:
+        conn.execute("ALTER TABLE token_usage ADD COLUMN cache_hit_tokens INTEGER DEFAULT 0")
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_token_ts
         ON token_usage(timestamp DESC)
@@ -329,6 +336,7 @@ def record_token_usage(
     session_id: str | None = None,
     channel: str | None = None,
     agent_name: str | None = None,
+    cache_hit_tokens: int = 0,
 ) -> None:
     """
     Enregistre un appel LLM individuel dans la table token_usage.
@@ -344,8 +352,8 @@ def record_token_usage(
                 """
                 INSERT INTO token_usage
                 (session_id, timestamp, model, prompt_tokens, completion_tokens,
-                 total_tokens, cost_usd, channel, agent_name)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 total_tokens, cost_usd, channel, agent_name, cache_hit_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -357,6 +365,7 @@ def record_token_usage(
                     cost_usd,
                     channel,
                     agent_name,
+                    cache_hit_tokens,
                 ),
             )
             conn.commit()
@@ -616,9 +625,9 @@ def get_quotas_from_db() -> dict[str, int]:
 def canonical_project(label: str) -> str:
     """Normalise un libellé de projet en retirant le préfixe de lettre de lecteur.
 
-    Unifie le split d'identité Claude (P3) : 'E--AuxFilsDesIdees-moteur-agents' et
-    'h--AuxFilsDesIdees-moteur-agents' → 'AuxFilsDesIdees-moteur-agents'. Les libellés
-    sans préfixe (ex: 'antigravity-ide') sont renvoyés inchangés.
+    Unifie le split d'identité Claude (P3) : libellés dérivés du chemin Windows
+    (`E--workspace-engine` vs `h--workspace-engine`) vers un identifiant unique.
+    Les libellés sans préfixe (ex: 'antigravity-ide') sont renvoyés inchangés.
     """
     if not label:
         return ""
@@ -1109,6 +1118,110 @@ def get_quota_history(hours: int = 24, channel: str = None, metric: str = None) 
         return []
 
 
+# Constante de la politique d'écriture des relevés de solde (#T349) : on n'écrit
+# un nouveau relevé que si le solde a changé OU si le dernier relevé du même
+# fournisseur a plus d'une heure. À l'intervalle de rafraîchissement (300 s),
+# écrire systématiquement produirait 288 lignes/jour/prov pour une donnée qui
+# bouge rarement ; la fenêtre d'une heure plafonne l'historique à ~24 lignes/jour
+# par fournisseur tout en capturant chaque variation réelle de solde.
+BALANCE_SNAPSHOT_MAX_AGE_SECONDS = 3600  # 1 h
+
+
+def insert_balance_snapshot(provider: str, balance_usd: float | None) -> int:
+    """Enregistre un relevé de solde dans `billing_history` (#T349).
+
+    Politique d'écriture :
+      - si `balance_usd` vaut `None` (fournisseur injoignable, HTTP en erreur,
+        clé absente) → AUCUNE ligne n'est écrite : un trou dans l'historique
+        est une information exploitable, un 0 ou un report de la valeur
+        précédente serait un mensonge dans un futur calcul de dépense ;
+      - sinon, on écrit si le solde a CHANGÉ depuis le dernier relevé du même
+        fournisseur, OU si ce dernier relevé a plus d'une heure ;
+      - sinon on n'écrit pas (pas de doublon).
+
+    Retourne le nombre de lignes écrites (0 ou 1).
+
+    Les erreurs SQLite **remontent** au caller : `refresh_all_quotas` les
+    journalise et les ajoute à `result["errors"]` sans faire tomber le refresh
+    (cf. `core/quota_collector.py`). Avaler ici et renvoyer 0 masquerait une
+    vraie panne comme un skip de déduplication.
+    """
+    if balance_usd is None:
+        return 0
+
+    conn = _get_connection()  # garantit le schéma canonique de billing_history
+    try:
+        # Dernier relevé du même fournisseur pour la même métrique.
+        dernier = conn.execute(
+            "SELECT timestamp, value FROM billing_history "
+            "WHERE provider = ? AND metric = 'balance_usd' "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (provider,),
+        ).fetchone()
+
+        now = time.time()
+        if dernier is not None:
+            ts_prev, val_prev = dernier
+            solde_change = abs(val_prev - balance_usd) > 1e-9
+            trop_vieux = (now - ts_prev) > BALANCE_SNAPSHOT_MAX_AGE_SECONDS
+            if not solde_change and not trop_vieux:
+                return 0
+
+        conn.execute(
+            "INSERT INTO billing_history "
+            "(timestamp, provider, metric, value, currency, sync_source) "
+            "VALUES (?, ?, 'balance_usd', ?, 'USD', 'api')",
+            (now, provider, balance_usd),
+        )
+        conn.commit()
+        return 1
+    finally:
+        conn.close()
+
+
+def get_balance_history(hours: int = 24, provider: str = None) -> list[dict]:
+    """Récupère l'historique des relevés de solde (`metric='balance_usd'`).
+
+    Args:
+        hours: Fenêtre temporelle en heures (défaut 24 h).
+        provider: Filtrer par fournisseur (ex: 'deepseek'). None = tous.
+
+    Retourne une liste ordonnée chronologiquement (ascendant).
+    """
+    try:
+        conn = _get_connection()
+        since = time.time() - (hours * 3600)
+
+        query = (
+            "SELECT timestamp, provider, metric, value, currency, sync_source "
+            "FROM billing_history WHERE timestamp > ? AND metric = 'balance_usd'"
+        )
+        params = [since]
+
+        if provider:
+            query += " AND provider = ?"
+            params.append(provider)
+
+        query += " ORDER BY timestamp ASC"
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+
+        return [
+            {
+                "timestamp": r[0],
+                "provider": r[1],
+                "metric": r[2],
+                "value": r[3],
+                "currency": r[4],
+                "sync_source": r[5],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        logger.warning(f"[SESSION HISTORY] Erreur get_balance_history : {e}")
+        return []
+
+
 def insert_billing_record(provider: str, metric: str, value: float,
                           currency: str = "USD", sync_source: str = "api") -> bool:
     """Enregistre un point de données de facturation.
@@ -1222,7 +1335,7 @@ def cleanup_old_snapshots(retention_days: int = 90):
 
 def cleanup_zombie_sessions(now: float | None = None) -> int:
     """
-    Marque comme 'error' les sessions zombies [#T298].
+    Marque comme 'error' les sessions zombies [#T298] et réconcilie leurs tâches DAG.
 
     Une session est zombie si elle cumule DEUX conditions :
     - statut 'running' depuis plus de ZOMBIE_SESSION_MAX_AGE_SECONDS (1h) ;
@@ -1236,36 +1349,85 @@ def cleanup_zombie_sessions(now: float | None = None) -> int:
     est la preuve que le moteur travaille encore : une session vivante a
     toujours un heartbeat bien plus récent qu'une heure.
 
+    Réconciliation DAG [#T362] : les tâches non terminales (pending/running)
+    rattachées aux sessions que CET appel vient de zombifier sont marquées
+    'error' avec un message explicite et un ended_at renseigné, DANS LA MÊME
+    transaction que l'UPDATE sessions — jamais dans un passage séparé qui
+    pourrait s'exécuter alors qu'une autre session a démarré entre-temps.
+    Les tâches déjà terminales (success/error/blocked) gardent leur statut.
+    Le prédicat de zombification n'est pas élargi : les sessions
+    'waiting_approval' (HITL en attente légitime) ne sont jamais touchées.
+
     Args:
         now: Horodatage UNIX de référence (tests, temps simulé) ;
             None = time.time().
 
     Returns:
-        Nombre de sessions zombies nettoyées.
+        Nombre de sessions zombies nettoyées (contrat conservé).
+        Le nombre de tâches réconciliées est exposé par le journal, pas par
+        la valeur de retour.
     """
     try:
         reference = now if now is not None else time.time()
         cutoff = reference - ZOMBIE_SESSION_MAX_AGE_SECONDS
         with _db_lock:
             conn = _get_connection()
-            cursor = conn.execute(
+            # Identifie d'abord les sessions zombies, pour réconcilier ensuite
+            # leurs tâches DAG dans la même transaction (prédicat inchangé).
+            rows = conn.execute(
                 """
-                UPDATE sessions SET
-                    status = 'error',
-                    ended_at = ?,
-                    error_message = 'Session zombie - nettoyée automatiquement (running depuis >1h)'
+                SELECT session_id FROM sessions
                 WHERE status = 'running'
                   AND started_at < ?
                   AND (last_activity IS NULL OR last_activity < ?)
                 """,
-                (reference, cutoff, cutoff),
-            )
-            affected = cursor.rowcount
+                (cutoff, cutoff),
+            ).fetchall()
+            session_ids = [r[0] for r in rows]
+            affected = len(session_ids)
+            if affected > 0:
+                # Marque les sessions zombies 'error' (même prédicat que le SELECT).
+                conn.execute(
+                    """
+                    UPDATE sessions SET
+                        status = 'error',
+                        ended_at = ?,
+                        error_message = 'Session zombie - nettoyée automatiquement (running depuis >1h)'
+                    WHERE status = 'running'
+                      AND started_at < ?
+                      AND (last_activity IS NULL OR last_activity < ?)
+                    """,
+                    (reference, cutoff, cutoff),
+                )
+                reconciled = 0
+                for sid in session_ids:
+                    # Réconciliation des tâches non terminales des seules
+                    # sessions zombifiées par CET appel — jamais un UPDATE
+                    # dag_tasks global. Un UPDATE par session (le nombre de
+                    # zombies est faible, ex. 46 dans la mesure du 17/08),
+                    # dans la même transaction.
+                    cursor_tasks = conn.execute(
+                        """
+                        UPDATE dag_tasks SET
+                            status = 'error',
+                            ended_at = ?,
+                            error_message = 'Tâche réconciliée : la session zombie a été nettoyée'
+                        WHERE session_id = ?
+                          AND status IN ('pending', 'running')
+                        """,
+                        (reference, sid),
+                    )
+                    reconciled += cursor_tasks.rowcount
+            else:
+                reconciled = 0
             conn.commit()
             conn.close()
 
             if affected > 0:
-                logger.warning(f"[SESSION HISTORY] {affected} session(s) zombie(s) nettoyée(s)")
+                logger.warning(
+                    f"[SESSION HISTORY] {affected} session(s) zombie(s) nettoyée(s), "
+                    f"{reconciled} tâche(s) DAG réconciliée(s)"
+                )
             return affected
     except Exception as e:
         logger.warning(f"[SESSION HISTORY] Erreur cleanup_zombie_sessions : {e}")

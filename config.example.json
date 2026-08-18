@@ -1,51 +1,159 @@
 {
   "_commentaire": "Copier ce fichier en config.json et ajuster selon vos besoins.",
-  "_doc": "Les tiers abstraits (leger/moyen/fort) permettent de changer de modèle sans toucher au code.",
-
-  "planner_model": "moyen",
-  "executor_model": "leger",
+  "_doc": "Les tiers abstraits (leger/moyen/fort) et le fast-path vocal reproduisent la cascade utilisée en prod. Les slugs sont des exemples : un provider absent (pas de clé) est simplement sauté.",
+  "planner_model": "gemini-3.5-flash-free",
+  "executor_model": "gemini-3.5-flash-free",
   "reviewer_model": "leger",
-
+  "ha_model": "moyen",
   "tiers": {
-    "leger":  ["local", "gemini-flash", "github-gpt4o-mini"],
-    "moyen":  ["gemini-flash", "deepseek-chat", "github-gpt4o"],
-    "fort":   ["gemini-pro", "deepseek-reasoner", "github-llama-70b"],
-    "automatique": ["local", "gemini-flash", "deepseek-chat", "gemini-pro"]
+    "leger": [
+      "gemini-3.1-flash-lite-free",
+      "gemini-3.5-flash-free",
+      "deepseek-coder-v2-lite",
+      "gemma-4-31b",
+      "qwen3-coder-next",
+      "gemini-3.5-flash-high-cli",
+      "gemini-3.5-flash-medium-cli",
+      "deepseek-chat",
+      "MiniMax-M2.1-highspeed",
+      "MiniMax-M2"
+    ],
+    "moyen": [
+      "gemini-3.5-flash-high-cli",
+      "gemini-3.5-flash-free",
+      "openrouter/auto",
+      "deepseek-v4-flash",
+      "gpt-oss-120b",
+      "claude-sonnet-4.6-thinking-cli",
+      "gemini-3.5-flash-medium-cli",
+      "deepseek-reasoner",
+      "gemini-3.5-flash-paid",
+      "codestral-latest",
+      "mistral-large-latest",
+      "MiniMax-M2.5-highspeed",
+      "MiniMax-M2.7"
+    ],
+    "fort": [
+      "deepseek-reasoner",
+      "claude-sonnet-4-6",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "deepseek-v4-pro",
+      "gemini-3.1-pro-preview-paid",
+      "claude-opus-4.6-thinking-cli",
+      "gemini-3.5-flash-high-cli",
+      "gpt-oss-120b",
+      "gemini-3-pro-preview-paid",
+      "gemini-3.1-pro-customtools-paid",
+      "MiniMax-M3",
+      "MiniMax-M2.7"
+    ],
+    "automatique": [
+      "gemini-3.5-flash-high-cli",
+      "deepseek-reasoner",
+      "MiniMax-M3",
+      "openrouter/auto",
+      "claude-sonnet-4.6-thinking-cli",
+      "deepseek-chat",
+      "gemini-3.5-flash-free",
+      "deepseek-v4-pro"
+    ]
   },
-
   "timeout_global_s": 120,
   "max_retries": 3,
   "max_dag_stages": 10,
-
   "fast_path_enabled": true,
   "fast_path_cache_ttl_s": 15,
-
   "semantic_cache": {
     "enabled": false,
-    "similarity_threshold": 0.92
+    "similarity_threshold": 0.95
   },
-
+  "budget_guard": {
+    "gemini_free_tokens_per_hour": 1000000,
+    "deepseek_free_requests_per_day": 200,
+    "daily_budget_usd": 0.5,
+    "auditor_weekly_budget_usd": 1.0,
+    "total_daily_budget_usd": 1.0
+  },
+  "cascade_quality_escalation": {
+    "enabled": true,
+    "quality_threshold": 6.0,
+    "eligible_domains": [
+      "code_generation",
+      "analysis",
+      "sysadmin"
+    ],
+    "escalated_tier": "fort"
+  },
+  "routing_policy": {
+    "_documentation": "Hors routage auto. Liste d'exclusions : modèles à clés mortes ou slugs retirés. Adapter à votre catalogue.",
+    "excluded_models": [
+      "claude-fable-5",
+      "claude-sonnet-5",
+      "claude-opus-4-8-direct",
+      "claude-haiku-4-5-direct",
+      "meta-llama/llama-3.3-70b-instruct:free",
+      "meta-llama/llama-3.2-3b-instruct:free",
+      "dashscope",
+      "dashscope/qwen3.7-plus",
+      "dashscope/qwen3.6-plus",
+      "dashscope/qwen3.5-plus",
+      "dashscope/qwen3-max-2026-01-23",
+      "dashscope/qwen3-coder-next",
+      "dashscope/qwen3-coder-plus",
+      "dashscope/kimi-k2.5",
+      "dashscope/glm-5",
+      "dashscope/glm-4.7",
+      "dashscope/MiniMax-M2.5"
+    ]
+  },
+  "persistent_agents": {
+    "daemon_model": "leger",
+    "daemon_interval_minutes": 10,
+    "daemon_enabled": true,
+    "dreamer_model": "leger",
+    "dreamer_schedule": "02:00",
+    "dreamer_enabled": true,
+    "dreamer_idle_trigger_hours": 3,
+    "routines_model": "fort",
+    "dreamcoder_max_cycle_minutes": 30,
+    "auditor_enabled": true,
+    "auditor_scopes": [
+      "core",
+      "agents",
+      "api",
+      "memory",
+      "tools"
+    ],
+    "auditor_trigger_mode": "task_count",
+    "auditor_trigger_task_count": 10,
+    "auditor_schedule_weekday": 6,
+    "auditor_schedule_time": "03:00",
+    "auditor_model_tier": "moyen",
+    "auditor_escalation_tier": "fort",
+    "auditor_confidence_threshold": 6.0,
+    "auditor_dedup_similarity_threshold": 0.75,
+    "auditor_max_corpus_chars": 150000,
+    "dreamcoder_repo_path": ""
+  },
   "swarm": {
     "enabled": false,
     "workers": []
   },
-
   "hitl": {
     "enabled": false,
     "timeout_s": 300
   },
-
   "visual_qa": {
     "enabled": false,
     "puppeteer_url": "http://localhost:3000"
   },
-
   "local_llm": {
     "lmstudio_url": "http://localhost:1234",
     "ollama_url": "http://localhost:11434",
+    "llamacpp_url": "http://127.0.0.1:8080",
     "model": "qwen2.5-14b-instruct"
   },
-
   "context_compression_threshold": 1500,
   "max_tool_output_chars": 4000
 }

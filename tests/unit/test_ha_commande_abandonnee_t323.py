@@ -30,6 +30,13 @@ import core.vocal_host as vh
 import services.execute_service as es
 from services.execute_service import _est_action_rejouable
 
+
+# [T356] Depuis que execute_ha_service vérifie l'état de l'entité avant le POST,
+# les tests du POST doivent simuler une entité VIVANTE (sinon la lecture d'état
+# ferait un vrai GET réseau, bloqué par le garde-fou). read_ha_state est async.
+async def _etat_vivant(entity_id: str) -> dict:
+    return {"entity_id": entity_id, "state": "off", "attributes": {}}
+
 # ── (a) Reprise sur connexion fermée, strictement bornée ─────────────────────
 
 class _FakeResp:
@@ -70,14 +77,14 @@ class _RespQuiCoupe:
 
 @pytest.mark.asyncio
 async def test_action_rejouable_repart_sur_une_connexion_neuve(monkeypatch):
-    """Volet : la connexion morte du pool ne doit pas perdre la commande."""
+    """Service rejouable : la connexion morte du pool ne doit pas perdre la commande."""
     session = _SessionQuiCoupe(coupures=1)
     monkeypatch.setattr(es, "_get_ha_session", lambda: session)
     monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
+    monkeypatch.setattr(es, "read_ha_state", _etat_vivant)
 
     ok, texte = await es.execute_ha_service(
-        "script.blind_action", "cover.volet_salon",
-        service_data={"action": "close"},
+        "light.turn_off", "light.living_room",
     )
 
     assert ok, "la commande a été perdue alors qu'elle était rejouable sans risque"
@@ -86,11 +93,36 @@ async def test_action_rejouable_repart_sur_une_connexion_neuve(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_script_volet_n_est_plus_rejoue(monkeypatch):
+    """
+    Depuis #T350 le volet passe par script.turn_on et son script est en
+    `mode: restart` : rejouer annulerait la première exécution. Une connexion
+    coupée doit donc échouer franchement, sans seconde tentative.
+    """
+    session = _SessionQuiCoupe(coupures=1)
+    monkeypatch.setattr(es, "_get_ha_session", lambda: session)
+    monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
+    monkeypatch.setattr(es, "read_ha_state", _etat_vivant)
+
+    with pytest.raises(aiohttp.ServerDisconnectedError):
+        await es.execute_ha_service(
+            "script.blind_action", "cover.volet_salon",
+            service_data={"action": "close"},
+        )
+
+    assert session.tentatives == 1, (
+        "le script volet a été rejoué alors que mode:restart annulerait "
+        "l'exécution déjà lancée"
+    )
+
+
+@pytest.mark.asyncio
 async def test_action_non_rejouable_echoue_franchement(monkeypatch):
     """`toggle` ne doit JAMAIS être rejoué : deux inversions = retour à l'état initial."""
     session = _SessionQuiCoupe(coupures=1)
     monkeypatch.setattr(es, "_get_ha_session", lambda: session)
     monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
+    monkeypatch.setattr(es, "read_ha_state", _etat_vivant)
 
     with pytest.raises(aiohttp.ServerDisconnectedError):
         await es.execute_ha_service("light.toggle", "light.living_room")
@@ -104,23 +136,28 @@ async def test_deux_coupures_de_suite_ne_boucle_pas(monkeypatch):
     session = _SessionQuiCoupe(coupures=5)
     monkeypatch.setattr(es, "_get_ha_session", lambda: session)
     monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
+    monkeypatch.setattr(es, "read_ha_state", _etat_vivant)
 
     with pytest.raises(aiohttp.ServerDisconnectedError):
         await es.execute_ha_service(
-            "script.blind_action", "cover.volet_salon",
-            service_data={"action": "close"},
+            "light.turn_off", "light.living_room",
         )
 
     assert session.tentatives == 2
 
 
 def test_liste_blanche_des_actions_rejouables():
-    """L'idempotence de l'effet PHYSIQUE est le seul critère."""
+    """L'idempotence de l'effet PHYSIQUE est le seul critère.
+
+    Depuis #T350 le script volet n'est plus rejouable : il passe par
+    script.turn_on et son script HA est en `mode: restart` (une seconde
+    commande annulerait la première).
+    """
     for rejouable in ("light.turn_on", "cover.close_cover", "cover.open_cover",
-                      "climate.set_temperature", "script.blind_action"):
+                      "climate.set_temperature"):
         assert _est_action_rejouable(rejouable), rejouable
     for interdit in ("light.toggle", "cover.toggle", "script.un_script_inconnu",
-                     "vacuum.start", "lock.unlock"):
+                     "vacuum.start", "lock.unlock", "script.blind_action"):
         assert not _est_action_rejouable(interdit), interdit
 
 

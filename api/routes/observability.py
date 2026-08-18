@@ -46,6 +46,19 @@ def _snapshot_breakers() -> list:
     return breakers
 
 
+@router.get("/version")
+async def version_info() -> dict:
+    """Identité du code en cours d'exécution (SHA court + date du commit).
+
+    Route AUTHENTIFIÉE (le module est monté avec `_AUTH_DEP` dans gui_server.py) :
+    contrairement à la sonde publique /healthz, elle expose l'identité complète du
+    commit. Résolution effectuée une seule fois puis mise en cache
+    (core.version_info) : jamais de `git` par requête.
+    """
+    from core.version_info import get_version_info
+    return get_version_info()
+
+
 @router.get("/circuit-breakers")
 async def circuit_breakers_status() -> dict:
     """État JSON de tous les circuit breakers + résumé agrégé."""

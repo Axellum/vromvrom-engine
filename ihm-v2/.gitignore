@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-ssr
+*.tsbuildinfo
+*.local
+.vite
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store

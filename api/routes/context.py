@@ -350,7 +350,10 @@ def bulk_set_models_status(body: BulkStatusBody):
         if model is None:
             introuvables.append(model_id)
             continue
-        if model.get("status") == body.status:
+        
+        # [#T380] Même si le statut est identique, on appelle set_model_status
+        # pour forcer la libération de la revendication de la sonde (desactive_par_sonde = 0).
+        if model.get("status") == body.status and not model.get("desactive_par_sonde"):
             inchanges.append(model_id)
             continue
         if set_model_status(model_id, body.status):
@@ -462,6 +465,13 @@ def get_models_health():
     Une sonde dont personne ne voit les résultats reproduirait le défaut qu'elle
     corrige — les 6 modèles disjonctés du 12/08 n'étaient visibles qu'en lisant
     le journal du serveur.
+
+    Le bloc `catalogue` rend visible SANS ouvrir SQLite la zone grise mesurée
+    le 17/08 (52 modèles actifs sans routing_tier, sondés chaque heure, jamais
+    choisis par le routeur) : profondeur réelle de chaque tier, modèles sondés
+    non routables, et verdict de la règle de justification par spécialité
+    (cf. core.models_db.audit_zone_grise). Forme additive : les clés existantes
+    (sonde, modeles, muets, eteints_par_la_sonde) restent inchangées.
     """
     from core.model_health_probe import intervalle_sonde, peut_desactiver, sonde_activee
     from core.runtime_db import get_connection
@@ -482,6 +492,30 @@ def get_models_health():
         }
         for ligne in lignes
     ]
+
+    # ── Zone grise : sondés (actifs, testés chaque cycle) mais non routables ──
+    # Un audit en échec ne doit pas priver l'endpoint de santé de sa forme
+    # historique : le bloc `catalogue` se dégrade en erreur explicite.
+    try:
+        from core.models_db import audit_zone_grise, compter_profondeur_tiers
+
+        audit = audit_zone_grise()
+        actifs_hors_tier = set(audit["hors_tier"])
+        sondes_non_routables = [
+            m["model_id"] for m in modeles if m["model_id"] in actifs_hors_tier
+        ]
+        catalogue = {
+            "profondeur_tiers": compter_profondeur_tiers(),
+            "sondes_non_routables": sondes_non_routables,
+            "nb_sondes_non_routables": len(sondes_non_routables),
+            "zone_grise": audit["zone_grise"],
+            "justifies_hors_routage": audit["justifies"],
+            "conforme": audit["conforme"],
+        }
+    except Exception as e:
+        logger.warning(f"[MODELS-HEALTH] Audit de la zone grise indisponible : {e}")
+        catalogue = {"erreur": str(e)}
+
     return {
         "sonde": {
             "activee": sonde_activee(),
@@ -491,6 +525,7 @@ def get_models_health():
         "modeles": modeles,
         "muets": [m["model_id"] for m in modeles if m["echecs_consecutifs"] > 0],
         "eteints_par_la_sonde": [m["model_id"] for m in modeles if m["desactive_par_sonde"]],
+        "catalogue": catalogue,
     }
 
 

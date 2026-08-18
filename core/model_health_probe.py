@@ -25,6 +25,26 @@ garde-fous qui priment sur la réactivité :
      modèles) ;
   3. ne jamais descendre sous un plancher de modèles actifs ;
   4. concurrence bornée et prompt minuscule — la sonde consomme de vrais tokens.
+
+Ce que cette sonde s'est vu ajouter (mesuré en prod : 31/76 modèles éteints,
+112 cycles consécutifs de re-confirmation de la même panne, ~3 s par test) :
+
+- **Backoff sur ce qui est déjà éteint.** Un modèle éteint par la sonde n'est
+  plus re-testé à chaque cycle horaire : l'intervalle de re-test croît avec le
+  nombre d'échecs consécutifs (`intervalle_backoff`), plafonné à une journée.
+  Une panne actionnable (crédit épuisé, workspace non trusté, binaire absent,
+  clé refusée) ne se répare pas par la répétition : on la re-confirme de moins
+  en moins souvent, sans jamais cesser de la re-tester — la réactivation reste
+  automatique le jour où Axel répare la cause.
+- **Classement de la cause.** `classer_erreur` distingue « actionnable par un
+  humain » d'« inconnue / transitoire » à partir du texte de la dernière erreur.
+  Prudence : on ne classe comme actionnable que ce qu'on reconnaît de façon
+  fiable ; dans le doute, c'est transitoire (un modèle sain rangé par erreur
+  dans « actionnable » serait mis au placard pour la journée).
+- **Visible une fois, pas cent.** Une cause actionnable produit UN message
+  clair et actionnable (quoi faire, sur quelle machine) quand elle est détectée
+  ou quand elle change — jamais à chaque cycle (colonne
+  `cause_actionnable_signalee`).
 """
 from __future__ import annotations
 
@@ -50,6 +70,57 @@ MIN_MODELES_ACTIFS = 5
 # Appels simultanés : borné pour ne pas faire une rafale sur les APIs.
 CONCURRENCE = 4
 TIMEOUT_PING_S = 20.0
+# Plafond du backoff de re-test d'un modèle déjà éteint par la sonde : une
+# journée. Au-delà, on re-testé au plus une fois par jour — assez pour
+# réactiver le jour même où la cause disparaît, sans re-confirmer la même panne
+# 24 fois par jour.
+PLAFOND_BACKOFF_S = 24 * 3600
+# Colonne de suivi d'alerte : mémorise la catégorie actionnable déjà signalée
+# pour un modèle, pour ne pas répéter le même message à chaque cycle.
+_COLONNE_ALERTE = "cause_actionnable_signalee"
+
+# Motifs actionnables reconnus de façon fiable, mesurés en prod le 17/08.
+# Chaque entrée : (catégorie, tuple de fragments à chercher, message humain).
+# Règle de prudence : on n'ajoute ici QUE ce qu'on a vu échouer en réel, pas
+# une taxonomie théorique — un faux positif mettrait un modèle sain au placard.
+_PATTERNS_ACTIONNABLES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    (
+        "credit",
+        # HTTP 400 Anthropic (reproduit en direct) : solde trop bas.
+        ("credit balance is too low", "insufficient_quota", "out of quota",
+         "insufficient balance", "no credit", "solde insuffisant"),
+        "Recharge le crédit du compte (Plans & Billing sur api.anthropic.com) — "
+        "aucune nouvelle tentative ne réparera ça.",
+    ),
+    (
+        "trust",
+        # Claude CLI : workspace non trusté, à accepter une fois en interactif.
+        ("has not been trusted", "hastrustdialogaccepted", "trust dialog"),
+        "Accepte le dialogue de confiance de Claude Code une fois en interactif "
+        "sur la machine concernée (ou pose hasTrustDialogAccepted: true dans sa "
+        "configuration).",
+    ),
+    (
+        "binaire",
+        # Binaire CLI absent (Gemini *-cli) : erreur système de fichier.
+        ("no such file or directory", "[errno 2]", "not recognized as an "
+         "internal or external command"),
+        "Installe ou corrige le chemin du binaire CLI manquant sur la machine "
+        "qui héberge le provider.",
+    ),
+    (
+        "cle",
+        # Clé d'API refusée : 401/403 sur l'authentification.
+        ("invalid_api_key", "authentication_error", "unauthorized", "401",
+         "403", "permission denied"),
+        "Vérifie / remplace la clé d'API refusée (401/403) auprès du fournisseur.",
+    ),
+)
+
+
+def _maintenant() -> float:
+    """Horloge de la sonde, isolée pour être injectable dans les tests."""
+    return time.time()
 
 
 def _entier_env(nom: str, defaut: int) -> int:
@@ -80,29 +151,131 @@ def peut_desactiver() -> bool:
     )
 
 
+# ── Backoff & classement de la cause ────────────────────────────────────────
+
+def intervalle_backoff(echecs_consecutifs: int) -> float:
+    """
+    Intervalle de re-test d'un modèle DÉJÀ éteint par la sonde, en secondes.
+
+    Progression géométrique (doublement) depuis l'intervalle horaire de base,
+    plafonnée à une journée :
+      échecs 3 → 1 h, 4 → 2 h, 5 → 4 h, 6 → 8 h, 7 → 16 h, 8+ → 24 h.
+
+    Justification : une panne actionnable (crédit, trust, binaire, clé) ne se
+    répare pas par la répétition — on la re-confirme de moins en moins souvent.
+    Le doublement atteint le plafond en ~5 re-tests (~1 à 2 jours), ce qui borne
+    la consommation de tokens (mesurée : ~3 s + vrais tokens par test) tout en
+    restant réactif : une panne passagère qui guérit seule est rattrapée dans
+    l'heure ou les deux qui suivent. Le plafond d'une journée garantit qu'un
+    modèle réparé par Axel est re-testé et réactivé le jour même, sans
+    intervention manuelle.
+    """
+    if echecs_consecutifs <= SEUIL_ECHECS:
+        return float(INTERVALLE_DEFAUT_S)
+    exposant = echecs_consecutifs - SEUIL_ECHECS
+    return min(float(INTERVALLE_DEFAUT_S) * (2 ** exposant), float(PLAFOND_BACKOFF_S))
+
+
+def _categorie_actionnable(erreur: str) -> str | None:
+    """Catégorie actionnable reconnue (credit/trust/binaire/cle), sinon None."""
+    bas = erreur.lower()
+    for categorie, motifs, _message in _PATTERNS_ACTIONNABLES:
+        if any(motif in bas for motif in motifs):
+            return categorie
+    return None
+
+
+def classer_erreur(erreur: str | None) -> str:
+    """
+    Classe la dernière erreur en « actionnable » (seul un humain peut réparer) ou
+    « transitoire » (inconnue, réseau, à re-tester).
+
+    Règle de prudence : on ne classe comme actionnable que ce qu'on reconnaît de
+    façon fiable. Dans le doute, c'est transitoire — un modèle sain rangé par
+    erreur dans « actionnable » serait mis au placard pour la journée alors qu'il
+    guérit peut-être tout seul.
+    """
+    if not erreur:
+        return "transitoire"
+    return "actionnable" if _categorie_actionnable(erreur) else "transitoire"
+
+
+def _message_actionnable(model_id: str, categorie: str, erreur: str) -> str:
+    """Message unique et actionnable pour une cause reconnue."""
+    for cat, _motifs, texte in _PATTERNS_ACTIONNABLES:
+        if cat == categorie:
+            return (
+                f"[SANTÉ MODÈLES] {model_id} en panne ACTIONNABLE ({categorie}) : "
+                f"{texte} Dernière erreur : {erreur}"
+            )
+    return f"[SANTÉ MODÈLES] {model_id} en panne actionnable : {erreur}"
+
+
 # ── État persistant ─────────────────────────────────────────────────────────
+
+def _assurer_colonne_alerte() -> None:
+    """
+    Migration douce : ajoute la colonne de suivi d'alerte si elle manque.
+
+    Idempotente, sans toucher aux données existantes ni au schéma des autres
+    tables. Appelée en tête de cycle : la base de prod a été créée avant cette
+    colonne, elle doit la gagner sans recréer la table.
+    """
+    from core.runtime_db import get_connection
+    conn = get_connection()
+    try:
+        colonnes = {
+            r[1] for r in conn.execute("PRAGMA table_info(model_health)")
+        }
+        if _COLONNE_ALERTE not in colonnes:
+            conn.execute(
+                f"ALTER TABLE model_health ADD COLUMN {_COLONNE_ALERTE} TEXT"
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
 
 def lire_sante(model_id: str) -> dict:
     """État connu d'un modèle ; valeurs neutres s'il n'a jamais été testé."""
     from core.runtime_db import get_connection
     conn = get_connection()
-    ligne = conn.execute(
-        "SELECT model_id, dernier_test, dernier_succes, echecs_consecutifs, "
-        "succes_consecutifs, desactive_par_sonde, derniere_erreur, latence_ms "
-        "FROM model_health WHERE model_id = ?",
-        (model_id,),
-    ).fetchone()
+    # Lecture tolérante : sur une base créée avant l'ajout de la colonne d'alerte
+    # (et pas encore migrée), on retombe sur le SELECT historique et on renvoie
+    # la valeur neutre pour la colonne manquante.
+    try:
+        # Nom de colonne constant du module (jamais d'entrée utilisateur).
+        sql = ("SELECT model_id, dernier_test, dernier_succes, echecs_consecutifs, "  # noqa: S608
+               "succes_consecutifs, desactive_par_sonde, derniere_erreur, latence_ms, "
+               f"{_COLONNE_ALERTE} FROM model_health WHERE model_id = ?")
+        ligne = conn.execute(sql, (model_id,)).fetchone()
+        avec_alerte = True
+    except Exception:
+        ligne = conn.execute(
+            "SELECT model_id, dernier_test, dernier_succes, echecs_consecutifs, "
+            "succes_consecutifs, desactive_par_sonde, derniere_erreur, latence_ms "
+            "FROM model_health WHERE model_id = ?",
+            (model_id,),
+        ).fetchone()
+        avec_alerte = False
     if ligne is None:
         return {
             "model_id": model_id, "dernier_test": None, "dernier_succes": None,
             "echecs_consecutifs": 0, "succes_consecutifs": 0,
             "desactive_par_sonde": 0, "derniere_erreur": None, "latence_ms": None,
+            _COLONNE_ALERTE: None,
         }
-    return dict(ligne) if hasattr(ligne, "keys") else {
+    if hasattr(ligne, "keys"):
+        d = dict(ligne)
+        if not avec_alerte:
+            d[_COLONNE_ALERTE] = None
+        return d
+    return {
         "model_id": ligne[0], "dernier_test": ligne[1], "dernier_succes": ligne[2],
         "echecs_consecutifs": ligne[3], "succes_consecutifs": ligne[4],
         "desactive_par_sonde": ligne[5], "derniere_erreur": ligne[6],
         "latence_ms": ligne[7],
+        _COLONNE_ALERTE: ligne[8] if avec_alerte else None,
     }
 
 
@@ -110,6 +283,7 @@ def lire_sante(model_id: str) -> dict:
 _COLONNES_SANTE = frozenset({
     "dernier_test", "dernier_succes", "echecs_consecutifs",
     "succes_consecutifs", "desactive_par_sonde", "derniere_erreur", "latence_ms",
+    _COLONNE_ALERTE,
 })
 
 
@@ -188,12 +362,30 @@ async def tester_modele(model_id: str, gateway=None) -> tuple[bool | None, str, 
 
 # ── Cycle complet ───────────────────────────────────────────────────────────
 
+def _retest_du_a_backoff(model_id: str) -> bool:
+    """
+    Vrai si le moment de re-tester un modèle ÉTEINT par la sonde est venu.
+
+    Compare le temps écoulé depuis le dernier test à l'intervalle de backoff
+    dicté par ses échecs consécutifs. Un modèle jamais testé est testé.
+    """
+    etat = lire_sante(model_id)
+    dernier_test = etat["dernier_test"]
+    if dernier_test is None:
+        return True
+    echecs = etat["echecs_consecutifs"] or 0
+    return (_maintenant() - dernier_test) >= intervalle_backoff(echecs)
+
+
 async def executer_cycle(gateway=None) -> dict:
     """
     Un passage : teste les modèles actifs + ceux que la sonde a éteints, puis
     applique les transitions autorisées. Retourne un compte rendu.
     """
     from core.models_db import get_active_models, set_model_status
+
+    # Migration douce de la colonne d'alerte (base de prod créée avant elle).
+    _assurer_colonne_alerte()
 
     # `get_active_models()` renvoie la clé SQL `id` (PK), pas `model_id`.
     actifs = [m["id"] for m in get_active_models() if m.get("id")]
@@ -202,8 +394,26 @@ async def executer_cycle(gateway=None) -> dict:
     # les rallumer quand l'abonnement est renouvelé ou l'incident terminé.
     a_tester = list(dict.fromkeys(actifs + eteints_par_sonde))
 
+    # Backoff : un modèle déjà éteint par la sonde n'est PAS re-testé à chaque
+    # cycle horaire — l'intervalle de re-test croît avec ses échecs consécutifs
+    # (`intervalle_backoff`), plafonné à une journée. Les modèles ACTIFS, eux,
+    # restent testés à chaque cycle : c'est eux qu'il faut éteindre vite.
+    reportes_backoff = 0
+    filtre = []
+    for model_id in a_tester:
+        if model_id in actifs:
+            filtre.append(model_id)
+            continue
+        if _retest_du_a_backoff(model_id):
+            filtre.append(model_id)
+        else:
+            reportes_backoff += 1
+    a_tester = filtre
+
     if not a_tester:
-        return {"testes": 0, "vivants": 0, "morts": 0, "desactives": [], "reactives": []}
+        return {"testes": 0, "vivants": 0, "morts": 0, "ignores_non_cables": 0,
+                "reportes_backoff": reportes_backoff,
+                "desactives": [], "reactives": []}
 
     verrou = asyncio.Semaphore(CONCURRENCE)
 
@@ -220,7 +430,7 @@ async def executer_cycle(gateway=None) -> dict:
         if isinstance(resultat, BaseException):
             continue
         model_id, (ok, erreur, latence) = resultat
-        maintenant = time.time()
+        maintenant = _maintenant()
         etat = lire_sante(model_id)
         if ok is None:
             # Non câblé : hors statistiques (sinon ils « sauvent » le plancher
@@ -234,6 +444,10 @@ async def executer_cycle(gateway=None) -> dict:
                 echecs_consecutifs=0,
                 succes_consecutifs=(etat["succes_consecutifs"] or 0) + 1,
                 derniere_erreur=None, latence_ms=latence,
+                # Succès = la cause actionnable éventuelle est réparée : on
+                # efface le marqueur pour qu'une prochaine panne actionnable
+                # (même cause) soit re-signalée, et non avalée.
+                **{_COLONNE_ALERTE: None},
             )
         else:
             morts.append(model_id)
@@ -242,12 +456,20 @@ async def executer_cycle(gateway=None) -> dict:
                 echecs_consecutifs=(etat["echecs_consecutifs"] or 0) + 1,
                 succes_consecutifs=0, derniere_erreur=erreur, latence_ms=latence,
             )
+            # Alerte-une-fois : une cause actionnable produit UN message clair
+            # quand elle apparaît ou quand elle change, pas à chaque cycle.
+            categorie = _categorie_actionnable(erreur or "")
+            signalee = etat.get(_COLONNE_ALERTE)
+            if categorie and categorie != signalee:
+                logger.warning(_message_actionnable(model_id, categorie, erreur))
+                _ecrire_sante(model_id, **{_COLONNE_ALERTE: categorie})
 
     compte_rendu = {
         "testes": len(vivants) + len(morts),
         "vivants": len(vivants),
         "morts": len(morts),
         "ignores_non_cables": len(ignores),
+        "reportes_backoff": reportes_backoff,
         "desactives": [],
         "reactives": [],
         "gele": False,

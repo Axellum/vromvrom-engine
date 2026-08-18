@@ -4,7 +4,7 @@
 Mesuré en PRODUCTION le 12/08 (session `chat_683ea8b2cd`) — « Quelle est la
 température actuelle dans le salon ? » :
 
-    Appel API distant: GET http://192.168.1.x:8123/api/states
+    Appel API distant: GET http://192.168.1.10:8123/api/states
     [ha_agent] Erreur d'outil de call_api : Erreur de réseau HTTP:
       ('Connection aborted.', RemoteDisconnected('Remote end closed connection
       without response'))
@@ -16,8 +16,8 @@ connexion sans jamais répondre — d'où `RemoteDisconnected`, un message qui n
 nomme pas sa cause.
 
 Vérifié en prod, même hôte, même port :
-    http://192.168.1.x:8123/api/   → ConnectionError / RemoteDisconnected
-    https://192.168.1.x:8123/api/  → HTTP 401 (le serveur répond)
+    http://192.168.1.10:8123/api/   → ConnectionError / RemoteDisconnected
+    https://192.168.1.10:8123/api/  → HTTP 401 (le serveur répond)
 
 ⚠️ Ce n'est donc PAS la cause de #T323 (connexion keep-alive réutilisée) : ici
 `requests.request()` ouvre une session neuve à chaque appel. Deux symptômes
@@ -40,7 +40,7 @@ def _env_ha_neutre(monkeypatch):
     Isole HASS_URL / HA_URL — sans quoi ces tests dépendent de l'ordre de la suite.
 
     Régression réelle : ces deux tests passaient isolément et ÉCHOUAIENT en suite
-    complète. Dès qu'un test antérieur laisse `HASS_URL` pointer 192.168.1.x,
+    complète. Dès qu'un test antérieur laisse `HASS_URL` pointer 192.168.1.10,
     `_est_hote_ha()` devient vrai, le rejeu part dans `ha_requests_session()` —
     que ces tests ne mockent pas — et tente une VRAIE connexion, bloquée par le
     garde-fou réseau du conftest. Les tests qui veulent l'hôte HA le posent eux-
@@ -77,11 +77,11 @@ def test_bascule_en_https_et_reussit(monkeypatch):
 
     monkeypatch.setattr(requests, "request", _fake_request)
 
-    sortie = api.call_api("http://192.168.1.x:8123/api/states")
+    sortie = api.call_api("http://192.168.1.10:8123/api/states")
 
     assert appels == [
-        "http://192.168.1.x:8123/api/states",
-        "https://192.168.1.x:8123/api/states",
+        "http://192.168.1.10:8123/api/states",
+        "https://192.168.1.10:8123/api/states",
     ]
     assert "22.4" in sortie
     assert "Erreur" not in sortie
@@ -129,7 +129,7 @@ def test_url_deja_en_https_ne_rejoue_pas(monkeypatch):
 
     monkeypatch.setattr(requests, "request", _fake_request)
 
-    api.call_api("https://192.168.1.x:8123/api/states")
+    api.call_api("https://192.168.1.10:8123/api/states")
 
     assert len(appels) == 1
 
@@ -145,18 +145,18 @@ def test_message_d_erreur_nomme_la_cause(monkeypatch):
 
     monkeypatch.setattr(requests, "request", _fake_request)
 
-    sortie = api.call_api("http://192.168.1.x:8123/api/states?filter=temp#frag")
+    sortie = api.call_api("http://192.168.1.10:8123/api/states?filter=temp#frag")
 
-    assert "https://192.168.1.x:8123/api/states?filter=temp#frag" in sortie
+    assert "https://192.168.1.10:8123/api/states?filter=temp#frag" in sortie
     assert "TLS" in sortie
 
 
 def test_politique_tls_du_projet_pour_l_hote_ha(monkeypatch):
     """L'hôte HA (certificat auto-signé) suit HA_VERIFY_TLS ; les autres non."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HA_VERIFY_TLS", "false")
 
-    assert api._verify_pour("https://192.168.1.x:8123/api/states") is False
+    assert api._verify_pour("https://192.168.1.10:8123/api/states") is False
     # Un hôte quelconque garde la vérification standard : un outil générique ne
     # doit pas devenir un trou de sécurité pour tout Internet.
     assert api._verify_pour("https://exemple.invalid/api") is True
@@ -167,7 +167,7 @@ def test_rejeu_hote_ha_passe_par_ha_requests_session(monkeypatch):
     Bugbot : `verify=` seul ignore HA_TLS_SERVER_HOSTNAME. L'hôte HA doit
     rejouer via `ha_requests_session` (même chemin que MCP / vocal).
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     appels_session = []
 
     class _Session:
@@ -183,9 +183,9 @@ def test_rejeu_hote_ha_passe_par_ha_requests_session(monkeypatch):
     monkeypatch.setattr(requests, "request", _fake_request)
     monkeypatch.setattr("core.ha_tls.ha_requests_session", lambda: _Session())
 
-    sortie = api.call_api("http://192.168.1.x:8123/api/states")
+    sortie = api.call_api("http://192.168.1.10:8123/api/states")
 
-    assert appels_session == ["https://192.168.1.x:8123/api/states"]
+    assert appels_session == ["https://192.168.1.10:8123/api/states"]
     assert "22.4" in sortie
 
 

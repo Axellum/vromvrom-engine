@@ -91,7 +91,10 @@ function AccountCard({ account }: { account: ProviderAccount }) {
         <div>
           <div className="mb-1 flex justify-between text-xs">
             <span className="text-slate-400">Quota RPM</span>
-            <span className="font-mono text-slate-300">{account.used_rpm} / {account.quota_rpm || "∞"}</span>
+            {/* `used_rpm` est `number | null` : React n'affiche RIEN pour un null, ce qui
+                rendait « / ∞ » sans valeur devant. La barre de progression, deux lignes
+                plus bas, se protégeait déjà avec `?? 0` — pas l'affichage. */}
+            <span className="font-mono text-slate-300">{account.used_rpm ?? 0} / {account.quota_rpm || "∞"}</span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
             <div 
@@ -103,7 +106,7 @@ function AccountCard({ account }: { account: ProviderAccount }) {
         <div>
           <div className="mb-1 flex justify-between text-xs">
             <span className="text-slate-400">Quota RPD</span>
-            <span className="font-mono text-slate-300">{account.used_rpd} / {account.quota_rpd || "∞"}</span>
+            <span className="font-mono text-slate-300">{account.used_rpd ?? 0} / {account.quota_rpd || "∞"}</span>
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
             <div 
@@ -115,7 +118,9 @@ function AccountCard({ account }: { account: ProviderAccount }) {
       </div>
 
       <div className="mt-auto flex items-center justify-between border-t border-slate-800 pt-4">
-        <span className="text-[10px] text-slate-500">Sync: {account.last_sync}</span>
+        {/* `last_sync` est nullable : l'étiquette « Sync: » restait seule, sans date,
+            ce qui se lit comme un champ cassé plutôt que comme « jamais synchronisé ». */}
+        <span className="text-[10px] text-slate-500">Sync : {account.last_sync ?? "jamais"}</span>
         {account.dashboard_url && (
           <button 
             onClick={() => window.open(account.dashboard_url, '_blank')}

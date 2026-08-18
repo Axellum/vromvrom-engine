@@ -10,7 +10,7 @@ Deux noms coexistent historiquement dans le .env :
 
 Même famille, même style, même traitement de l'absence que
 `core/ha_token.py::get_ha_token()` (T239) : PAS de valeur par défaut.
-Avant #T330, neuf sites portaient `http://192.168.1.x:8123` en dur comme
+Avant #T330, neuf sites portaient `http://192.168.1.10:8123` en dur comme
 repli — une URL en clair vers un serveur qui n'écoute qu'en HTTPS. Un
 défaut faux est pire que pas de défaut : Home Assistant refoule le clair
 sans répondre (`RemoteDisconnected`, cf. #T329), et ces valeurs finissaient

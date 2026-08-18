@@ -127,7 +127,7 @@ class TestMemoryDBV9:
 
         # 2. Créer une entité dans le graphe
         temp_memory_db.upsert_graph_entity(
-            name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active",
+            name="switch.example_wake_word",
             entity_type="HA_Entity",
             observations=["Vrai commutateur du wake word Tab5 V2"]
         )
@@ -135,13 +135,13 @@ class TestMemoryDBV9:
         # 3. Créer la liaison
         ok = temp_memory_db.link_fact_to_entity(
             fact_id=fact_id,
-            entity_name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+            entity_name="switch.example_wake_word"
         )
         assert ok is True
 
         # 4. Rechercher les faits connectés à l'entité
         facts = temp_memory_db.get_connected_facts_for_entity(
-            entity_name="switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+            entity_name="switch.example_wake_word"
         )
         assert len(facts) == 1
         assert facts[0]["id"] == fact_id
@@ -150,7 +150,7 @@ class TestMemoryDBV9:
         # 5. Rechercher les entités connectées au fait
         entities = temp_memory_db.get_connected_entities_for_fact(fact_id=fact_id)
         assert len(entities) == 1
-        assert entities[0]["name"] == "switch.m5stack_tab5_home_assistant_hmi_tab5_wake_word_active"
+        assert entities[0]["name"] == "switch.example_wake_word"
 
     @pytest.mark.asyncio
     async def test_async_graph_rag_linkage(self, temp_memory_db):
@@ -165,7 +165,7 @@ class TestMemoryDBV9:
 
         # 2. Créer l'entité graphe
         await temp_memory_db.upsert_graph_entity_async(
-            name="media_player.m5stack_tab5_home_assistant_hmi_tab5_media_player",
+            name="media_player.tablet",
             entity_type="HA_Entity",
             observations=["Vrai lecteur audio du Tab5 V2"]
         )
@@ -173,13 +173,13 @@ class TestMemoryDBV9:
         # 3. Créer la liaison asynchrone
         ok = await temp_memory_db.link_fact_to_entity_async(
             fact_id=fact_id,
-            entity_name="media_player.m5stack_tab5_home_assistant_hmi_tab5_media_player"
+            entity_name="media_player.tablet"
         )
         assert ok is True
 
         # 4. Récupérer les faits asynchronement
         facts = await temp_memory_db.get_connected_facts_for_entity_async(
-            entity_name="media_player.m5stack_tab5_home_assistant_hmi_tab5_media_player"
+            entity_name="media_player.tablet"
         )
         assert len(facts) == 1
         assert facts[0]["id"] == fact_id

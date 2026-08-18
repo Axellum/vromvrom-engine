@@ -4,7 +4,7 @@
 Suite directe de #T329, mesurée en production le 12/08 sur `4d8cdde`. Une fois
 la bascule HTTPS en place, l'appel atteint enfin HA — et se fait refouler :
 
-    21:55:55,806  Appel API distant: GET http://192.168.1.x:8123/api/states
+    21:55:55,806  Appel API distant: GET http://192.168.1.10:8123/api/states
     21:55:55,813  [#T329] a fermé la connexion sans répondre → rejeu en https
     21:55:55,929  [ha_agent] Erreur d'outil (auth) : Erreur (HTTP 401): Unauthorized
     21:55:55,930  [ha_agent] Échec final après auto-correction infructueuse
@@ -62,12 +62,12 @@ def _mock_session_ha(monkeypatch, vus: dict):
 
 def test_token_injecte_pour_l_hote_ha(monkeypatch):
     """Le cas mesuré : plus de 401, l'appel part authentifié."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
-    api.call_api("https://192.168.1.x:8123/api/states")
+    api.call_api("https://192.168.1.10:8123/api/states")
 
     assert vus["headers"].get("Authorization") == "Bearer jeton-de-test"
 
@@ -77,7 +77,7 @@ def test_aucune_injection_vers_un_hote_tiers(monkeypatch):
     Garde-fou de sécurité : `call_api` reçoit des URL écrites par le modèle.
     Le token ne doit jamais partir ailleurs que vers l'hôte HA configuré.
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
 
@@ -104,13 +104,13 @@ def test_autorisation_fournie_remplacee_sur_l_hote_ha(monkeypatch):
     entier pour tout autre hôte : cf. `test_autorisation_fournie_intacte_hors_ha`
     dans `test_call_api_token_prioritaire_t340.py`.
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
     api.call_api(
-        "https://192.168.1.x:8123/api/states",
+        "https://192.168.1.10:8123/api/states",
         headers_json='{"Authorization": "Bearer jeton-choisi"}',
     )
 
@@ -122,7 +122,7 @@ def test_injection_survit_a_la_bascule_https(monkeypatch):
     Cas prod : URL en clair + hôte HA. Plus de sonde HTTP : bascule immédiate
     vers HTTPS + injection Bearer (aucun token en clair sur le LAN).
     """
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
     appels = []
 
@@ -140,29 +140,29 @@ def test_injection_survit_a_la_bascule_https(monkeypatch):
     monkeypatch.setattr(requests, "request", _fake_request)
     monkeypatch.setattr("core.ha_tls.ha_requests_session", lambda: _Session())
 
-    sortie = api.call_api("http://192.168.1.x:8123/api/states")
+    sortie = api.call_api("http://192.168.1.10:8123/api/states")
 
-    assert appels == [("https://192.168.1.x:8123/api/states", "Bearer jeton-de-test")]
+    assert appels == [("https://192.168.1.10:8123/api/states", "Bearer jeton-de-test")]
     assert "22.4" in sortie
 
 
 def test_jamais_de_bearer_sur_http_clair(monkeypatch):
     """Garde-fou : `_injecter_token_ha` refuse le schéma http://."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.setenv("HASS_TOKEN", "jeton-de-test")
-    headers = api._injecter_token_ha("http://192.168.1.x:8123/api/states", {})
+    headers = api._injecter_token_ha("http://192.168.1.10:8123/api/states", {})
     assert "Authorization" not in headers
 
 
 def test_token_absent_ne_leve_pas(monkeypatch):
     """Sans token configuré, l'appel part sans en-tête et l'API répondra 401."""
-    monkeypatch.setenv("HASS_URL", "https://192.168.1.x:8123")
+    monkeypatch.setenv("HASS_URL", "https://192.168.1.10:8123")
     monkeypatch.delenv("HASS_TOKEN", raising=False)
     monkeypatch.delenv("HA_TOKEN", raising=False)
     vus = {}
     _mock_session_ha(monkeypatch, vus)
 
-    api.call_api("https://192.168.1.x:8123/api/states")
+    api.call_api("https://192.168.1.10:8123/api/states")
 
     assert "Authorization" not in vus["headers"]
 
@@ -179,6 +179,6 @@ def test_injection_sans_hass_url_configuree(monkeypatch):
         return _Reponse()
 
     monkeypatch.setattr(requests, "request", _fake_request)
-    api.call_api("https://192.168.1.x:8123/api/states")
+    api.call_api("https://192.168.1.10:8123/api/states")
 
     assert "Authorization" not in vus["headers"]

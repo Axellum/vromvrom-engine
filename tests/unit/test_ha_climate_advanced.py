@@ -10,6 +10,13 @@ from services.execute_service import (
 )
 
 
+# [T356] Depuis que execute_ha_service vérifie l'état de l'entité avant le POST,
+# les tests du POST simulent une entité VIVANTE (sinon la lecture d'état ferait
+# un vrai GET réseau, bloqué par le garde-fou). read_ha_state est async.
+async def _etat_vivant(entity_id: str) -> dict:
+    return {"entity_id": entity_id, "state": "off", "attributes": {}}
+
+
 # ── Item 1 : nombres en lettres ──
 
 def test_parse_temperature_digits_and_words():
@@ -78,6 +85,7 @@ async def test_set_temperature_with_mode_splits_in_two_calls(monkeypatch):
     fake = _FakeSession()
     monkeypatch.setattr(es, "_get_ha_session", lambda: fake)
     monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
+    monkeypatch.setattr(es, "read_ha_state", _etat_vivant)
 
     ok, text = await es.execute_ha_service(
         "climate.set_temperature",
@@ -100,6 +108,7 @@ async def test_set_temperature_without_mode_single_call(monkeypatch):
     fake = _FakeSession()
     monkeypatch.setattr(es, "_get_ha_session", lambda: fake)
     monkeypatch.setattr(es, "_read_ha_credentials", lambda: ("tok", "https://ha.local"))
+    monkeypatch.setattr(es, "read_ha_state", _etat_vivant)
 
     ok, _ = await es.execute_ha_service(
         "climate.set_temperature",

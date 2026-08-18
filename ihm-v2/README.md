@@ -48,7 +48,7 @@ cd ihm-v2 && npm install && npm run dev
 ```
 
 Vite sur <http://localhost:5173>, proxy `/api`, `/v1`, `/ws`, `/version` → `:8000`.
-Cible surchargeable : `MOTEUR_API_URL=http://${ENGINE_HOST:-192.168.1.x}:8000 npm run dev`.
+Cible surchargeable : `MOTEUR_API_URL=http://192.168.1.10:8000 npm run dev`.
 
 Le moteur (`gui_server.py`) doit tourner et autoriser l'origine de dev dans
 `MOTEUR_CORS_ORIGINS` (ex : `http://localhost:5173`).

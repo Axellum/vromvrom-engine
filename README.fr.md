@@ -15,7 +15,7 @@
 *Construit pour Home Assistant · Fonctionne avec n'importe quel projet*
 
 > ⚠️ **État du projet : En développement actif**
-> Ce moteur est un outil personnel pointu partagé avec la communauté. Bien que l'architecture backend (DAG, async, routage Elo) soit robuste et utilisée quotidiennement, **l'interface web (IHM) est actuellement en construction**. Attendez-vous à des aspérités. C'est un projet expérimental destiné aux makers.
+> Outil personnel partagé avec la communauté. Le backend (DAG, async, routage Elo) tourne tous les jours. **L'IHM React (`ihm-v2/`) est dans le dépôt** — un `npm run build` et `gui_server.py` la sert sur `/`. Attendez-vous à des aspérités.
 
 🇬🇧 **[English version → README.md](README.md)** &nbsp;·&nbsp; 🗺️ **[Quels LLMs utiliser ? → STRATEGIES.fr.md](STRATEGIES.fr.md)**
 
@@ -99,8 +99,8 @@ vromvrom-engine/
 ├── services/              # Logique métier découplée du HTTP
 ├── plugins/               # Plugins custom (chargement dynamique)
 ├── workflows/             # Définitions de workflows JSON (graphes)
-├── static/                # IHM HTML/JS/CSS (glassmorphism, legacy)
-├── ihm-v2/                # Nouvelle IHM React/Vite/TS (en cours, remplacera static/)
+├── static/                # IHM HTML/JS (repli si ihm-v2 n'est pas buildée)
+├── ihm-v2/                # IHM React/Vite/TS (Chat, HA, catalogue LLM, Prompt Studio…)
 ├── tests/                 # 60 fichiers de tests pytest
 └── docs/                  # Documentation architecture
 ```
@@ -168,8 +168,9 @@ cp config.example.json config.json
 # Optionnel : ajuster les modèles par défaut
 
 # 6. Lancer
+#    (optionnel) IHM React : cd ihm-v2 && npm install && npm run build
 python gui_server.py
-# → Dashboard disponible sur http://localhost:8000
+# → Dashboard sur http://localhost:8000
 ```
 
 ### Configuration minimale (`.env`)
@@ -192,14 +193,16 @@ Tous les autres providers (DeepSeek, Anthropic, Mistral...) sont **optionnels** 
 
 ### Via le Dashboard Web
 
-Ouvrir `http://localhost:8000` après `python gui_server.py`.
+```bash
+cd ihm-v2 && npm install && npm run build   # → ihm-v2/dist/
+python gui_server.py                        # http://localhost:8000
+```
 
-Le dashboard expose :
-- **Onglet Chat** : interface conversationnelle avec streaming token-par-token
-- **Onglet Workflows** : éditeur visuel des graphes d'exécution
-- **Onglet Modèles** : catalogue des LLMs avec scores Elo temps-réel
-- **Onglet Supervision** : monitoring des workers Swarm
-- **Onglet Données** : exploration des bases SQLite
+Sans `ihm-v2/dist`, le moteur retombe sur l'IHM legacy `static/` (aussi sous `/v1`).
+
+Dev avec HMR : `cd ihm-v2 && npm run dev` (Vite `:5173`, proxy `/api` vers `:8000`).
+
+L'IHM React inclut Chat (SSE + outils), Home Assistant / vocal, catalogue LLM, Prompt Studio, observabilité et configuration.
 
 ### Via l'API REST
 

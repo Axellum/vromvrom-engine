@@ -18,7 +18,7 @@
 *Built for Home Assistant · Works with any project*
 
 > ⚠️ **Project Status: Active Development**
-> This engine is a personal tool being shared with the community. While the core backend architecture (DAG, async, Elo routing) is robust and used daily, the **Web Dashboard (HMI) is currently under construction**. Expect rough edges. It is highly experimental and built for makers.
+> Personal tool shared with the community. Backend (DAG, async, Elo routing) is used daily. The **React dashboard (`ihm-v2/`)** is included — build it once, then `gui_server.py` serves it at `/`. Expect rough edges.
 
 🇫🇷 **[Version française disponible → README.fr.md](README.fr.md)** &nbsp;·&nbsp; 🗺️ **[Which LLMs to use? → STRATEGIES.md](STRATEGIES.md)**
 
@@ -102,8 +102,8 @@ vromvrom-engine/
 ├── services/              # Business logic decoupled from HTTP
 ├── plugins/               # Custom plugins (dynamic loading)
 ├── workflows/             # JSON workflow definitions (graphs)
-├── static/                # HTML/JS/CSS UI (glassmorphism, legacy dashboard)
-├── ihm-v2/                # New React/Vite/TS dashboard (in progress, will replace static/)
+├── static/                # HTML/JS/CSS UI (glassmorphism, fallback if ihm-v2 is not built)
+├── ihm-v2/                # React/Vite/TS dashboard (Chat, HA, LLM registry, Prompt Studio…)
 ├── tests/                 # 60 pytest files
 └── docs/                  # Architecture documentation
 ```
@@ -171,8 +171,9 @@ cp config.example.json config.json
 # Optional: adjust default models
 
 # 6. Launch
+#    (optional) React UI: cd ihm-v2 && npm install && npm run build
 python gui_server.py
-# → Dashboard available at http://localhost:8000
+# → Dashboard at http://localhost:8000
 ```
 
 ### Minimal configuration (`.env`)
@@ -195,14 +196,16 @@ All other providers (DeepSeek, Anthropic, Mistral...) are **optional** — the e
 
 ### Web Dashboard
 
-Open `http://localhost:8000` after `python gui_server.py`.
+```bash
+cd ihm-v2 && npm install && npm run build   # → ihm-v2/dist/
+python gui_server.py                        # http://localhost:8000
+```
 
-The dashboard exposes:
-- **Chat tab**: conversational interface with token-by-token streaming
-- **Workflows tab**: visual workflow graph editor
-- **Models tab**: LLM catalog with real-time Elo scores
-- **Swarm tab**: distributed worker monitoring
-- **Data tab**: SQLite database explorer
+If `ihm-v2/dist` is missing, the engine falls back to the legacy UI in `static/` (also under `/v1`).
+
+Dev with HMR: `cd ihm-v2 && npm run dev` (Vite `:5173`, proxies `/api` to `:8000`).
+
+The React dashboard includes Chat (SSE + tools), Home Assistant / voice, LLM registry, Prompt Studio, observability, and config.
 
 ### Via the REST API
 

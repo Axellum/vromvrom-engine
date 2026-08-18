@@ -408,7 +408,7 @@ class AjeanPlugin(_PluginOpenAICompat):
         auth=AuthSpec(kind='none', instructions='Aucune clé : llama.cpp n\'authentifie pas (API OpenAI-compatible, port 8080).'),
         confidentiality='total',
         cascade_priority=1.1,
-        notes="AJEAN = llama.cpp (llama-server, build b10451) sur le PC d'Axel, Qwen2.5-14B-Instruct-1M-Q4_K_M. Déclaré par IP LAN (192.168.1.10), jamais par nom DNS, pour rester dans la famille locale (#T337, _est_hote_local). ajean_deck (127.0.0.1) est l'accès loopback au MÊME service, pour l'instance Deck à venir — pas un provider distinct, d'où l'absence de descripteur propre (même logique qu'ollama_local/ollama_pc). NON branché en cascade tant que l'hôte n'écoute pas sur le LAN (action d'Axel : --host 0.0.0.0 + pare-feu 8080).",
+        notes="AJEAN = llama.cpp (llama-server) sur le PC local, Qwen2.5-14B-Instruct-1M-Q4_K_M. Déclaré par IP LAN (192.168.1.10), jamais par nom DNS, pour rester dans la famille locale (#T337, _est_hote_local). ajean_deck (127.0.0.1) est l'accès loopback au MÊME service — pas un provider distinct, d'où l'absence de descripteur propre (même logique qu'ollama_local/ollama_pc).",
         models=(
         ModelSpec(
             id=AJEAN_DEFAULT_MODEL,

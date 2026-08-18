@@ -49,7 +49,7 @@ class TestOllamaDeckProvider:
 
     def test_init_url_defaut(self, ollama_provider):
         """Vérifie que l'URL par défaut pointe bien vers le Deck (IP Ethernet)."""
-        assert "192.168.1.10" in ollama_provider.base_url
+        assert "192.168.1.20" in ollama_provider.base_url
         assert "11434" in ollama_provider.base_url
         assert ollama_provider.model_name == "phi3:mini"
 
@@ -78,13 +78,13 @@ class TestOllamaDeckProvider:
         import requests
 
         from core.llm_gateway import OllamaDeckProvider
-        p = OllamaDeckProvider(host="192.168.1.10")
+        p = OllamaDeckProvider(host="192.168.1.20")
 
         mock_tags_wifi = MagicMock()
         mock_tags_wifi.status_code = 200
 
         def mock_get_side_effect(url, **kwargs):
-            if "192.168.1.10" in url:
+            if "192.168.1.20" in url:
                 raise requests.exceptions.ConnectTimeout
             return mock_tags_wifi  # Wi-Fi répond
 
@@ -93,7 +93,7 @@ class TestOllamaDeckProvider:
 
         assert result is True
         # Vérifier que l'IP a bien basculé vers le Wi-Fi
-        assert "192.168.1.10" in p.base_url
+        assert "192.168.1.21" in p.base_url
 
     def test_generate_reponse_ok(self, ollama_provider, mock_response_ok):
         """Test generate() avec une réponse Ollama valide."""

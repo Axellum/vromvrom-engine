@@ -259,11 +259,11 @@ class OllamaDeckProvider(LLMProvider):
     Compatible API OpenAI (format identique à LMStudioProvider).
     """
 
-    DECK_HOSTS = ["192.168.1.10", "192.168.1.10"]  # Ethernet prioritaire, Wi-Fi fallback
+    DECK_HOSTS = ["192.168.1.20", "192.168.1.21"]  # Ethernet exemple, Wi-Fi fallback
 
     def __init__(
         self,
-        host: str = "192.168.1.10",
+        host: str = "192.168.1.20",
         port: int = 11434,
         model_name: str = "phi3:mini",
     ):

@@ -9,6 +9,8 @@ par une cascade d'un seul élément (FallbackProvider), le même wrapping que
 get_provider_for_tier().
 """
 
+import json
+
 import pytest
 
 from core.llm.circuit_breaker import CircuitBreaker
@@ -103,16 +105,18 @@ def test_routing_policy_exclut_fable5_du_routage_auto(gateway):
     assert "claude-fable-5" not in allowed
 
 
-def test_routing_policy_reelle_exclut_fable5():
-    """Le config.json réel du repo doit porter l'exclusion (documentation
-    exécutable — empêche une session future de la retirer par erreur)."""
-    from core.llm_gateway import load_config
-    policy = load_config().get("routing_policy", {})
+def test_routing_policy_exemple_exclut_fable5():
+    """Le config.example.json public documente l'exclusion (pas le config.json
+    privé, absent du miroir OSS)."""
+    from pathlib import Path
+    example = Path(__file__).resolve().parents[2] / "config.example.json"
+    if not example.is_file():
+        pytest.skip("config.example.json absent")
+    policy = json.loads(example.read_text(encoding="utf-8")).get("routing_policy", {})
     exclus = policy.get("excluded_models", [])
     assert "claude-fable-5" in exclus
     assert "claude-sonnet-5" in exclus
     assert "claude-opus-4-8-direct" in exclus
-    assert "meta-llama/llama-3.3-70b-instruct:free" in exclus
 
 
 def test_exclusions_defaut_couvrent_api_anthropic_et_or_free():

@@ -492,7 +492,7 @@ class LLMGateway:
             "ollama_pc": _make_compat("ollama_pc", "domotique-qwen7b:q4", "ollama", timeout=(2.0, 15.0)),
 
             # === AJEAN (llama.cpp / llama-server, port 8080) — déclaratif, NON branché ===
-            # Deux hôtes symétriques : le PC d'Axel (192.168.1.10) et le Deck (127.0.0.1).
+            # Deux hôtes symétriques : le PC local (192.168.1.10) et le Deck (127.0.0.1).
             # Déclarés par IP, jamais par nom DNS, pour rester dans la famille locale
             # (#T337, `_est_hote_local`). Modèle par défaut = AJEAN_DEFAULT_MODEL (le
             # réellement chargé). Timeout de connexion COURT (2s), comme ollama_pc : un

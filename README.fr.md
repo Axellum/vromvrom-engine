@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/logo.svg" alt="" width="96" height="96">
+
 # ⚡ vromvrom-engine
 
 **Moteur d'orchestration multi-agents LLM — asynchrone, hybride, auto-optimisant**

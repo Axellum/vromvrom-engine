@@ -1,0 +1,28 @@
+# Mises à jour des dépendances : une PR groupée par écosystème et par semaine, pour ne pas noyer le dépôt.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /ihm-v2
+    schedule:
+      interval: weekly
+    groups:
+      ihm-v2:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      racine:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

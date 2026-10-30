@@ -24,7 +24,7 @@ aiosqlite>=0.22.1          # accès SQLite async (DAG runner)
 # Plafonné à <2.0.0 : mcp 2.0.0 (28/07/2026) supprime mcp.server.fastmcp
 # et casse la CI de toutes les PR dependabot en aval. Migration vers l'API v2
 # à traiter séparément.
-mcp>=2.3.0,<3.0.0
+mcp>=1.29.0,<2.0.0
 
 # ── Mémoire vectorielle / RAG ──
 chromadb>=1.5.9

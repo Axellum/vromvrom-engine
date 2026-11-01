@@ -4,150 +4,95 @@
 
 # ⚡ vromvrom-engine
 
-**Async multi-agent LLM orchestrator — hybrid routing, Elo scoring, self-healing**
+**A home-made brain for Home Assistant and your LLM providers: rules first, a model only when it helps.**
 
-*Vroom Vroom — running at full throttle 🏁*
+*Vroom Vroom 🏁*
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.162%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
-[![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
 [![License](https://img.shields.io/github/license/Axellum/vromvrom-engine)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-280%2B%20pytest%20files-brightgreen)](tests/)
 [![CI](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml)
 [![Python CI & Security](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml)
-[![ToolMaker Validate](https://github.com/Axellum/vromvrom-engine/actions/workflows/toolmaker_validate.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/toolmaker_validate.yml)
 
-*Built for Home Assistant · Works with any project*
-
-> ⚠️ **Project Status: Active Development**
-> Personal tool shared with the community. Backend (DAG, async, Elo routing) is used daily. The **React dashboard (`ihm-v2/`)** is included — build it once, then `gui_server.py` serves it at `/`. Expect rough edges.
-
-🇫🇷 **[Version française disponible → README.fr.md](README.fr.md)** &nbsp;·&nbsp; 🗺️ **[Which LLMs to use? → STRATEGIES.md](STRATEGIES.md)**
-
-📖 **[User guide — install, understand, configure, operate → docs/guide/en](docs/guide/en/README.md)** &nbsp;·&nbsp; 🇫🇷 [Guide en français](docs/guide/README.md)
+🇫🇷 **[Version française → README.fr.md](README.fr.md)** &nbsp;·&nbsp; 📖 **[User guide → docs/guide/en](docs/guide/en/README.md)** &nbsp;·&nbsp; 🗺️ **[Which LLMs to use? → STRATEGIES.md](STRATEGIES.md)**
 
 </div>
 
----
+> **A personal project, used every day in one home.** Written with a lot of help from AI and shared in case it
+> helps someone, with no promise of support. This page says what works, what does not and how it compares, with
+> the figures measured on the author's installation on 2026-11-01.
 
-> **Stop configuring. Start learning.**
-> vromvrom-engine routes your tasks to the right LLM automatically —
-> using Elo scoring that adapts from your own usage history.
-> Async, cost-aware, self-healing. Built on a Raspberry Pi budget.
+## In one minute
 
-## 🎯 What is it?
+vromvrom-engine (the "Moteur IA", "AI Engine", of the French docs) is a Python server (FastAPI) that sits between
+what asks (a chat, a script, an IDE, an MCP client, a voice assistant through Home Assistant) and what answers
+(about eighteen LLM providers, local models, Home Assistant). For each request it takes the cheapest path that is
+enough:
 
-**vromvrom-engine** is a fully asynchronous (`asyncio`) multi-agent orchestration engine that coordinates multiple LLMs to solve complex tasks. It was born from the need to drive a home automation display ([M5Stack Tab5](https://docs.m5stack.com/en/core/tab5)) through Home Assistant — but its architecture is generic and reusable for any project.
+1. **a rule, without any AI**, when the sentence is a known home command or question ("turn off the living room
+   light", "what is the temperature in the bedroom?");
+2. **a model** otherwise, picked by cost, quota and a score per kind of task (Elo), with a fallback when a
+   provider fails;
+3. **a plan of several agents** (planner, executors, reviewer) for a complex task: the least mature part, see below.
 
-> 💡 **Experiment with GPT-4o & Llama 70B for free**
-> The engine comes pre-configured to connect to the [GitHub Models](https://github.com/marketplace/models) API, offering free access (subject to rate limits) to models like **GPT-4o** and **Llama 70B** for your tests using your standard GitHub account.
+It counts every token and every cent, and shows what it did. Everything is kept in SQLite files, with no database
+server to run: the author's instance runs on a Steam Deck, day and night. It was born to give a voice to a Home
+Assistant wall screen ([M5-Tab5-ESPHome-LVGL](https://github.com/Axellum/M5-Tab5-ESPHome-LVGL)).
 
-### What makes it different
+## What works today
 
-| Feature | Description |
+Measured on the author's installation (one household, in French, with Home Assistant) on 2026-11-01, unless stated.
+
+| Part | State | Evidence |
+|---|---|---|
+| Home commands and questions without a model | ✅ Used every day | 110 to 196 ms on the engine side for a sentence of the catalog. The full voice pass takes about 4 s, most of it speech recognition in Home Assistant. |
+| Chat with a model, several providers, fallback | ✅ Used every day | Cascade sorted by cost, Elo and quota; a circuit breaker per provider; a health probe that turns failing models off. 48 voice answers in 7 days: median 0.86 s, 90 % under 4.6 s (chat included). |
+| Cost | ✅ | 86 real calls in 30 days cost $0.81 in all. |
+| OpenAI-compatible endpoint (`/v1/chat/completions`, `/v1/models`) | ✅ In the code, tested | Streaming; three test files. Plug an IDE (Cursor, Cline, Continue) or any OpenAI client into it. |
+| MCP, both ways | 🟡 Tested, little used | A server of 17 tools (Home Assistant, memory, orchestrator) and a client of third-party servers. |
+| Backups of the databases | 🆕 New (November 2026) | Hot, consistent copies with a manifest and a retention (`python -m core.sauvegarde`, a systemd timer in `deploy/`). |
+| Cost and usage statistics | 🟡 Skewed | Every call is recorded, but the health probes are counted with the real calls: 27,805 calls counted in 30 days, 86 of them real. Separating them is on the list. |
+| Local ML router | 🧪 Off on a fresh install | A scikit-learn classifier that trains itself on your history once it holds 50 requests or more. |
+| Multi-agent plans (DAG) | 🧪 Works in the tests, not in daily use | No complex task was run in 30 days on the author's instance. Do not take it for a coding agent. |
+| Autonomous cycle (Dreamer, DreamCoder) | 🧪 Experimental | The Dreamer consolidates the memory every hour; DreamCoder, which works through a backlog of tasks, has found nothing to do since the end of August. |
+| Voice through Home Assistant Assist | ⚠️ Not plug-and-play | The conversation agent that sends the recognized text to the engine (`moteur_ia_conversation`) **is not in this repository**. The [guide](docs/guide/en/04_home_and_voice.md) says what you can do without it. |
+
+## Why you might like it
+
+- **The house never waits for a language model.** Home Assistant users ask not to send everything to a model
+  (latency, cost, invented actions) and to expose few entities
+  ([forum thread](https://community.home-assistant.io/t/custom-component-extended-openai-conversation-lets-control-entities-via-chatgpt/636500?page=9)).
+  Here a known sentence is a rule, answered in a fifth of a second; the model only comes in for a conversation.
+- **The model cannot act on its own.** In a conversation, the model only has **read** tools for Home Assistant.
+  Devices are commanded only by explicit rules (the phrase catalog `ha_commands.json`, tables of rooms). The price:
+  a new command means a new line in the catalog.
+- **A full gateway on a small machine.** The keys of many providers, fallback, the quotas of free tiers, circuit
+  breakers, the cost of each call, all in SQLite: nothing else to install.
+- **It shows its work.** Voice audit (text, path taken, latency), history of sessions, replay of a real request in
+  the "Understand the engine" page; a figure it does not know shows "—", never 0.
+- **French first.** The phrase catalog, the docs and the comments are in French, with an English guide.
+
+## Where it falls short
+
+- **One user, one API key.** No accounts, roles, single sign-on or budget per person: team gateways such as
+  [LiteLLM](https://docs.litellm.ai/docs/proxy/budget_fallbacks) or chat interfaces such as Open WebUI and LibreChat
+  do that.
+- **The voice needs a component that is not published** (see the table).
+- **The statistics are skewed** by the health probes, until they are counted apart.
+- **Many providers, not all alive.** On the author's instance, the health probe turned off 42 models out of 76: dead
+  providers stay listed.
+- **The multi-agent part is the least mature**, and the least used.
+- **Made for a developer first.** The dashboard is rich but dense; the code, its comments and many of its names are
+  in French; about half of the code is covered by the tests (54 % on 2026-11-01).
+- **One maintainer**, code written largely with AI, no promise of support.
+
+## Is it for you?
+
+| You want | Look at |
 |---|---|
-| 🧠 **4-level hybrid routing** | Regex → ML (sklearn) → LLM → Elo scoring — 0ms to 200ms depending on complexity |
-| 🏆 **Dynamic Elo scoring** | Each model gains/loses Elo points per task domain. Best model selected automatically |
-| 🔄 **Async parallel DAG** | Independent tasks run concurrently via `asyncio.gather()` |
-| 🛡️ **Self-Healing** | Circuit breaker + exponential backoff retry + automatic provider fallback |
-| 💰 **Cost-aware routing** | Availability/budget cascade: falls back to the next configured provider when one is unavailable, rate-limited, or over budget — not a quality-based escalation |
-| 🔍 **Local hybrid RAG** | TF-IDF + BM25 + ChromaDB Embeddings fused via RRF (k=60) — zero cloud cost |
-| 👁️ **HITL** | Human-In-The-Loop: pause/resume orchestration for human validation |
-| 📊 **FastAPI dashboard** | Glassmorphism HTML/JS UI with real-time SSE, workflow editor, Elo charts |
-| 🔌 **Drop-in Proxy API** | 100% OpenAI-compatible API (`/v1/chat/completions`). Plug Cursor, Cline, or Continue.dev directly into the engine |
-| 🏠 **Native Home Assistant** | Built-in `/api/ha` routes and entity ingestion tools to let LLMs see and control your smart home |
-| 🌐 **Distributed Swarm** | Dispatch tasks to remote workers (Raspberry Pi, VMs, etc.) |
-| 🔌 **Plugin system** | Add custom agents via `plugins/<name>/agent.py` + `plugin.json` |
-
-### 🆕 New in this release
-
-- **A dashboard that explains the engine.** Navigation by intent (Discover · Use · Configure · Monitor · Advanced). A *Home* page states in one sentence whether everything is fine and why, with sourced figures; *Understand the engine* shows the path of a request on a clickable map and can replay a real one; *Voice & home demo* walks through every link from the wake word to the spoken answer. The main pages have a foldable “Understand this page” block and cite where their figures come from; unknown data shows “—”, never zero.
-- **Database backups.** Hot, consistent copies of the SQLite databases and configuration files, with a manifest (sha256, integrity check) and retention: `python -m core.sauvegarde`, `GET/POST /api/sauvegardes`, a *Backups* page, and a systemd timer in `deploy/`. Never the `.env`.
-- **Dry-run voice simulation.** `POST /api/vocal/simulate` shows which path a sentence would take (Home Assistant command, state question, chat) **without executing anything**.
-- **MCP overview.** `GET /api/mcp/overview` and an *MCP tools* page list the tools the engine offers and the servers it uses.
-- **Safer errors.** API keys are masked in provider health errors (`/api/models-health`) before they are stored and when they are read.
-
----
-
-## 🏗️ Architecture
-
-```
-vromvrom-engine/
-├── gui_server.py          # FastAPI entry point (lifespan + 34 routers)
-├── main.py                # CLI — direct launch without HTTP
-│
-├── core/                  # Engine core
-│   ├── engine.py          # Main orchestrator (DAG → Agents)
-│   ├── llm_gateway.py     # Multi-provider gateway (18+ providers)
-│   ├── router.py          # Hybrid routing (fast-path + ML + LLM + Elo)
-│   ├── dag_runner.py      # Async parallel execution by stages
-│   ├── factory.py         # Agent instantiation (Planner/Executor/Reviewer)
-│   ├── state.py           # Thread-safe Pydantic GlobalState
-│   ├── checkpoint.py      # ACID snapshots (SQLite WAL)
-│   ├── healing.py         # Self-healing + retry
-│   ├── review_loop.py     # Reviewer → Correction loop
-│   ├── elo_scorer.py      # Per-domain model Elo scoring
-│   ├── elo_router.py      # Routing type Elo scoring
-│   ├── circuit_breaker.py # Async circuit breaker (CLOSED/OPEN/HALF_OPEN)
-│   ├── hitl.py            # Human-In-The-Loop (asyncio.Event)
-│   ├── models_db.py       # SQLite SSOT — model catalog, pricing, quotas
-│   └── ...
-│
-├── agents/                # Specialized agents
-│   ├── planner.py         # Breaks task into a JSON DAG
-│   ├── executor.py        # Executes tasks (ReAct loop + tools)
-│   ├── reviewer.py        # Validates result quality
-│   └── tool_maker_agent.py  # Generates new Python tools automatically
-│
-├── memory/                # Semantic memory + RAG
-│   ├── rag.py             # Hybrid RAG (TF-IDF + BM25 + Embeddings + RRF)
-│   ├── facts.py           # Fact store (SQLite FTS5 BM25)
-│   ├── episodes.py        # Episodic memory (Jaccard similarity)
-│   ├── embeddings.py      # ChromaDB vector store
-│   └── skills.py          # Procedural memory (successful tool sequences)
-│
-├── tools/                 # Agent-usable tools
-│   ├── tool_registry.py   # Registry with per-tool timeouts
-│   └── sanitizer.py       # Secret masking (6 patterns)
-│
-├── api/routes/            # 34 FastAPI route modules
-├── services/              # Business logic decoupled from HTTP
-├── plugins/               # Custom plugins (dynamic loading)
-├── workflows/             # JSON workflow definitions (graphs)
-├── static/                # HTML/JS/CSS UI (glassmorphism, fallback if ihm-v2 is not built)
-├── ihm-v2/                # React/Vite/TS dashboard (Chat, HA, LLM registry, Prompt Studio…)
-├── tests/                 # 280+ pytest files
-└── docs/                  # Architecture documentation + user guide (docs/guide/)
-```
-
-### Hybrid routing pipeline
-
-```
-User request
-      │
-      ▼
-┌─────────────────────┐
-│ 1. Regex Fast-Path  │ ──→ 0ms    (simple commands detected by pattern)
-└─────────────────────┘
-      │ ambiguous
-      ▼
-┌─────────────────────┐
-│ 2. ML Router sklearn│ ──→ 0ms    (local classifier, 75% confidence threshold)
-└─────────────────────┘
-      │ confidence < 75%
-      ▼
-┌─────────────────────┐
-│ 3. LLM Slow-Path    │ ──→ ~200ms (Gemini Flash to resolve ambiguity)
-└─────────────────────┘
-      │
-      ▼
-┌─────────────────────┐
-│ 4. Elo Scoring      │ ──→ selects the best model for the task domain
-└─────────────────────┘
-      │
-      ▼
-  Planner → DAG → Parallel Executor(s) → Reviewer → Response
-```
+| Home Assistant voice that stays fast and never lets a model invent an action, on a small machine, with free models | **vromvrom-engine** may fit (for the voice, bring your own conversation agent for now) |
+| A gateway for a team: keys, budgets per user or per key, spend tracking | [LiteLLM](https://docs.litellm.ai/docs/proxy/budget_fallbacks) |
+| A chat interface for several people, with roles | Open WebUI, LibreChat |
+| A library to build agents in your own code | LangGraph, CrewAI |
 
 ---
 
@@ -239,28 +184,140 @@ print(response.json()["response"])
 
 ### As a Drop-in Proxy for IDEs (Cursor, Cline, Continue)
 
-vromvrom-engine exposes a standard OpenAI-compatible endpoint. You can point your favorite AI coding assistant to the engine to benefit from free routing and the circuit breaker:
+vromvrom-engine exposes a standard OpenAI-compatible endpoint. You can point your favorite AI coding assistant to the engine to use its routing, fallback and circuit breakers:
 
 - **Base URL**: `http://localhost:8000/v1`
 - **API Key**: `<MOTEUR_API_KEY>` (from your `.env`)
-- **Model**: `gemini-2.0-flash` (or any model available in your routing)
+- **Model**: an id listed by `GET /v1/models`, for example `gemini-3.5-flash-free` (the default of `config.example.json`)
 
-### 🏠 Home Assistant Integration (Optional but Native)
+### 🏠 Home Assistant (optional)
 
-vromvrom-engine ships with built-in tools (`ha_entity_ingest.py`) and routes (`/api/ha/*`) to interact with your Home Assistant instance out of the box. 
+vromvrom-engine ships with tools (`tools/ha_entity_ingest.py`), routes (`/api/ha/*`) and MCP tools to read your Home Assistant instance.
 
 Just add these to your `.env`:
 ```env
 HASS_URL=http://192.168.1.X:8123
 HASS_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
-Your agents can now instantly read your sensors, check states, and control devices without writing any extra YAML!
+The model can then read states and sensors. Devices are commanded by the rules of the phrase catalog (`ha_commands.json`, start from `ha_commands.json.example`), not by the model. For the voice, see [the guide](docs/guide/en/04_home_and_voice.md): the conversation agent that Home Assistant needs is not in this repository.
 
 ### Via the CLI
 
 ```bash
 python main.py "Explain hexagonal architecture in 3 key points"
 ```
+
+---
+
+## 🧩 Features in detail
+
+| Feature | What it does |
+|---|---|
+| 🧠 **Hybrid routing** | Regex fast path → local ML classifier (once trained) → a light model for ambiguous requests → Elo score per kind of task to pick the model |
+| 🏆 **Elo per kind of task** | Each model gains or loses points per domain; the cascade uses them with cost and quota |
+| 🛡️ **Self-healing** | A circuit breaker per provider, retries with exponential backoff, fallback to the next provider |
+| 💰 **Cost-aware cascade** | Falls back to the next configured provider when one is unavailable, rate-limited or over budget — not a quality-based escalation |
+| 🔄 **Async parallel DAG** | The independent tasks of a plan run concurrently (`asyncio.gather()`) |
+| 🔍 **Local hybrid RAG** | TF-IDF + BM25 + ChromaDB embeddings fused by RRF (k=60), on your machine |
+| 👁️ **HITL** | Pause and resume a plan for a human validation (high-risk plans) |
+| 🔌 **OpenAI-compatible API** | `/v1/chat/completions` (with streaming) and `/v1/models`, for Cursor, Cline, Continue.dev or any OpenAI client |
+| 🧰 **MCP** | A server of 17 tools and a client of third-party MCP servers |
+| 🏠 **Home Assistant** | `/api/ha` routes, entity ingestion and read tools; devices are commanded through the phrase catalog |
+| 🌐 **Remote workers** | Dispatch tasks to other machines (Raspberry Pi, VMs…) |
+| 🔌 **Plugins** | Custom agents in `plugins/<name>/agent.py` + `plugin.json` |
+| 📊 **Dashboard** | React interface (`ihm-v2/`), with the older HTML interface of `static/` as a fallback |
+
+## 🏗️ Architecture
+
+```
+vromvrom-engine/
+├── gui_server.py          # FastAPI entry point (lifespan + 34 routers)
+├── main.py                # CLI — direct launch without HTTP
+│
+├── core/                  # Engine core
+│   ├── engine.py          # Main orchestrator (DAG → Agents)
+│   ├── llm_gateway.py     # Multi-provider gateway (18+ providers)
+│   ├── router.py          # Hybrid routing (fast-path + ML + LLM + Elo)
+│   ├── dag_runner.py      # Async parallel execution by stages
+│   ├── factory.py         # Agent instantiation (Planner/Executor/Reviewer)
+│   ├── state.py           # Thread-safe Pydantic GlobalState
+│   ├── checkpoint.py      # ACID snapshots (SQLite WAL)
+│   ├── healing.py         # Self-healing + retry
+│   ├── review_loop.py     # Reviewer → Correction loop
+│   ├── elo_scorer.py      # Per-domain model Elo scoring
+│   ├── elo_router.py      # Routing type Elo scoring
+│   ├── circuit_breaker.py # Async circuit breaker (CLOSED/OPEN/HALF_OPEN)
+│   ├── hitl.py            # Human-In-The-Loop (asyncio.Event)
+│   ├── models_db.py       # SQLite SSOT — model catalog, pricing, quotas
+│   └── ...
+│
+├── agents/                # Specialized agents
+│   ├── planner.py         # Breaks task into a JSON DAG
+│   ├── executor.py        # Executes tasks (ReAct loop + tools)
+│   ├── reviewer.py        # Validates result quality
+│   └── tool_maker_agent.py  # Generates new Python tools automatically
+│
+├── memory/                # Semantic memory + RAG
+│   ├── rag.py             # Hybrid RAG (TF-IDF + BM25 + Embeddings + RRF)
+│   ├── facts.py           # Fact store (SQLite FTS5 BM25)
+│   ├── episodes.py        # Episodic memory (Jaccard similarity)
+│   ├── embeddings.py      # ChromaDB vector store
+│   └── skills.py          # Procedural memory (successful tool sequences)
+│
+├── tools/                 # Agent-usable tools
+│   ├── tool_registry.py   # Registry with per-tool timeouts
+│   └── sanitizer.py       # Secret masking (6 patterns)
+│
+├── api/routes/            # 34 FastAPI route modules
+├── services/              # Business logic decoupled from HTTP
+├── plugins/               # Custom plugins (dynamic loading)
+├── workflows/             # JSON workflow definitions (graphs)
+├── static/                # HTML/JS/CSS UI (glassmorphism, fallback if ihm-v2 is not built)
+├── ihm-v2/                # React/Vite/TS dashboard (Chat, HA, LLM registry, Prompt Studio…)
+├── tests/                 # 280+ pytest files
+└── docs/                  # Architecture documentation + user guide (docs/guide/)
+```
+
+### Hybrid routing pipeline
+
+```
+User request
+      │
+      ▼
+┌─────────────────────┐
+│ 1. Regex Fast-Path  │ ──→ 0ms    (simple commands detected by pattern)
+└─────────────────────┘
+      │ ambiguous
+      ▼
+┌─────────────────────┐
+│ 2. ML Router sklearn│ ──→ 0ms    (local classifier, 75% confidence threshold)
+└─────────────────────┘
+      │ confidence < 75%
+      ▼
+┌─────────────────────┐
+│ 3. LLM Slow-Path    │ ──→ ~200ms (a light model to resolve ambiguity)
+└─────────────────────┘
+      │
+      ▼
+┌─────────────────────┐
+│ 4. Elo Scoring      │ ──→ selects the best model for the task domain
+└─────────────────────┘
+      │
+      ▼
+  Planner → DAG → Parallel Executor(s) → Reviewer → Response
+```
+
+Step 2 only runs once the classifier has been trained on 50 requests or more of your history; the multi-agent part (last line) is used for complex tasks only.
+
+---
+
+## 🆕 Recent changes (November 2026)
+
+- **A dashboard that explains the engine.** Navigation by intent (Discover · Use · Configure · Monitor · Advanced). A *Home* page states in one sentence whether everything is fine and why, with sourced figures; *Understand the engine* shows the path of a request on a clickable map and can replay a real one; *Voice & home demo* walks through every link from the wake word to the spoken answer. The main pages have a foldable “Understand this page” block and cite where their figures come from; unknown data shows “—”, never zero.
+- **Database backups.** Hot, consistent copies of the SQLite databases and configuration files, with a manifest (sha256, integrity check) and retention: `python -m core.sauvegarde`, `GET/POST /api/sauvegardes`, a *Backups* page, and a systemd timer in `deploy/`. Never the `.env`.
+- **Dry-run voice simulation.** `POST /api/vocal/simulate` shows which path a sentence would take (Home Assistant command, state question, chat) **without executing anything**.
+- **MCP overview.** `GET /api/mcp/overview` and an *MCP tools* page list the tools the engine offers and the servers it uses.
+- **Safer errors.** API keys are masked in provider health errors (`/api/models-health`) before they are stored and when they are read.
 
 ---
 
@@ -282,9 +339,13 @@ python main.py "Explain hexagonal architecture in 3 key points"
 | **Zhipu AI (GLM)** | 💰 | 8 GLM models, strong in code/agentic tasks |
 | **xAI (Grok)** | 💰 | Paid only |
 
+The table lists the main ones; the code knows about eighteen. A provider in the list is not a promise that it answers today: the health probe turns off the models that fail.
+
 ---
 
 ## 🧪 Tests
+
+288 test files (about 2,370 test functions), run by the CI on Python 3.12. About half of the code is covered (54 % measured on 2026-11-01).
 
 ```bash
 # Install dev dependencies

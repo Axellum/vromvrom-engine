@@ -4,147 +4,97 @@
 
 # ⚡ vromvrom-engine
 
-**Moteur d'orchestration multi-agents LLM — asynchrone, hybride, auto-optimisant**
+**Un cerveau fait maison pour Home Assistant et vos fournisseurs de LLM : des règles d'abord, un modèle seulement quand il sert.**
 
-*Vroom Vroom — ça tourne à plein régime 🏁*
+*Vroum Vroum 🏁*
 
 [![Python](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.162%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
-[![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-280%2B%20fichiers%20pytest-brightgreen)](tests/)
+[![License](https://img.shields.io/github/license/Axellum/vromvrom-engine)](LICENSE)
+[![CI](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml)
+[![Python CI & Security](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml)
 
-*Construit pour Home Assistant · Fonctionne avec n'importe quel projet*
-
-> ⚠️ **État du projet : En développement actif**
-> Outil personnel partagé avec la communauté. Le backend (DAG, async, routage Elo) tourne tous les jours. **L'IHM React (`ihm-v2/`) est dans le dépôt** — un `npm run build` et `gui_server.py` la sert sur `/`. Attendez-vous à des aspérités.
-
-🇬🇧 **[English version → README.md](README.md)** &nbsp;·&nbsp; 🗺️ **[Quels LLMs utiliser ? → STRATEGIES.fr.md](STRATEGIES.fr.md)**
-
-📖 **[Guide d'utilisation — installer, comprendre, régler, exploiter → docs/guide](docs/guide/README.md)**
+🇬🇧 **[English version → README.md](README.md)** &nbsp;·&nbsp; 📖 **[Guide d'utilisation → docs/guide](docs/guide/README.md)** &nbsp;·&nbsp; 🗺️ **[Quels LLMs utiliser ? → STRATEGIES.fr.md](STRATEGIES.fr.md)**
 
 </div>
 
----
+> **Un projet personnel, utilisé tous les jours dans une maison.** Écrit avec beaucoup d'aide de l'IA et partagé au
+> cas où il servirait à quelqu'un, sans promesse de support. Cette page dit ce qui marche, ce qui ne marche pas et à
+> quoi le comparer, avec les chiffres mesurés sur l'installation de l'auteur le 01/11/2026.
 
-> **Arrêtez de configurer. Commencez à apprendre.**
-> vromvrom-engine achemine automatiquement vos tâches vers le bon LLM —
-> en utilisant un système de score Elo qui s'adapte à votre propre historique d'utilisation.
-> Asynchrone, optimisé pour les coûts, auto-réparateur. Construit pour le budget d'un Raspberry Pi.
+## En une minute
 
-## 🎯 C'est quoi ?
+vromvrom-engine (le « Moteur IA » de la documentation) est un serveur Python (FastAPI) placé entre ce qui demande
+(une discussion, un script, un éditeur de code, un client MCP, un assistant vocal via Home Assistant) et ce qui
+répond (environ dix-huit fournisseurs de LLM, des modèles locaux, Home Assistant). Pour chaque demande, il prend le
+chemin le moins cher qui suffit :
 
-**vromvrom-engine** est un moteur d'orchestration multi-agents entièrement asynchrone (`asyncio`) qui coordonne plusieurs LLMs pour résoudre des tâches complexes. Il est né du besoin de piloter un écran domotique [M5Stack Tab5](https://docs.m5stack.com/en/core/tab5) via Home Assistant — mais son architecture est générique et réutilisable pour tout projet.
+1. **une règle, sans aucune IA**, quand la phrase est une commande ou une question connue de la maison (« éteins la
+   lumière du salon », « quelle température dans la chambre ? ») ;
+2. **un modèle** sinon, choisi selon le coût, le quota et un score par type de tâche (Elo), avec une bascule quand un
+   fournisseur échoue ;
+3. **un plan de plusieurs agents** (planificateur, exécutants, relecteur) pour une tâche complexe : la partie la moins
+   aboutie, voir plus bas.
 
-> 💡 **Expérimentez GPT-4o & Llama 70B gratuitement**
-> Le moteur est préconfiguré pour se connecter à l'API [GitHub Models](https://github.com/marketplace/models), offrant un accès gratuit (soumis à quotas) à des modèles comme **GPT-4o** et **Llama 70B** pour vos essais, en utilisant simplement votre compte GitHub standard.
+Il compte chaque jeton et chaque centime, et montre ce qu'il a fait. Tout tient dans des fichiers SQLite, sans serveur
+de base de données à faire tourner : l'instance de l'auteur tourne sur un Steam Deck, jour et nuit. Il est né pour
+donner une voix à un écran mural Home Assistant ([M5-Tab5-ESPHome-LVGL](https://github.com/Axellum/M5-Tab5-ESPHome-LVGL)).
 
-### Ce qui le distingue
+## Ce qui marche aujourd'hui
 
-| Fonctionnalité | Description |
+Mesuré sur l'installation de l'auteur (un foyer, en français, avec Home Assistant) le 01/11/2026, sauf mention contraire.
+
+| Partie | État | Preuve |
+|---|---|---|
+| Commandes et questions de la maison sans modèle | ✅ Utilisé tous les jours | 110 à 196 ms côté moteur pour une phrase du catalogue. Le passage vocal complet prend environ 4 s, surtout à cause de la reconnaissance vocale dans Home Assistant. |
+| Discussion avec un modèle, plusieurs fournisseurs, bascule | ✅ Utilisé tous les jours | Cascade triée par coût, Elo et quota ; un disjoncteur par fournisseur ; une sonde de santé qui coupe les modèles en panne. 48 réponses vocales en 7 jours : médiane 0,86 s, 90 % sous 4,6 s (discussion comprise). |
+| Coût | ✅ | 86 vrais appels en 30 jours ont coûté 0,81 $ en tout. |
+| Point d'accès compatible OpenAI (`/v1/chat/completions`, `/v1/models`) | ✅ Dans le code, testé | Streaming ; trois fichiers de tests. Branchez-y un éditeur (Cursor, Cline, Continue) ou n'importe quel client OpenAI. |
+| MCP, dans les deux sens | 🟡 Testé, peu utilisé | Un serveur de 17 outils (Home Assistant, mémoire, orchestrateur) et un client de serveurs tiers. |
+| Sauvegarde des bases | 🆕 Nouveau (novembre 2026) | Copies à chaud et cohérentes, avec manifeste et rétention (`python -m core.sauvegarde`, minuterie systemd dans `deploy/`). |
+| Statistiques de coût et d'usage | 🟡 Faussées | Chaque appel est enregistré, mais les sondes de santé sont comptées avec les vrais appels : 27 805 appels comptés en 30 jours, dont 86 vrais. Les séparer est prévu. |
+| Routeur ML local | 🧪 Éteint sur une installation neuve | Un classifieur scikit-learn qui s'entraîne sur votre historique dès qu'il compte au moins 50 demandes. |
+| Plans multi-agents (DAG) | 🧪 Marche dans les tests, pas dans l'usage quotidien | Aucune tâche complexe en 30 jours sur l'instance de l'auteur. Ne le prenez pas pour un agent de code. |
+| Cycle autonome (Dreamer, DreamCoder) | 🧪 Expérimental | Le Dreamer consolide la mémoire toutes les heures ; DreamCoder, qui traite un carnet de tâches, ne trouve plus rien à faire depuis fin août. |
+| Voix via Home Assistant Assist | ⚠️ Pas prêt à brancher | L'agent de conversation qui envoie le texte reconnu au moteur (`moteur_ia_conversation`) **n'est pas dans ce dépôt**. Le [guide](docs/guide/04_maison_et_voix.md) dit ce qu'on peut faire sans lui. |
+
+## Pourquoi il peut vous plaire
+
+- **La maison n'attend jamais un modèle de langage.** Les utilisateurs de Home Assistant demandent de ne pas tout
+  envoyer au modèle (latence, coût, actions inventées) et d'exposer peu d'entités
+  ([fil du forum](https://community.home-assistant.io/t/custom-component-extended-openai-conversation-lets-control-entities-via-chatgpt/636500?page=9)).
+  Ici, une phrase connue est une règle, servie en un cinquième de seconde ; le modèle n'intervient qu'en discussion.
+- **Le modèle ne peut pas agir seul.** En discussion, il n'a que des outils de **lecture** de Home Assistant. Les
+  appareils ne sont commandés que par des règles explicites (le catalogue de phrases `ha_commands.json`, les tables
+  de pièces). La contrepartie : une nouvelle commande, c'est une nouvelle ligne dans le catalogue.
+- **Une passerelle complète sur une petite machine.** Les clés de nombreux fournisseurs, la bascule, les quotas des
+  offres gratuites, les disjoncteurs, le coût de chaque appel, le tout dans SQLite : rien d'autre à installer.
+- **Il montre ce qu'il fait.** Audit vocal (texte, chemin pris, latence), historique des sessions, rejeu d'une vraie
+  demande dans la page « Comprendre le moteur » ; un chiffre inconnu s'affiche « — », jamais 0.
+- **Le français d'abord.** Le catalogue de phrases, la documentation et les commentaires sont en français, avec un
+  guide en anglais.
+
+## Ses limites
+
+- **Un seul utilisateur, une seule clé d'API.** Ni comptes, ni rôles, ni connexion unique, ni budget par personne :
+  les passerelles d'équipe comme [LiteLLM](https://docs.litellm.ai/docs/proxy/budget_fallbacks) ou les interfaces de
+  discussion comme Open WebUI et LibreChat le font.
+- **La voix demande un composant qui n'est pas publié** (voir le tableau).
+- **Les statistiques sont faussées** par les sondes de santé, tant qu'elles ne sont pas comptées à part.
+- **Beaucoup de fournisseurs, pas tous vivants.** Sur l'instance de l'auteur, la sonde de santé a coupé 42 modèles sur
+  76 : les fournisseurs morts restent listés.
+- **La partie multi-agents est la moins aboutie**, et la moins utilisée.
+- **Fait d'abord pour un développeur.** L'interface est riche mais dense ; le code, ses commentaires et beaucoup de ses
+  noms sont en français ; environ la moitié du code est couverte par les tests (54 % le 01/11/2026).
+- **Un seul mainteneur**, un code écrit en grande partie avec l'IA, aucune promesse de support.
+
+## Est-ce pour vous ?
+
+| Vous voulez | Regardez |
 |---|---|
-| 🧠 **Routage hybride 4 niveaux** | Regex → ML (sklearn) → LLM → Elo scoring — 0ms à 200ms selon la complexité |
-| 🏆 **Elo scoring dynamique** | Chaque modèle gagne/perd des points Elo par domaine de tâche. Le meilleur est sélectionné automatiquement |
-| 🔄 **DAG parallèle async** | Les tâches indépendantes s'exécutent en parallèle via `asyncio.gather()` |
-| 🛡️ **Self-Healing** | Circuit breaker + retry avec backoff exponentiel + fallback automatique entre providers |
-| 💰 **Cost-aware** | Cascade par disponibilité/budget : bascule vers le provider suivant configuré s'il est indisponible, limité en débit ou hors budget — ce n'est pas une escalade par qualité |
-| 🔍 **RAG hybride local** | TF-IDF + BM25 + ChromaDB Embeddings fusionnés par RRF (k=60) — sans appel cloud |
-| 👁️ **HITL** | Pause/reprise de l'orchestration pour validation humaine |
-| 📊 **Dashboard FastAPI** | Interface glassmorphism HTML/JS avec SSE temps-réel, éditeur de workflows, graphiques Elo |
-| 🔌 **API Proxy Drop-in** | API 100% compatible OpenAI (`/v1/chat/completions`). Branchez Cursor, Cline ou Continue.dev directement sur le moteur |
-| 🏠 **Home Assistant Natif** | Routes `/api/ha` et outils d'ingestion intégrés pour permettre aux LLMs de voir et contrôler votre maison connectée |
-| 🌐 **Swarm distribué** | Dispatch de tâches vers des workers distants (Raspberry Pi, VM, etc.) |
-| 🔌 **Système de plugins** | Ajout d'agents custom via `plugins/<nom>/agent.py` + `plugin.json` |
-
-### 🆕 Nouveautés de cette version
-
-- **Une interface qui explique le moteur.** Navigation par intention (Découvrir · Utiliser · Régler · Surveiller · Avancé). L'*Accueil* dit en une phrase si tout va bien et pourquoi, avec des chiffres sourcés ; *Comprendre le moteur* montre le trajet d'une demande sur une carte cliquable et peut rejouer une vraie demande ; *Démo vocale & maison* détaille chaque maillon, du mot d'éveil à la réponse dite. Les pages principales ont un bloc « Comprendre cette page » repliable et citent la source de leurs chiffres ; une donnée inconnue s'affiche « — », jamais zéro.
-- **Sauvegarde des bases.** Copie à chaud et cohérente des bases SQLite et des fichiers de configuration, avec manifeste (sha256, contrôle d'intégrité) et rétention : `python -m core.sauvegarde`, `GET/POST /api/sauvegardes`, page *Sauvegardes*, minuterie systemd dans `deploy/`. Jamais le `.env`.
-- **Simulation vocale sans effet.** `POST /api/vocal/simulate` montre le chemin qu'une phrase prendrait (commande Home Assistant, question d'état, discussion) **sans rien exécuter**.
-- **Vue des outils MCP.** `GET /api/mcp/overview` et la page *Outils MCP* listent les outils offerts par le moteur et les serveurs qu'il utilise.
-- **Erreurs plus sûres.** Les clés d'API sont masquées dans les erreurs de santé des fournisseurs (`/api/models-health`), à l'écriture comme à la lecture.
-
----
-
-## 🏗️ Architecture
-
-```
-vromvrom-engine/
-├── gui_server.py          # Point d'entrée FastAPI (lifespan + 34 routeurs)
-├── main.py                # CLI — lancement direct sans HTTP
-│
-├── core/                  # Cœur du moteur
-│   ├── engine.py          # Orchestrateur principal (DAG → Agents)
-│   ├── llm_gateway.py     # Gateway multi-providers (18+ providers)
-│   ├── router.py          # Routage hybride (fast-path + ML + LLM + Elo)
-│   ├── dag_runner.py      # Exécution parallèle async par stages
-│   ├── factory.py         # Instanciation des agents (Planner/Executor/Reviewer)
-│   ├── state.py           # GlobalState Pydantic thread-safe
-│   ├── checkpoint.py      # Snapshots ACID (SQLite WAL)
-│   ├── healing.py         # Self-healing + retry
-│   ├── review_loop.py     # Boucle Reviewer → Correction
-│   ├── elo_scorer.py      # Elo des modèles par domaine
-│   ├── elo_router.py      # Elo des types de routage
-│   ├── circuit_breaker.py # Disjoncteur async (CLOSED/OPEN/HALF_OPEN)
-│   ├── hitl.py            # Human-In-The-Loop (asyncio.Event)
-│   ├── models_db.py       # SSOT SQLite — catalogue modèles/tarifs/quotas
-│   └── ...
-│
-├── agents/                # Agents spécialisés
-│   ├── planner.py         # Découpe la tâche en DAG JSON
-│   ├── executor.py        # Exécute les tâches (ReAct loop + outils)
-│   ├── reviewer.py        # Vérifie la qualité du résultat
-│   └── tool_maker_agent.py  # Génère de nouveaux outils Python automatiquement
-│
-├── memory/                # Mémoire sémantique + RAG
-│   ├── rag.py             # RAG hybride (TF-IDF + BM25 + Embeddings + RRF)
-│   ├── facts.py           # Base de faits (SQLite FTS5 BM25)
-│   ├── episodes.py        # Mémoire épisodique (similarité Jaccard)
-│   ├── embeddings.py      # Stockage vectoriel ChromaDB
-│   └── skills.py          # Mémoire procédurale (séquences d'outils réussies)
-│
-├── tools/                 # Outils utilisables par les agents
-│   ├── tool_registry.py   # Registre avec timeouts ciblés par outil
-│   └── sanitizer.py       # Masquage des secrets (6 patterns)
-│
-├── api/routes/            # 34 modules de routes FastAPI
-├── services/              # Logique métier découplée du HTTP
-├── plugins/               # Plugins custom (chargement dynamique)
-├── workflows/             # Définitions de workflows JSON (graphes)
-├── static/                # IHM HTML/JS (repli si ihm-v2 n'est pas buildée)
-├── ihm-v2/                # IHM React/Vite/TS (Chat, HA, catalogue LLM, Prompt Studio…)
-├── tests/                 # plus de 280 fichiers de tests pytest
-└── docs/                  # Documentation architecture + guide d'utilisation (docs/guide/)
-```
-
-### Pipeline de routage hybride
-
-```
-Requête utilisateur
-       │
-       ▼
-┌─────────────────────┐
-│ 1. Fast-Path Regex  │ ──→ 0ms    (commandes simples détectées par pattern)
-└─────────────────────┘
-       │ ambiguïté
-       ▼
-┌─────────────────────┐
-│ 2. ML Router sklearn│ ──→ 0ms    (classificateur local, seuil 75%)
-└─────────────────────┘
-       │ confiance < 75%
-       ▼
-┌─────────────────────┐
-│ 3. LLM Slow-Path    │ ──→ ~200ms (Gemini Flash pour lever l'ambiguïté)
-└─────────────────────┘
-       │
-       ▼
-┌─────────────────────┐
-│ 4. Elo Scoring      │ ──→ sélection du meilleur modèle pour la tâche
-└─────────────────────┘
-       │
-       ▼
-  Planner → DAG → Executor(s) parallèles → Reviewer → Réponse
-```
+| Une voix Home Assistant qui reste rapide et ne laisse jamais un modèle inventer une action, sur une petite machine, avec des modèles gratuits | **vromvrom-engine** peut convenir (pour la voix, apportez votre propre agent de conversation pour l'instant) |
+| Une passerelle pour une équipe : clés, budgets par utilisateur ou par clé, suivi des dépenses | [LiteLLM](https://docs.litellm.ai/docs/proxy/budget_fallbacks) |
+| Une interface de discussion pour plusieurs personnes, avec des rôles | Open WebUI, LibreChat |
+| Une bibliothèque pour construire des agents dans votre propre code | LangGraph, CrewAI |
 
 ---
 
@@ -236,28 +186,140 @@ print(response.json()["response"])
 
 ### Comme Proxy pour IDEs (Cursor, Cline, Continue)
 
-vromvrom-engine expose un point d'accès standard compatible OpenAI. Vous pouvez y brancher votre assistant de code favori pour bénéficier du routage gratuit et du disjoncteur (Circuit Breaker) :
+vromvrom-engine expose un point d'accès standard compatible OpenAI. Vous pouvez y brancher votre assistant de code favori pour profiter de son routage, de sa bascule et de ses disjoncteurs :
 
 - **Base URL** : `http://localhost:8000/v1`
 - **API Key** : `<MOTEUR_API_KEY>` (celle de votre `.env`)
-- **Model** : `gemini-2.0-flash` (ou n'importe quel modèle de votre routage)
+- **Model** : un identifiant listé par `GET /v1/models`, par exemple `gemini-3.5-flash-free` (le modèle par défaut de `config.example.json`)
 
-### 🏠 Intégration Home Assistant (Optionnelle mais Native)
+### 🏠 Home Assistant (optionnel)
 
-vromvrom-engine intègre nativement des outils (`ha_entity_ingest.py`) et des routes (`/api/ha/*`) pour interagir "out of the box" avec votre instance Home Assistant.
+vromvrom-engine fournit des outils (`tools/ha_entity_ingest.py`), des routes (`/api/ha/*`) et des outils MCP pour lire votre instance Home Assistant.
 
 Ajoutez simplement ceci à votre `.env` :
 ```env
 HASS_URL=http://192.168.1.X:8123
 HASS_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
-Vos agents peuvent désormais instantanément lire vos capteurs, vérifier les états et contrôler vos appareils sans que vous n'ayez à écrire la moindre ligne de YAML supplémentaire !
+Le modèle peut alors lire les états et les capteurs. Les appareils sont commandés par les règles du catalogue de phrases (`ha_commands.json`, à partir de `ha_commands.json.example`), pas par le modèle. Pour la voix, voir [le guide](docs/guide/04_maison_et_voix.md) : l'agent de conversation dont Home Assistant a besoin n'est pas dans ce dépôt.
 
 ### Via la CLI
 
 ```bash
 python main.py "Explique l'architecture hexagonale en 3 points"
 ```
+
+---
+
+## 🧩 Les fonctions en détail
+
+| Fonction | Ce qu'elle fait |
+|---|---|
+| 🧠 **Routage hybride** | Regex (chemin rapide) → classifieur ML local (une fois entraîné) → un modèle léger pour les demandes ambiguës → score Elo par type de tâche pour choisir le modèle |
+| 🏆 **Elo par type de tâche** | Chaque modèle gagne ou perd des points par domaine ; la cascade s'en sert avec le coût et le quota |
+| 🛡️ **Auto-réparation** | Un disjoncteur par fournisseur, des reprises avec attente exponentielle, la bascule vers le fournisseur suivant |
+| 💰 **Cascade selon le coût** | Bascule vers le fournisseur suivant configuré s'il est indisponible, limité en débit ou hors budget — ce n'est pas une escalade par qualité |
+| 🔄 **DAG parallèle asynchrone** | Les tâches indépendantes d'un plan s'exécutent en parallèle (`asyncio.gather()`) |
+| 🔍 **RAG hybride local** | TF-IDF + BM25 + embeddings ChromaDB fusionnés par RRF (k=60), sur votre machine |
+| 👁️ **HITL** | Pause et reprise d'un plan pour une validation humaine (plans à risque élevé) |
+| 🔌 **API compatible OpenAI** | `/v1/chat/completions` (avec streaming) et `/v1/models`, pour Cursor, Cline, Continue.dev ou n'importe quel client OpenAI |
+| 🧰 **MCP** | Un serveur de 17 outils et un client de serveurs MCP tiers |
+| 🏠 **Home Assistant** | Routes `/api/ha`, ingestion des entités et outils de lecture ; les appareils sont commandés par le catalogue de phrases |
+| 🌐 **Machines distantes** | Envoi de tâches à d'autres machines (Raspberry Pi, VM…) |
+| 🔌 **Plugins** | Agents personnalisés dans `plugins/<nom>/agent.py` + `plugin.json` |
+| 📊 **Interface** | Interface React (`ihm-v2/`), avec l'ancienne interface HTML de `static/` en secours |
+
+## 🏗️ Architecture
+
+```
+vromvrom-engine/
+├── gui_server.py          # Point d'entrée FastAPI (lifespan + 34 routeurs)
+├── main.py                # CLI — lancement direct sans HTTP
+│
+├── core/                  # Cœur du moteur
+│   ├── engine.py          # Orchestrateur principal (DAG → Agents)
+│   ├── llm_gateway.py     # Gateway multi-providers (18+ providers)
+│   ├── router.py          # Routage hybride (fast-path + ML + LLM + Elo)
+│   ├── dag_runner.py      # Exécution parallèle async par stages
+│   ├── factory.py         # Instanciation des agents (Planner/Executor/Reviewer)
+│   ├── state.py           # GlobalState Pydantic thread-safe
+│   ├── checkpoint.py      # Snapshots ACID (SQLite WAL)
+│   ├── healing.py         # Self-healing + retry
+│   ├── review_loop.py     # Boucle Reviewer → Correction
+│   ├── elo_scorer.py      # Elo des modèles par domaine
+│   ├── elo_router.py      # Elo des types de routage
+│   ├── circuit_breaker.py # Disjoncteur async (CLOSED/OPEN/HALF_OPEN)
+│   ├── hitl.py            # Human-In-The-Loop (asyncio.Event)
+│   ├── models_db.py       # SSOT SQLite — catalogue modèles/tarifs/quotas
+│   └── ...
+│
+├── agents/                # Agents spécialisés
+│   ├── planner.py         # Découpe la tâche en DAG JSON
+│   ├── executor.py        # Exécute les tâches (ReAct loop + outils)
+│   ├── reviewer.py        # Vérifie la qualité du résultat
+│   └── tool_maker_agent.py  # Génère de nouveaux outils Python automatiquement
+│
+├── memory/                # Mémoire sémantique + RAG
+│   ├── rag.py             # RAG hybride (TF-IDF + BM25 + Embeddings + RRF)
+│   ├── facts.py           # Base de faits (SQLite FTS5 BM25)
+│   ├── episodes.py        # Mémoire épisodique (similarité Jaccard)
+│   ├── embeddings.py      # Stockage vectoriel ChromaDB
+│   └── skills.py          # Mémoire procédurale (séquences d'outils réussies)
+│
+├── tools/                 # Outils utilisables par les agents
+│   ├── tool_registry.py   # Registre avec timeouts ciblés par outil
+│   └── sanitizer.py       # Masquage des secrets (6 patterns)
+│
+├── api/routes/            # 34 modules de routes FastAPI
+├── services/              # Logique métier découplée du HTTP
+├── plugins/               # Plugins custom (chargement dynamique)
+├── workflows/             # Définitions de workflows JSON (graphes)
+├── static/                # IHM HTML/JS (repli si ihm-v2 n'est pas buildée)
+├── ihm-v2/                # IHM React/Vite/TS (Chat, HA, catalogue LLM, Prompt Studio…)
+├── tests/                 # plus de 280 fichiers de tests pytest
+└── docs/                  # Documentation architecture + guide d'utilisation (docs/guide/)
+```
+
+### Pipeline de routage hybride
+
+```
+Requête utilisateur
+       │
+       ▼
+┌─────────────────────┐
+│ 1. Fast-Path Regex  │ ──→ 0ms    (commandes simples détectées par pattern)
+└─────────────────────┘
+       │ ambiguïté
+       ▼
+┌─────────────────────┐
+│ 2. ML Router sklearn│ ──→ 0ms    (classificateur local, seuil 75%)
+└─────────────────────┘
+       │ confiance < 75%
+       ▼
+┌─────────────────────┐
+│ 3. LLM Slow-Path    │ ──→ ~200ms (un modèle léger pour lever l'ambiguïté)
+└─────────────────────┘
+       │
+       ▼
+┌─────────────────────┐
+│ 4. Elo Scoring      │ ──→ sélection du meilleur modèle pour la tâche
+└─────────────────────┘
+       │
+       ▼
+  Planner → DAG → Executor(s) parallèles → Reviewer → Réponse
+```
+
+L'étape 2 ne tourne qu'une fois le classifieur entraîné sur au moins 50 demandes de votre historique ; la partie multi-agents (dernière ligne) ne sert qu'aux tâches complexes.
+
+---
+
+## 🆕 Nouveautés récentes (novembre 2026)
+
+- **Une interface qui explique le moteur.** Navigation par intention (Découvrir · Utiliser · Régler · Surveiller · Avancé). L'*Accueil* dit en une phrase si tout va bien et pourquoi, avec des chiffres sourcés ; *Comprendre le moteur* montre le trajet d'une demande sur une carte cliquable et peut rejouer une vraie demande ; *Démo vocale & maison* détaille chaque maillon, du mot d'éveil à la réponse dite. Les pages principales ont un bloc « Comprendre cette page » repliable et citent la source de leurs chiffres ; une donnée inconnue s'affiche « — », jamais zéro.
+- **Sauvegarde des bases.** Copie à chaud et cohérente des bases SQLite et des fichiers de configuration, avec manifeste (sha256, contrôle d'intégrité) et rétention : `python -m core.sauvegarde`, `GET/POST /api/sauvegardes`, page *Sauvegardes*, minuterie systemd dans `deploy/`. Jamais le `.env`.
+- **Simulation vocale sans effet.** `POST /api/vocal/simulate` montre le chemin qu'une phrase prendrait (commande Home Assistant, question d'état, discussion) **sans rien exécuter**.
+- **Vue des outils MCP.** `GET /api/mcp/overview` et la page *Outils MCP* listent les outils offerts par le moteur et les serveurs qu'il utilise.
+- **Erreurs plus sûres.** Les clés d'API sont masquées dans les erreurs de santé des fournisseurs (`/api/models-health`), à l'écriture comme à la lecture.
 
 ---
 
@@ -279,9 +341,13 @@ python main.py "Explique l'architecture hexagonale en 3 points"
 | **Zhipu AI (GLM)** | 💰 | 8 modèles GLM, excellents en code/agentique |
 | **xAI (Grok)** | 💰 | Payant uniquement |
 
+Le tableau donne les principaux ; le code en connaît environ dix-huit. Un fournisseur listé n'est pas la promesse qu'il répond aujourd'hui : la sonde de santé coupe les modèles en panne.
+
 ---
 
 ## 🧪 Tests
+
+288 fichiers de tests (environ 2 370 fonctions de test), lancés par la CI sous Python 3.12. Environ la moitié du code est couverte (54 % mesurés le 01/11/2026).
 
 ```bash
 # Installer les dépendances de dev

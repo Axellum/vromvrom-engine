@@ -115,9 +115,18 @@ def _engine_minimal(session_id="chat_t267"):
 
 @pytest.mark.asyncio
 async def test_plan_a_risque_met_la_session_en_attente():
-    """Le plan à risque n'est ni approuvé ni rejeté : il est MIS EN ATTENTE."""
+    """
+    Le plan à risque n'est ni approuvé ni rejeté : il est MIS EN ATTENTE.
+
+    [#T315] Le libellé dit maintenant « Supprimer » et non « Modifier » : depuis
+    que le seuil d'approbation est passé à `high` (décision Axel 18/08), un plan
+    `medium` — écrire ou modifier un fichier — n'interrompt plus l'utilisateur.
+    Ce test portait `available_tools=["write_file"]` en croyant classer par
+    l'outil, mais ce champ n'est alimenté nulle part : c'est le mot « Modifier »
+    qui le faisait passer, donc pour la mauvaise raison.
+    """
     eng = _engine_minimal()
-    taches = [TaskPayload(task_objective="Modifier la config", available_tools=["write_file"])]
+    taches = [TaskPayload(task_objective="Supprimer la config", available_tools=["write_file"])]
 
     decision = await eng._check_hitl_before_dag(taches, "objectif de test")
 
@@ -128,6 +137,22 @@ async def test_plan_a_risque_met_la_session_en_attente():
     assert d is not None
     assert len(d["dag_tasks"]) == 1
     assert d["dag_tasks"][0]["available_tools"] == ["write_file"]
+
+
+@pytest.mark.asyncio
+async def test_un_plan_qui_ecrit_un_fichier_n_interrompt_plus():
+    """
+    [#T315] Le cas qui a tué 3 demandes sur 8 : un plan `medium` passe désormais
+    sans feu vert. C'est le comportement voulu, pas un trou — les suppressions et
+    les exécutions de commande restent au-dessus du seuil (test précédent).
+    """
+    eng = _engine_minimal()
+    taches = [TaskPayload(task_objective="Modifier la config", available_tools=["write_file"])]
+
+    decision = await eng._check_hitl_before_dag(taches, "objectif de test")
+
+    assert decision == DECISION_APPROUVE
+    assert eng.est_suspendue() is False
 
 
 @pytest.mark.asyncio

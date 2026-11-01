@@ -231,7 +231,10 @@ class TestCascadeFastPath:
         with (
             patch("core.agent_trace.poser_agent_courant"),
             patch.object(pipeline_service, "_persist_fast_path_async", new_callable=AsyncMock),
-            patch.object(pipeline_service, "FAST_PATH_PROVIDERS", noms_providers),
+            # [#20/08] La cascade est un réglage d'exploitation lu par
+            # _fast_path_providers_config() (config.json routing_policy) : le
+            # test patche la FONCTION, plus la constante historique.
+            patch.object(pipeline_service, "_fast_path_providers_config", return_value=noms_providers),
         ):
             return await pipeline_service.run_fast_path(
                 user_prompt="bonjour",

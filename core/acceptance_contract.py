@@ -37,6 +37,7 @@ import ntpath
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 
@@ -402,9 +403,18 @@ def _verifier_commande(critere: Critere, racine: str | None) -> ResultatCritere:
     tokens = _decouper(critere.valeur)
     if not tokens:
         return ResultatCritere(critere, None, "commande indécoupable")
+    
+    # Résolution du chemin de l'exécutable pour compatibilité Windows (.cmd/.bat)
+    executable_path = shutil.which(tokens[0])
+    if not executable_path:
+        return ResultatCritere(critere, None, f"exécutable '{tokens[0]}' introuvable dans le PATH")
+    
+    # Utiliser le chemin résolu pour l'exécution
+    cmd_args = [executable_path] + tokens[1:]
+    
     try:
         proc = subprocess.run(
-            tokens,
+            cmd_args,
             cwd=racine or _racine_moteur(),
             capture_output=True,
             text=True,

@@ -115,7 +115,7 @@ def test_ids_modeles_globaux_uniques():
     ("deepinfra", "deepinfra/llama-3.3-70b-instruct", "meta-llama/Llama-3.3-70B-Instruct"),
     ("cerebras", "gemma-4-31b-cerebras", "gemma-4-31b"),
     ("deepseek", "deepseek-v4-flash", "deepseek-chat"),
-    ("deepseek", "deepseek-v4-pro", "deepseek-chat"),
+    ("deepseek", "deepseek-v4-pro", "deepseek-v4-pro"),
     ("gemini_paid", "gemini-3.1-pro-customtools-paid", "gemini-3.1-pro-preview-customtools"),
     ("minimax", "minimax-m3", "MiniMax-M3"),
 ])

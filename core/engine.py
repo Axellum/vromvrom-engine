@@ -67,7 +67,33 @@ HITL_AUTONOMOUS_PREFIXES = ("daemon_", "dreamer_", "routine_", "maint_", "task_"
 # Préfixes de sessions INTERACTIVES (un humain est présent, l'IHM gère l'approbation).
 HITL_INTERACTIVE_PREFIXES = ("chat_", "stream_", "gui_session_")
 
+# [#T391] Sessions dont l'APPELANT gère déjà l'isolation Git : l'Engine ne doit
+# pas créer sa propre branche éphémère par-dessus.
+# `task_*` = tâche DreamCoder. Son appelant (`agents/dreamer_agent.py`) l'a déjà
+# placée sur une branche `task/<id>_<ts>` dans un clone dédié, et se charge du
+# commit comme du rollback. La seconde branche de l'Engine ne protégeait rien et
+# détruisait tout : à la fin de session, `git_finalize_agent_branch(success=False)`
+# fait un rollback destructif, et `success` tombe à False dès qu'un outil
+# rapporte une erreur — un `ls` sur un chemin inexistant suffit.
+# Mesuré le 18/08, tâche 16 :
+#     [T273-AUDIT] Outil à risque exécuté : write_file      ← le travail EXISTE
+#     [GIT SAFETY] Échec détecté. Annulation des changements sur 'agent/run_task_16_…'
+# DreamCoder trouvait ensuite une branche vide et concluait « aucun fichier
+# n'a été écrit » — un diagnostic faux, puisqu'ils avaient été écrits puis
+# supprimés entre les deux.
+GIT_SESSIONS_DEJA_ISOLEES = ("task_",)
+
 _HITL_RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
+
+# [#T315] Niveau de risque À PARTIR DUQUEL une approbation humaine est demandée.
+# Décision Axel du 18/08 : `high`, c'est-à-dire `write_file`/`edit_file` et
+# au-delà. Le seuil était codé en dur sur `low`, donc TOUT plan « medium »
+# (« écrire », « créer », « exécuter » dans un libellé de tâche) réclamait un
+# feu vert : sur la campagne mesurée, 3 demandes sur 8 sont mortes faute de
+# réponse — dont un `ls` de `docs/`, qui ne modifie rien. Un garde-fou qu'on
+# apprend à cliquer sans lire ne garde plus rien.
+# Surchargeable par `hitl.seuil_approbation` dans config.json.
+HITL_SEUIL_APPROBATION_DEFAUT = "high"
 
 # [#T111] Plafond de handoffs agent-à-agent (update.next_agent) dans la boucle
 # séquentielle. Garde-fou anti-boucle inspiré du `recursion_limit` LangGraph :
@@ -230,7 +256,20 @@ class Engine:
         désormais unifiée dans _handle_dag_execution().
         """
         from tools.git_safety import git_finalize_agent_branch
+        from tools.system import definir_racine_travail, reinitialiser_racine_travail
 
+        # Toute écriture d'agent (write_file) suit CE dépôt, pas le CWD du
+        # serveur. Sans ça, une tâche Tab5 dépose ses fichiers dans le clone
+        # moteur — ou à côté, hors de tout commit.
+        from core.env_bootstrap import REPO_ROOT
+        jeton_racine = definir_racine_travail(self.repo_root or str(REPO_ROOT))
+        try:
+            return await self._run_corps(initial_payload, starting_agent, git_finalize_agent_branch)
+        finally:
+            reinitialiser_racine_travail(jeton_racine)
+
+    async def _run_corps(self, initial_payload: TaskPayload, starting_agent: str, git_finalize_agent_branch):
+        """Corps de `run()` une fois la racine de travail posée."""
         # Langfuse Tracing (optionnel)
         _lf = self._init_langfuse()
 
@@ -792,7 +831,19 @@ class Engine:
             return 500_000
 
     def _prepare_git_branch(self) -> str | None:
-        """Prépare la branche Git éphémère pour l'isolation du workspace."""
+        """
+        Prépare la branche Git éphémère pour l'isolation du workspace.
+
+        [#T391] Sauf si l'appelant s'en charge déjà (`GIT_SESSIONS_DEJA_ISOLEES`) :
+        deux couches d'isolation ne valent pas mieux qu'une, elles se détruisent.
+        """
+        if self.state.session_id.startswith(GIT_SESSIONS_DEJA_ISOLEES):
+            logger.info(
+                f"[ENGINE] [#T391] Session '{self.state.session_id}' déjà isolée par "
+                f"son appelant : pas de branche éphémère (son rollback détruirait "
+                f"le travail avant que l'appelant ne puisse le commiter)."
+            )
+            return None
         try:
             from tools.git_safety import git_prepare_agent_branch
             # [#T202] Cibler le dépôt de travail explicite s'il est fourni.
@@ -1029,10 +1080,31 @@ class Engine:
             (max_risk, risky_tasks) où max_risk ∈ {low, medium, high, critical}.
         """
         # Signal de repli : mots-clés dans l'objectif (conservé mais plus décisif seul).
+        #
+        # [#T315] « exécuter / terminal / installer » sont passés de medium à HIGH
+        # en même temps que le seuil d'approbation montait à `high`. Sans ce
+        # déplacement, relever le seuil aurait ouvert l'exécution de commandes
+        # sans feu vert : le signal primaire ne voit que `metadata.direct_tool_call`,
+        # c'est-à-dire le raccourci déterministe du Planner. Une tâche ReAct
+        # ordinaire — la majorité — n'est classée que par son libellé, et
+        # « Lancer le script » + `available_tools=['run_terminal_command']`
+        # ressortait en `low` (vérifié le 18/08).
+        # La ligne de partage suit l'intention d'Axel : écrire un fichier
+        # n'interrompt plus, lancer une commande ou supprimer, si.
+        #
+        # ⚠️ LIMITE CONNUE, à ne pas prendre pour une protection complète :
+        # `available_tools` (core/state.py) n'est REMPLI PAR PERSONNE — déclaré,
+        # sérialisé, jamais alimenté (vérifié par grep sur agents/ et core/ le
+        # 18/08). Le seul signal d'outil réellement disponible est donc
+        # `direct_tool_call`. Pour une tâche ReAct, la liste ci-dessous est
+        # tout ce qui reste, et une formulation inattendue passe au travers.
+        # Le vrai correctif est de faire porter à la tâche les outils qu'elle a
+        # le droit d'appeler — chantier séparé, pas un ajout de mots-clés.
         risk_keywords = {
-            "high": ["supprimer", "delete", "remove", "drop", "format", "reset", "rm ", "rmdir"],
-            "medium": ["écrire", "modifier", "créer", "write", "modify", "create",
-                       "install", "exécuter", "terminal", "run_terminal"],
+            "high": ["supprimer", "delete", "remove", "drop", "format", "reset", "rm ", "rmdir",
+                     "install", "exécuter", "executer", "terminal", "run_terminal",
+                     "lancer", "déployer", "deployer", "redémarrer", "redemarrer"],
+            "medium": ["écrire", "modifier", "créer", "write", "modify", "create"],
         }
 
         max_risk = "low"
@@ -1081,13 +1153,24 @@ class Engine:
         """
         if session_id.startswith(HITL_AUTONOMOUS_PREFIXES):
             return "session autonome (aucun humain présent)"
-        if max_risk == "low":
-            return "risque faible (lecture seule / analyse)"
+
         try:
             from core.llm_gateway import load_config
             hitl_cfg = load_config().get("hitl", {})
         except Exception:
             hitl_cfg = {}
+
+        # [#T315] Sous le seuil configuré, on n'interrompt pas l'utilisateur.
+        seuil = str(hitl_cfg.get("seuil_approbation", HITL_SEUIL_APPROBATION_DEFAUT)).lower()
+        if seuil not in _HITL_RISK_ORDER:
+            logger.warning(
+                f"[ENGINE] hitl.seuil_approbation invalide ({seuil!r}) — "
+                f"repli sur '{HITL_SEUIL_APPROBATION_DEFAUT}'."
+            )
+            seuil = HITL_SEUIL_APPROBATION_DEFAUT
+        if _HITL_RISK_ORDER[max_risk] < _HITL_RISK_ORDER[seuil]:
+            return f"risque '{max_risk}' sous le seuil d'approbation '{seuil}'"
+
         if hitl_cfg.get("interactive_auto_approve", False) and session_id.startswith(HITL_INTERACTIVE_PREFIXES):
             return "auto-approbation interactive activée par config (hitl.interactive_auto_approve)"
         return None

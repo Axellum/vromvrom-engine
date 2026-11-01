@@ -1,9 +1,9 @@
 """
-tools/git_safety.py — Garde-fou : vérifie que le dépôt Git courant pointe bien
-vers le remote canonique (Axellum/moteur_agents) avant toute opération Git.
+tools/git_safety.py — Garde-fou Git multi-projets.
 
-Empêche de committer/merger silencieusement dans un dépôt orphelin (ex: un
-`.git` créé par erreur, sans remote, dans un dossier de travail en prod).
+Vérifie que le dépôt visé est l'un des projets enregistrés (moteur, Tab5,
+écosystème) avant toute opération Git. Empêche de committer/merger dans un
+dépôt orphelin (`.git` créé par erreur, sans remote).
 Utilisé par core/router.py, core/engine.py, api/routes/backlog.py.
 """
 import logging
@@ -12,13 +12,38 @@ import subprocess
 
 logger = logging.getLogger(__name__)
 
-# Remote GitHub canonique du projet. Sert de garde-fou : si un `.git` traîne
-# dans le dossier de travail (ex: `git init` fait par erreur en prod, sans
-# remote) sans pointer vers ce dépôt, on refuse d'opérer dessus plutôt que de
-# committer/merger silencieusement dans un dépôt orphelin non lié à l'historique
-# réel (cf. incident Steam Deck du 2026-06-27 : ~400 fichiers absorbés dans un
-# dépôt sans remote créé par erreur dans /opt/vromvrom-engine).
+# Remotes GitHub CANONIQUES — un par projet enregistré (moteur, Tab5, écosystème).
+# Avant 23/08 : seul `Axellum/moteur_agents` passait. Un commit Tab5 dans
+# `00ProjetTab` (remote `Axellum/M5-Tab5-ESPHome-LVGL`) était donc refusé, et
+# le livrable atterrissait dans le clone moteur — ou nulle part.
+# Un `.git` orphelin (sans remote, ou remote hors registre) reste refusé
+# (incident Deck 2026-06-27 : ~400 fichiers absorbés dans un dépôt sans remote).
 EXPECTED_REMOTE_SUBSTR = "Axellum/moteur_agents"
+
+
+def remote_correspond(attendu: str, url: str) -> bool:
+    """Le remote `origin` vise-t-il le projet enregistré ?
+
+    GitHub ignore la casse de `owner/repo` : ce clone a
+    `https://github.com/axellum/moteur_agents` alors que le registre
+    pose `Axellum/moteur_agents`. Une comparaison sensible à la casse
+    refusait donc les commits dans le dépôt du moteur lui-même.
+    """
+    if not attendu or not url:
+        return False
+    return attendu.lower() in url.lower()
+
+
+def _remotes_canons() -> tuple[str, ...]:
+    """Substrings origin acceptés : le registre projets, repli moteur seul."""
+    try:
+        from core.projects import remotes_enregistres
+        enregistres = remotes_enregistres()
+        if enregistres:
+            return enregistres
+    except Exception:
+        pass
+    return (EXPECTED_REMOTE_SUBSTR,)
 
 def _run_git(args: list, cwd: str = ".") -> tuple[int, str, str]:
     """
@@ -46,13 +71,14 @@ def is_git_repo(path: str = ".") -> bool:
 
 def is_canonical_repo(repo_path: str = ".") -> bool:
     """
-    Vérifie que le dépôt Git à repo_path est bien le dépôt canonique du projet
-    (remote 'origin' pointant vers EXPECTED_REMOTE_SUBSTR), et non un dépôt
-    orphelin (ex: `git init` accidentel sans remote) qui se trouverait par
-    hasard au même emplacement.
+    Vérifie que le dépôt Git à repo_path est l'un des projets enregistrés
+    (remote 'origin' contenant un substring du registre), et non un dépôt
+    orphelin (ex: `git init` accidentel sans remote).
     """
     code, remote_url, _ = _run_git(["remote", "get-url", "origin"], cwd=repo_path)
-    return code == 0 and EXPECTED_REMOTE_SUBSTR in remote_url
+    return code == 0 and any(
+        remote_correspond(attendu, remote_url) for attendu in _remotes_canons()
+    )
 
 def est_worktree_lie(repo_path: str = ".") -> bool:
     """
@@ -85,14 +111,15 @@ def _require_canonical_repo(repo_path: str) -> str:
     if not is_git_repo(repo_path):
         return "Erreur : Le dossier de travail n'est pas un dépôt Git."
     if not is_canonical_repo(repo_path):
+        attendus = ", ".join(_remotes_canons())
         logger.error(
             f"[GIT SAFETY] Dépôt non canonique détecté dans '{repo_path}' "
-            f"(remote 'origin' absent ou différent de '{EXPECTED_REMOTE_SUBSTR}'). "
+            f"(remote 'origin' absent ou hors registre [{attendus}]). "
             "Opération refusée pour éviter d'agir sur un dépôt orphelin."
         )
         return (
-            "Erreur : Le dépôt Git à cet emplacement n'est pas le dépôt canonique "
-            f"du projet (remote 'origin' manquant ou ≠ {EXPECTED_REMOTE_SUBSTR})."
+            "Erreur : Le dépôt Git à cet emplacement n'est pas un projet "
+            f"enregistré (remote 'origin' manquant ou hors de : {attendus})."
         )
     return ""
 
@@ -129,6 +156,24 @@ def git_create_checkpoint(repo_path: str = ".") -> str:
 
     return f"Succès : Checkpoint Git créé avec succès. ID : {checkpoint_id}. Modifications stashed."
 
+# Préfixes des stashes de sécurité créés par le moteur lui-même.
+# - `agent_checkpoint_…` : git_apply_checkpoint()
+# - `user_pre_agent_…`  : git_prepare_agent_branch() — oublié jusqu'au 20/08 :
+#   le rollback cherchait uniquement les deux autres préfixes, le stash
+#   utilisateur n'était jamais dépilé après `reset --hard` + `clean -fd`, et
+#   tout travail non commité était détruit du disque (mesuré en prod le 20/08 :
+#   les fixes de redémarrage ont été avalés par une tentative de tâche).
+_PREFIXES_STASH_AGENT = ("pre_agent_checkpoint_", "agent_checkpoint_", "user_pre_agent_")
+
+
+def _stash_agent_en_tete(repo_path: str = ".") -> bool:
+    """True si le stash le plus récent a été créé par le moteur (checkpoint ou utilisateur)."""
+    code, stdout, _ = _run_git(["stash", "list"], cwd=repo_path)
+    if code != 0 or not stdout:
+        return False
+    return any(p in stdout.splitlines()[0] for p in _PREFIXES_STASH_AGENT)
+
+
 def git_rollback_checkpoint(repo_path: str = ".") -> str:
     """
     Restaure l'espace de travail à son état d'origine.
@@ -164,15 +209,12 @@ def git_rollback_checkpoint(repo_path: str = ".") -> str:
         logger.warning(f"Avertissement lors du nettoyage Git (clean) : {stderr or stdout}")
 
     # 3. Vérifier s'il y a un stash d'agent créé par nous en haut de la pile
-    code, stdout, stderr = _run_git(["stash", "list"], cwd=repo_path)
-    if code == 0 and stdout:
-        first_line = stdout.splitlines()[0]
-        if "pre_agent_checkpoint_" in first_line or "agent_checkpoint_" in first_line:
-            # Pop le stash pour restaurer l'état initial avant le checkpoint
-            pop_code, pop_out, pop_err = _run_git(["stash", "pop"], cwd=repo_path)
-            if pop_code != 0:
-                return f"Workspace réinitialisé, mais échec de la restauration du stash : {pop_err or pop_out}"
-            return "Succès : Rollback effectué. Les modifications de l'agent ont été effacées, et votre état de travail précédent a été restauré."
+    if _stash_agent_en_tete(repo_path):
+        # Pop le stash pour restaurer l'état initial avant le checkpoint
+        pop_code, pop_out, pop_err = _run_git(["stash", "pop"], cwd=repo_path)
+        if pop_code != 0:
+            return f"Workspace réinitialisé, mais échec de la restauration du stash : {pop_err or pop_out}"
+        return "Succès : Rollback effectué. Les modifications de l'agent ont été effacées, et votre état de travail précédent a été restauré."
 
     return "Succès : Rollback effectué. L'espace de travail a été nettoyé et restauré."
 
@@ -186,15 +228,12 @@ def git_apply_checkpoint(repo_path: str = ".") -> str:
         return guard_err
 
     # Récupérer la liste des stashes pour voir si le dernier vient de l'agent
-    code, stdout, _ = _run_git(["stash", "list"], cwd=repo_path)
-    if code == 0 and stdout:
-        first_line = stdout.splitlines()[0]
-        if "pre_agent_checkpoint_" in first_line or "agent_checkpoint_" in first_line:
-            # Appliquer (ou pop) le stash pour fusionner l'ancien travail de l'utilisateur
-            pop_code, pop_out, pop_err = _run_git(["stash", "pop"], cwd=repo_path)
-            if pop_code != 0:
-                return f"Modifications conservées, mais conflit ou échec lors de la ré-application de votre ancien état : {pop_err or pop_out}"
-            return "Succès : Checkpoint validé. Votre ancien état de travail a été fusionné avec le résultat de l'agent."
+    if _stash_agent_en_tete(repo_path):
+        # Appliquer (ou pop) le stash pour fusionner l'ancien travail de l'utilisateur
+        pop_code, pop_out, pop_err = _run_git(["stash", "pop"], cwd=repo_path)
+        if pop_code != 0:
+            return f"Modifications conservées, mais conflit ou échec lors de la ré-application de votre ancien état : {pop_err or pop_out}"
+        return "Succès : Checkpoint validé. Votre ancien état de travail a été fusionné avec le résultat de l'agent."
 
     return "Succès : Checkpoint validé sans modification à ré-appliquer."
 

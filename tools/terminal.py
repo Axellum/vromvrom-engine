@@ -24,7 +24,7 @@ import os
 import shlex
 import subprocess
 
-from tools.system import resoudre_dans_workspace
+from tools.system import racine_travail_courante, refus_si_sensible, resoudre_dans_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,47 @@ _CMDLETS_POWERSHELL_COURANTES = (
     "write-", "read-", "invoke-", "add-", "clear-", "export-", "import-",
 )
 
+# [#T423] Commandes INTERNES de cmd.exe. Elles n'existent pas comme fichiers :
+# sans shell (`shell=False`, choix de sécurité assumé), `subprocess` échoue en
+# WinError 2 et le message « exécutable introuvable dans le PATH » invite à
+# donner un chemin complet — pour un programme qui n'a pas de fichier.
+#
+# Mesuré le 21/08 sur la tâche 49 : l'agent a brûlé ses 10 tours de boucle ReAct
+# sur `dir`, `find`, puis `dir` encore, sans jamais appeler `write_file`. Le
+# pipeline s'est déclaré « satisfait » sur une branche vide. C'est le motif
+# d'échec numéro un du cycle autonome : 17 des 23 échecs historiques.
+_BUILTINS_CMD = (
+    "dir", "type", "copy", "del", "erase", "move", "ren", "rename",
+    "md", "mkdir", "rd", "rmdir", "echo", "cls", "set", "cd", "chdir",
+    "pushd", "popd", "ver", "vol", "title", "path",
+)
+
+# Programmes qui EXISTENT sous Windows mais ne font pas ce que le modèle croit :
+# il vise l'outil Unix homonyme et reçoit un « format incorrect de paramètre ».
+_HOMONYMES_TROMPEURS = {
+    "find": (
+        "`FIND` sous Windows n'est pas le `find` Unix : il cherche une chaîne "
+        "DANS des fichiers, il ne parcourt pas une arborescence."
+    ),
+    "sort": (
+        "`SORT` sous Windows ne connaît ni `-n`, ni `-k`, ni `-u`."
+    ),
+    "more": (
+        "`MORE` sous Windows n'accepte pas les options du `more` Unix."
+    ),
+}
+
+# Ce qu'il faut faire à la place — un agent perdu doit lire la sortie, pas la
+# deviner. On nomme les outils dédiés AVANT le contournement par `cmd /c` :
+# lister et lire des fichiers ne devrait jamais passer par le terminal.
+_QUE_FAIRE_A_LA_PLACE = (
+    "À la place : pour lister un dossier utilise l'outil "
+    "`mcp_filesystem_list_directory`, pour chercher dans des fichiers "
+    "`mcp_filesystem_search_files`, pour lire un fichier `read_file`. "
+    "Si tu as vraiment besoin de la commande interne, lance-la via "
+    "l'interpréteur en une seule commande : cmd /c \"<ta commande>\"."
+)
+
 # Interpréteurs acceptant du code inline : c'est LE contournement observé en
 # prod (#T275), leur code s'exécute hors de tout contrôle d'arguments.
 # `pythonw`, `python3.12`… sont couverts via le préfixe `python`.
@@ -78,7 +119,12 @@ _INTERPRETEURS_CODE_INLINE = {
 
 # Commandes dont on sait qu'elles écrivent ou suppriment des fichiers : leurs
 # chemins absolus doivent rester dans le workspace, source comme destination.
-_COMMANDES_ECRITURE = {"tee", "dd", "cp", "mv", "install", "truncate", "rm"}
+# [#T397] `sed -i`, `tr`, `dos2unix` reecrivent un fichier en place : ce sont
+# des commandes d'ecriture au meme titre que `cp`. La tache #35 a detruit le
+# .env de production avec l'une d'elles, sur un chemin RELATIF (« ./.env »),
+# que la garde ne regardait pas.
+_COMMANDES_ECRITURE = {"tee", "dd", "cp", "mv", "install", "truncate", "rm",
+                       "sed", "tr", "dos2unix", "unix2dos", "shred", "chmod", "chown"}
 
 
 def _garde_chemins_active() -> bool:
@@ -171,6 +217,13 @@ def _refus_garde_chemins(argv: list[str]) -> str | None:
     # destination) doit rester dans le workspace, via la politique existante
     # de tools/system.py (_resolve_within_workspace, même message d'erreur).
     if prog in _COMMANDES_ECRITURE:
+        # [#T397] Fichiers de secrets : refuses meme en chemin relatif, meme
+        # dans le workspace. C'est la seule barriere possible -- .env est
+        # gitignore, donc invisible aux controles de diff.
+        for arg in argv[1:]:
+            refus = refus_si_sensible(arg)
+            if refus:
+                return f"Erreur de securite : la commande '{prog}' vise un fichier de secrets. {refus}"
         for arg in _candidats_chemins(argv):
             _resolu, erreur = resoudre_dans_workspace(arg)
             if erreur:
@@ -220,19 +273,41 @@ def run_terminal_command(command: str) -> str:
                     command.replace("\n", " "),
                 )
                 return refus
-        # Exécution avec un timeout strict (ex: ping infini bloquerait l'agent sinon)
+        # [#T389] La commande s'exécute DANS le dépôt de travail de la session
+        # quand il y en a un (tâche DreamCoder dans son clone), sinon dans le
+        # répertoire du serveur — comportement historique.
+        #
+        # Sans ce `cwd`, l'agent de nuit explorait le mauvais dépôt. Mesuré le
+        # 18/08, tâche 9 sur le clone `moteur_agents_dc2` :
+        #     ls: cannot access '/home/deck/dev_station/tests/unit'
+        #     find: '/home/deck/dev_station/tests': No such file or directory
+        # Il ne trouvait donc aucun des fichiers qu'il devait modifier, et
+        # terminait sans rien écrire — le pipeline se déclarait « satisfait »
+        # sur une branche vide. #T388 avait corrigé read_file/write_file, mais
+        # `run_terminal_command` a son propre répertoire courant : c'est par lui
+        # que l'agent EXPLORE, donc l'oublier suffisait à tout faire échouer.
         result = subprocess.run(
             argv,
             shell=False,
             capture_output=True,
             text=True,
-            timeout=30
+            timeout=30,
+            cwd=racine_travail_courante() or None,
         )
 
         if result.returncode == 0:
             output = result.stdout
         else:
             output = f"Erreur (code {result.returncode}): {result.stderr}"
+            # [#T423] `find`, `sort`, `more` existent sous Windows mais ne sont
+            # pas leurs homonymes Unix. Sans cette précision, l'agent relance la
+            # même commande en variant les options jusqu'à épuiser ses tours.
+            premier = (argv[0] if argv else "").lower()
+            if os.name == "nt" and premier in _HOMONYMES_TROMPEURS:
+                output += (
+                    "\n\n"
+                    f"{_HOMONYMES_TROMPEURS[premier]} {_QUE_FAIRE_A_LA_PLACE}"
+                )
 
         if not output.strip():
             return "Commande exécutée avec succès (aucune sortie dans la console)."
@@ -267,6 +342,13 @@ def run_terminal_command(command: str) -> str:
                 f"elle ne peut pas être lancée directement. Relance-la via "
                 f"l'interpréteur, en une seule commande : "
                 f'powershell -NoProfile -Command "{command}". '
+                f"Ne réessaie pas la forme actuelle, elle échouera à l'identique."
+            )
+        if os.name == "nt" and prog.lower() in _BUILTINS_CMD:
+            return (
+                f"Erreur: '{prog}' est une commande INTERNE de cmd.exe, pas un "
+                f"exécutable — elle n'a pas de fichier, donc aucun chemin complet "
+                f"ne la trouvera. {_QUE_FAIRE_A_LA_PLACE} "
                 f"Ne réessaie pas la forme actuelle, elle échouera à l'identique."
             )
         return (

@@ -11,11 +11,13 @@ Deux défauts mesurés en préparant la session autonome du 18/08 :
    défaut que `core/fenetres_execution.py` existe pour empêcher.
 
 2. Une branche Git impossible à créer laissait la tâche en 'failed' avec
-   `retries` à 0 : jamais reprise (get_next_task ne lit que 'pending'), jamais
-   abandonnée. Constaté sur le Deck — deux tâches figées depuis juillet.
+   `retries` à 0 : jamais reprise, jamais abandonnée. Constaté sur le Deck —
+   deux tâches figées depuis juillet. #T432 reprend un `failed`, mais sans
+   incrément elle bouclerait.
 """
 
 import os
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -72,12 +74,19 @@ def test_emboitement_signale_une_fenetre_trop_courte():
 # ── Le câblage réel dans la tâche ────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_le_pipeline_recoit_la_fenetre_de_nuit():
+async def test_le_pipeline_recoit_la_fenetre_de_nuit(monkeypatch):
     """
     Le bug était l'ABSENCE du paramètre : le pipeline retombait sur 120 s sans
     que rien ne le signale. Ce test échoue si quelqu'un le retire à nouveau.
     """
+    import sys
+    import types
+
     from agents import dreamer_agent
+
+    faux_gw = types.ModuleType("core.llm_gateway")
+    faux_gw.load_config = lambda: {}
+    monkeypatch.setitem(sys.modules, "core.llm_gateway", faux_gw)
 
     tache = {"id": 77, "title": "Tâche pilote", "description": "faire un truc", "retries": 0}
     bg = MagicMock()
@@ -115,12 +124,19 @@ async def test_le_pipeline_recoit_la_fenetre_de_nuit():
 # ── Une branche impossible à créer est un échec qui se compte ────────────────
 
 @pytest.mark.asyncio
-async def test_echec_de_branche_incremente_les_tentatives():
+async def test_echec_de_branche_incremente_les_tentatives(monkeypatch):
     """
     Sans incrément, la tâche sort de 'pending' pour toujours : ni reprise, ni
     abandon. C'est l'état dans lequel deux tâches du Deck étaient figées.
     """
+    import sys
+    import types
+
     from agents import dreamer_agent
+
+    faux_gw = types.ModuleType("core.llm_gateway")
+    faux_gw.load_config = lambda: {}
+    monkeypatch.setitem(sys.modules, "core.llm_gateway", faux_gw)
 
     tache = {"id": 3, "title": "T", "description": "d", "retries": 0}
     bg = MagicMock()
@@ -129,8 +145,8 @@ async def test_echec_de_branche_incremente_les_tentatives():
     maj = AsyncMock()
 
     with patch.object(dreamer_agent, "_dreamcoder_repo_root", return_value="/travail"), \
+         patch.object(dreamer_agent, "assainir_slot", return_value=True), \
          patch("core.backlog_db.update_task_status", new=maj), \
-         patch("core.llm_gateway.load_config", return_value={}), \
          patch("tools.git_safety.git_prepare_agent_branch",
                return_value="Erreur : dépôt de travail = worktree Git lié."):
         res = await dreamer_agent._process_one_dreamcoder_task(
@@ -138,12 +154,20 @@ async def test_echec_de_branche_incremente_les_tentatives():
 
     assert res["status"] == "failed"
     assert maj.await_args.kwargs["retries"] == 1
+    assert maj.await_args.kwargs["scheduled_at"] > time.time()
 
 
 @pytest.mark.asyncio
-async def test_troisieme_echec_de_branche_abandonne():
+async def test_troisieme_echec_de_branche_abandonne(monkeypatch):
     """Au 3ᵉ essai, la tâche est abandonnée — elle ne boucle pas chaque nuit."""
+    import sys
+    import types
+
     from agents import dreamer_agent
+
+    faux_gw = types.ModuleType("core.llm_gateway")
+    faux_gw.load_config = lambda: {}
+    monkeypatch.setitem(sys.modules, "core.llm_gateway", faux_gw)
 
     tache = {"id": 3, "title": "T", "description": "d", "retries": 2}
     bg = MagicMock()
@@ -152,8 +176,8 @@ async def test_troisieme_echec_de_branche_abandonne():
     maj = AsyncMock()
 
     with patch.object(dreamer_agent, "_dreamcoder_repo_root", return_value="/travail"), \
+         patch.object(dreamer_agent, "assainir_slot", return_value=True), \
          patch("core.backlog_db.update_task_status", new=maj), \
-         patch("core.llm_gateway.load_config", return_value={}), \
          patch("tools.git_safety.git_prepare_agent_branch",
                return_value="Erreur : dépôt de travail = worktree Git lié."):
         res = await dreamer_agent._process_one_dreamcoder_task(
@@ -161,3 +185,54 @@ async def test_troisieme_echec_de_branche_abandonne():
 
     assert res["status"] == "abandoned"
     assert maj.await_args.args[1] == "abandoned"
+
+
+# ── [#T393] Le coût d'une tâche est celui de SON exécution ───────────────────
+
+def test_le_cout_ne_cumule_pas_les_rejeux(tmp_path):
+    """
+    `session_id` vaut `task_<id>` et ne change pas d'un rejeu à l'autre. Sommer
+    sans borne de temps ramassait tous les passages historiques de la tâche :
+    mesuré le 18/08, 0,707 $ annoncés contre 0,0888 $ réellement dépensés sur
+    le cycle — un facteur 8, et c'est ce chiffre qui servait aux arbitrages de
+    budget.
+    """
+    import sqlite3
+    import time
+
+    base = tmp_path / "runtime.db"
+    con = sqlite3.connect(str(base))
+    con.execute("CREATE TABLE token_usage (session_id TEXT, cost_usd REAL, timestamp REAL)")
+    maintenant = time.time()
+    # Trois passages anciens de la MÊME tâche, puis celui du cycle courant.
+    for age, cout in ((3600, 0.50), (1800, 0.30), (900, 0.20)):
+        con.execute("INSERT INTO token_usage VALUES (?,?,?)",
+                    ("task_20", cout, maintenant - age))
+    con.execute("INSERT INTO token_usage VALUES (?,?,?)",
+                ("task_20", 0.02, maintenant - 10))
+    con.commit()
+
+    debut_tache = maintenant - 60
+
+    sans_borne = con.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0.0) FROM token_usage WHERE session_id = ?",
+        ("task_20",)).fetchone()[0]
+    avec_borne = con.execute(
+        "SELECT COALESCE(SUM(cost_usd), 0.0) FROM token_usage "
+        "WHERE session_id = ? AND timestamp >= ?",
+        ("task_20", debut_tache)).fetchone()[0]
+    con.close()
+
+    assert round(sans_borne, 4) == 1.02      # l'ancien calcul, gonflé par l'historique
+    assert round(avec_borne, 4) == 0.02      # le coût réel de cette exécution
+
+
+def test_la_requete_du_code_porte_bien_la_borne():
+    """Anti-régression : la borne temporelle ne doit pas disparaître du code."""
+    from pathlib import Path
+
+    import agents.dreamer_agent as da
+
+    source = Path(da.__file__).read_text(encoding="utf-8")
+    assert "WHERE session_id = ? AND timestamp >= ?" in source
+    assert "debut_tache = time.time()" in source

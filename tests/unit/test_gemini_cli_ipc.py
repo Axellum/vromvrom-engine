@@ -1,60 +1,36 @@
 """
-tests/unit/test_gemini_cli_ipc.py — IPC fichier avec la CLI Antigravity.
+tests/unit/test_gemini_cli_ipc.py — Gemini via `agy` (abo Google), pas l'IDE.
 
-`GeminiCLIProvider` ne parle pas à la CLI par stdout mais par un fichier
-d'échange : le prompt dicte un nom de fichier, la CLI y écrit sa réponse, le
-provider le lit puis le supprime. Ce nom était FIXE et relatif au CWD
-(`antigravity_exchange_temp.txt`), alors que les providers tournent en parallèle
-(`generate_async` → `asyncio.to_thread`) : deux appels concurrents se
-supprimaient et se relisaient mutuellement (réponses croisées), et un appel parti
-en timeout laissait sa réponse être lue par l'appel suivant.
-
-Ces tests verrouillent le nom unique par appel et le nettoyage des fichiers
-temporaires. La CLI est simulée : le faux `run_cli_command` relit le nom de
-fichier DANS le prompt qu'on lui passe — exactement comme le ferait la vraie CLI
-— ce qui vérifie au passage que le contrat d'intégration est inchangé.
+L'ancien IPC (fichier d'échange + `antigravity-ide.cmd chat -m chat`) n'a
+jamais produit de stdout : 88 échecs, slug éteint. Le provider parle
+maintenant à `agy -p` (CLI Antigravity headless, session Google).
 """
 
-import os
-import re
-import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from core.llm.providers import gemini as gemini_module
-from core.llm.providers.gemini import _LEGACY_EXCHANGE_FILE, GeminiCLIProvider
+from core.llm.providers.gemini import GeminiCLIProvider
 
 
 class _ResultatCLI:
-    """Sosie de subprocess.CompletedProcess."""
-
     def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0):
         self.stdout = stdout
         self.stderr = stderr
         self.returncode = returncode
 
 
-def _nom_fichier_demande(cmd: list) -> str:
-    """Extrait le nom du fichier d'échange dicté par le prompt (comme la CLI)."""
-    dernier = cmd[-1]
-    if dernier.startswith("@"):  # prompt long : passé par fichier
-        with open(dernier[1:], encoding="utf-8") as f:
-            dernier = f.read()
-    correspondance = re.search(r"fichier texte nommé '([^']+)'", dernier)
-    assert correspondance, "le prompt ne dicte aucun nom de fichier d'échange"
-    return correspondance.group(1)
-
-
 @pytest.fixture(autouse=True)
-def _espace_de_travail_isole(tmp_path, monkeypatch):
-    """Le fichier d'échange est relatif au CWD : on isole chaque test."""
-    monkeypatch.chdir(tmp_path)
+def _agy_present(tmp_path, monkeypatch):
+    binaire = tmp_path / "agy.exe"
+    binaire.write_text("", encoding="utf-8")
+    monkeypatch.setattr(gemini_module, "chemin_agy", lambda: str(binaire))
     monkeypatch.setattr(
         "core.token_tracker.record_usage",
         lambda *a, **kw: None,
     )
-    return tmp_path
+    return str(binaire)
 
 
 @pytest.fixture
@@ -62,132 +38,84 @@ def provider():
     return GeminiCLIProvider()
 
 
-def test_nom_de_fichier_unique_par_appel(provider, monkeypatch):
-    noms_vus = []
+def test_agy_en_print_sandbox_sans_cle_api(provider, monkeypatch, _agy_present):
+    vu = {}
 
     def _faux_cli(cmd, **kwargs):
-        nom = _nom_fichier_demande(cmd)
-        noms_vus.append(nom)
-        with open(nom, "w", encoding="utf-8") as f:
-            f.write("réponse")
-        return _ResultatCLI()
+        vu["cmd"] = cmd
+        vu["env"] = kwargs.get("env") or {}
+        return _ResultatCLI(stdout="ok abo")
 
     monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli)
+    monkeypatch.setenv("GEMINI_API_KEY", "ne-pas-utiliser")
+    assert provider.generate("sys", "user") == "ok abo"
+    assert vu["cmd"][0] == _agy_present
+    assert vu["cmd"][1] == "--sandbox"
+    assert "--model" in vu["cmd"]
+    assert vu["cmd"][vu["cmd"].index("--model") + 1] == "gemini-3.7-flash-medium"
+    assert "-p" in vu["cmd"]
+    assert "chat" not in vu["cmd"]
+    assert vu["env"].get("GEMINI_API_KEY") is None
 
-    provider.generate("sys", "premier")
-    provider.generate("sys", "second")
 
-    assert len(set(noms_vus)) == 2, f"nom d'échange réutilisé entre deux appels : {noms_vus}"
-    assert all(n != _LEGACY_EXCHANGE_FILE for n in noms_vus)
-
-
-def test_appels_concurrents_ne_croisent_pas_les_reponses(provider, monkeypatch):
-    """Régression centrale : les deux appels écrivent AVANT que l'un ne lise.
-
-    Avec un nom de fichier partagé, la seconde écriture écrase la première et les
-    deux appels retournent la même réponse. Le barrier rend l'échec déterministe.
-    """
-    barriere = threading.Barrier(2, timeout=10)
-
+def test_appels_concurrents_lisent_leur_stdout(provider, monkeypatch):
     def _faux_cli(cmd, **kwargs):
-        nom = _nom_fichier_demande(cmd)
-        # Le marqueur identifie l'appel d'origine.
-        marqueur = re.search(r"MARQUEUR-(\w+)", cmd[-1]).group(1)
-        with open(nom, "w", encoding="utf-8") as f:
-            f.write(f"réponse pour {marqueur}")
-        barriere.wait()  # personne ne lit tant que les deux n'ont pas écrit
-        return _ResultatCLI()
+        prompt = cmd[-1]
+        if "alpha" in prompt:
+            return _ResultatCLI(stdout="réponse pour alpha")
+        return _ResultatCLI(stdout="réponse pour beta")
 
     monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli)
-
     with ThreadPoolExecutor(max_workers=2) as executor:
         futurs = [
-            executor.submit(provider.generate, "sys", f"MARQUEUR-{marqueur}")
-            for marqueur in ("alpha", "beta")
+            executor.submit(provider.generate, "sys", f"MARQUEUR-{m}")
+            for m in ("alpha", "beta")
         ]
         resultats = [f.result(timeout=15) for f in futurs]
-
     assert sorted(resultats) == ["réponse pour alpha", "réponse pour beta"]
 
 
-def test_fichier_dechange_supprime_apres_lecture(provider, monkeypatch, _espace_de_travail_isole):
-    def _faux_cli(cmd, **kwargs):
-        with open(_nom_fichier_demande(cmd), "w", encoding="utf-8") as f:
-            f.write("réponse")
-        return _ResultatCLI()
-
-    monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli)
-    assert provider.generate("sys", "user") == "réponse"
-
-    restants = list(_espace_de_travail_isole.glob("antigravity_exchange_temp*"))
-    assert restants == [], f"fichiers d'échange laissés derrière : {restants}"
-
-
-def test_fichier_dechange_supprime_meme_si_la_cli_echoue(provider, monkeypatch, _espace_de_travail_isole):
-    """Un timeout laissait le fichier en place ; il empoisonnait l'appel suivant."""
-
-    def _faux_cli_ko(cmd, **kwargs):
-        with open(_nom_fichier_demande(cmd), "w", encoding="utf-8") as f:
-            f.write("réponse partielle")
-        raise TimeoutError("CLI expirée")
-
-    monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli_ko)
-    with pytest.raises(TimeoutError):
-        provider.generate("sys", "user")
-
-    restants = list(_espace_de_travail_isole.glob("antigravity_exchange_temp*"))
-    assert restants == [], f"fichiers d'échange laissés derrière : {restants}"
-
-
-def test_fichier_de_prompt_long_supprime(provider, monkeypatch):
-    """Le fichier temp du prompt >8000 chars était créé avec delete=False et fuyait."""
-    chemins_prompt = []
+def test_prompt_long_passe_par_un_fichier(provider, monkeypatch):
+    vu = {}
 
     def _faux_cli(cmd, **kwargs):
-        assert cmd[-1].startswith("@"), "un prompt long doit passer par un fichier"
-        chemins_prompt.append(cmd[-1][1:])
-        with open(_nom_fichier_demande(cmd), "w", encoding="utf-8") as f:
-            f.write("réponse")
-        return _ResultatCLI()
+        vu["cmd"] = cmd
+        return _ResultatCLI(stdout="ok")
 
     monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli)
-    provider.generate("sys", "x" * 9000)
-
-    assert chemins_prompt, "le chemin du prompt long n'a pas été capturé"
-    assert not os.path.exists(chemins_prompt[0])
+    assert provider.generate("sys", "x" * 21000) == "ok"
+    assert "--add-dir" in vu["cmd"]
 
 
-def test_repli_sur_le_nom_historique(provider, monkeypatch):
-    """Si la CLI ignore le nom demandé, on lit quand même sa réponse."""
-
-    def _faux_cli_legacy(cmd, **kwargs):
-        with open(_LEGACY_EXCHANGE_FILE, "w", encoding="utf-8") as f:
-            f.write("réponse via nom historique")
-        return _ResultatCLI()
-
-    monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli_legacy)
-    assert provider.generate("sys", "user") == "réponse via nom historique"
-    assert not os.path.exists(_LEGACY_EXCHANGE_FILE)
-
-
-def test_residu_historique_anterieur_non_lu_comme_reponse(provider, monkeypatch):
-    """Un fichier historique laissé par un appel précédent ne doit pas être servi."""
-    with open(_LEGACY_EXCHANGE_FILE, "w", encoding="utf-8") as f:
-        f.write("vieille réponse d'un autre appel")
-
-    def _faux_cli_stdout(cmd, **kwargs):
-        return _ResultatCLI(stdout="réponse fraîche par stdout")
-
-    monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli_stdout)
-    assert provider.generate("sys", "user") == "réponse fraîche par stdout"
-
-
-def test_repli_stdout_puis_erreur_si_rien(provider, monkeypatch):
-    """Comportement historique conservé : ni fichier ni stdout ⇒ RuntimeError."""
-
+def test_erreur_si_stdout_vide(provider, monkeypatch):
     def _faux_cli_muet(cmd, **kwargs):
         return _ResultatCLI(stdout="", stderr="boom", returncode=1)
 
     monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli_muet)
-    with pytest.raises(RuntimeError, match="Antigravity CLI error"):
+    with pytest.raises(RuntimeError, match="agy"):
         provider.generate("sys", "user")
+
+
+def test_agy_high_passe_le_modele_high(monkeypatch, _agy_present):
+    vu = {}
+
+    def _faux_cli(cmd, **kwargs):
+        vu["cmd"] = cmd
+        return _ResultatCLI(stdout="ok")
+
+    monkeypatch.setattr(gemini_module, "run_cli_command", _faux_cli)
+    GeminiCLIProvider(model_name="gemini-3.5-flash-high-cli").generate("s", "u")
+    assert vu["cmd"][vu["cmd"].index("--model") + 1] == "gemini-3.7-flash-high"
+
+
+def test_modele_agy_mappe_le_slug_medium():
+    from core.llm.providers.gemini import modele_agy
+    assert modele_agy("gemini-3.5-flash-medium-cli") == "gemini-3.7-flash-medium"
+    assert modele_agy("gemini-3.7-flash-medium-cli") == "gemini-3.7-flash-medium"
+    assert modele_agy("inconnu") == "gemini-3.7-flash-medium"
+
+
+def test_chemin_agy_absente_leve(monkeypatch):
+    monkeypatch.setattr(gemini_module, "chemin_agy", lambda: None)
+    with pytest.raises(RuntimeError, match="introuvable"):
+        GeminiCLIProvider().generate("sys", "user")

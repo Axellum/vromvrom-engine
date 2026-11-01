@@ -487,6 +487,42 @@ def cost_success_par_modele() -> tuple[dict[str, float], int]:
         return {}, 0
 
 
+def get_domain_stats(domain: str) -> list[dict]:
+    """
+    Historique complet d'un domaine : tous les modèles qui y ont joué, avec
+    Elo, matchs, victoires, défaites et taux de réussite. Sans limite de
+    classement (contrairement à `get_domain_leaderboard`) : consommé par le
+    routage DreamCoder, qui a besoin des ÉCHECS autant que des succès pour
+    écarter un modèle qui rate systématiquement un type de tâche.
+    """
+    domain = domain.strip().lower()
+    if not domain:
+        return []
+    try:
+        conn = _get_connection()
+        rows = conn.execute(
+            "SELECT model_name, elo_score, total_matches, wins, losses "
+            "FROM model_elo_scores WHERE domain = ?",
+            (domain,),
+        ).fetchall()
+        conn.close()
+
+        return [
+            {
+                "model": row[0],
+                "elo": round(row[1], 1),
+                "matches": row[2],
+                "wins": row[3],
+                "losses": row[4],
+                "win_rate": row[3] / max(1, row[2]) * 100.0,
+            }
+            for row in rows
+        ]
+    except Exception as e:
+        logger.warning(f"[ELO] Erreur de stats pour le domaine '{domain}' : {e}")
+        return []
+
+
 def get_domain_leaderboard(domain: str, top_n: int = 10) -> list[dict]:
     """
     Retourne le classement des modèles pour un domaine spécifique.

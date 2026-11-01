@@ -8,7 +8,7 @@ const ENGINE_TARGET = process.env.MOTEUR_API_URL || "http://localhost:8000";
 // Proxy des routes protégées du moteur vers gui_server pendant le dev (HMR Vite sur 5173).
 // En prod, l'IHM est buildée puis servie par gui_server lui-même → même origine, pas de proxy.
 const proxy = Object.fromEntries(
-  ["/api", "/v1", "/ws", "/version"].map((p) => [
+  ["/api", "/v1", "/ws", "/version", "/healthz", "/openapi.json"].map((p) => [
     p,
     { target: ENGINE_TARGET, changeOrigin: true, ws: p === "/ws" },
   ]),

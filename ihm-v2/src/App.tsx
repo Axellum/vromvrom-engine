@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import { getApiKey, registerAuthErrorHandler } from "./api/client";
 import { useEngineStream } from "./hooks/useEngineStream";
 import AppLayout from "./components/layout/AppLayout";
 import { ApiKeyGate } from "./components/common/ApiKeyGate";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
+import { LoadingState } from "./components/ui/primitives";
 
 // Pilotage
 import { Dashboard } from "./views/Dashboard";
@@ -22,6 +23,7 @@ import Benchmarks from "./views/Benchmarks";
 
 // Autonomie
 import Autonomy from "./views/Autonomy";
+import Projects from "./views/Projects";
 
 // Optimisation
 import { Operations } from "./views/Operations";
@@ -34,6 +36,13 @@ import Setup from "./views/Setup";
 import Docs from "./views/Docs";
 
 import { useUiStore } from "./state/uiStore";
+
+// Découvrir : les vues « comprendre » sont chargées à la demande pour ne pas alourdir le premier affichage.
+const Accueil = lazy(() => import("./views/Accueil"));
+const Comprendre = lazy(() => import("./views/Comprendre"));
+const DemoVocale = lazy(() => import("./views/DemoVocale"));
+const OutilsMcp = lazy(() => import("./views/OutilsMcp"));
+const Sauvegardes = lazy(() => import("./views/Sauvegardes"));
 
 export default function App() {
   const [needsKey, setNeedsKey] = useState(!getApiKey());
@@ -49,7 +58,15 @@ export default function App() {
 
   const renderView = () => {
     switch (view) {
-      // Pilotage
+      // Découvrir
+      case "accueil":        return <Accueil key={authNonce} />;
+      case "comprendre":     return <Comprendre key={authNonce} />;
+      case "demo":           return <DemoVocale key={authNonce} />;
+      // Régler / Surveiller
+      case "mcp":            return <OutilsMcp key={authNonce} />;
+      case "sauvegardes":    return <Sauvegardes key={authNonce} />;
+      // Utiliser
+      case "dashboard":      return <Dashboard key={authNonce} />;
       case "chat":           return <Chat key={authNonce} />;
       case "taskrunner":     return <TaskRunner key={authNonce} />;
       // Domotique & vocal
@@ -62,6 +79,7 @@ export default function App() {
       case "benchmarks":     return <Benchmarks key={authNonce} />;
       // Autonomie
       case "autonomy":       return <Autonomy key={authNonce} />;
+      case "projects":       return <Projects key={authNonce} />;
       // Optimisation
       case "operations":     return <Operations key={authNonce} />;
       case "observability":  return <Observability key={authNonce} />;
@@ -70,7 +88,7 @@ export default function App() {
       // Comprendre
       case "setup":          return <Setup key={authNonce} />;
       case "docs":           return <Docs key={authNonce} />;
-      default:               return <Dashboard key={authNonce} />;
+      default:               return <Accueil key={authNonce} />;
     }
   };
 
@@ -84,8 +102,10 @@ export default function App() {
         }}
       />
       <AppLayout>
-        <div className="p-6">
-          <ErrorBoundary key={view}>{renderView()}</ErrorBoundary>
+        <div className="p-4 sm:p-6">
+          <ErrorBoundary key={view}>
+            <Suspense fallback={<LoadingState label="Chargement de la page…" />}>{renderView()}</Suspense>
+          </ErrorBoundary>
         </div>
       </AppLayout>
     </>

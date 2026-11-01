@@ -56,11 +56,12 @@ def etat_sous_tension(monkeypatch):
 @pytest.fixture
 def notifications(monkeypatch):
     """Compte les notifications HA (aucun réseau)."""
-    compteur = {"appels": 0, "messages": []}
+    compteur = {"appels": 0, "messages": [], "ids": []}
 
-    async def _fake_send(title, message):
+    async def _fake_send(title, message, notification_id=None):
         compteur["appels"] += 1
         compteur["messages"].append(message)
+        compteur["ids"].append(notification_id)
         return True
 
     monkeypatch.setattr(

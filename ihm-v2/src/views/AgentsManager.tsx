@@ -4,6 +4,8 @@ import { fetchAgents, toggleAgent, updateAgent, deleteAgent, createAgent } from 
 import type { AgentConfig } from "../api/agents";
 import { fetchModels } from "../api/models";
 import { ToolPermissionSelector } from "../components/openfox_prep/ToolPermissionSelector";
+import { ExplicationPage } from "../components/guide/GuideHeader";
+import { Terme } from "../components/guide/Terme";
 
 const TIER_OPTIONS = ["leger", "moyen", "fort", "automatique"];
 
@@ -386,6 +388,28 @@ export function AgentsManager() {
           + Créer un agent
         </button>
       </div>
+
+      <ExplicationPage
+        cle="agents"
+        className=""
+        objectif="Choisir quels agents le moteur peut appeler, avec quel modèle et quels outils."
+        comprendre={
+          <>
+            <p>
+              Un <Terme id="agent">agent</Terme> est un rôle (planificateur, exécutant, relecteur…) avec ses consignes, son
+              modèle et la liste des outils qu’il a le droit d’utiliser. Le bouton d’activation décide s’il peut être appelé.
+            </p>
+            <p>
+              Les permissions d’outils bornent ce que l’agent peut faire : retirer un outil le prive de cette capacité.
+              Le choix du modèle d’un agent est indépendant du routage des demandes vocales.
+            </p>
+          </>
+        }
+        sources={[
+          { route: "GET /api/agents", role: "liste et réglages des agents" },
+          { route: "GET /api/models/registry", role: "modèles proposés au choix" },
+        ]}
+      />
 
       <section>
         <h2 className="mb-4 text-sm font-semibold text-slate-300 uppercase tracking-wider">

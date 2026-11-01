@@ -193,6 +193,16 @@ def seed_providers():
             "notes": "Ollama local sur GPU locale. Inférence ultra-rapide.",
         },
         {
+            "id": "ajean_pc",
+            "name": "AJEAN (llama.cpp PC via LAN)",
+            "type": "local",
+            "api_endpoint": "http://192.168.1.10:8080/v1/chat/completions",
+            "auth_method": "local",
+            "confidentiality": "total",
+            "cascade_priority": 1.1,
+            "notes": "AJEAN = llama.cpp (llama-server, Qwen2.5-14B-Instruct-1M). Branche en tete de cascade le 20/08/2026 (config.json routing_policy).",
+        },
+        {
             "id": "anthropic_native",
             "name": "Anthropic API",
             "type": "pay_as_you_go",
@@ -244,7 +254,8 @@ def seed_models():
         # ═══ LOCAL ═══
         {"id": "qwen2.5-coder:7b", "provider_id": "ollama_local", "display_name": "Qwen 2.5 Coder 7B (Ollama)", "tier": "local", "context_input": 131072, "context_output": 8192, "throughput_tps": 75.0, "supports_tools": 1, "supports_json_mode": 1, "speciality": "code", "recommended_use": "Génération de code rapide sur GPU RTX"},
         {"id": "deepseek-r1:8b", "provider_id": "ollama_local", "display_name": "DeepSeek R1 8B (Ollama)", "tier": "local", "context_input": 131072, "context_output": 8192, "throughput_tps": 50.0, "supports_thinking": 1, "speciality": "raisonnement", "recommended_use": "Raisonnement logique avec thinking local"},
-        {"id": "qwen2.5-14b-instruct-1m", "provider_id": "local", "display_name": "Qwen 2.5 14B Instruct 1M", "tier": "local", "context_input": 1000000, "context_output": 32768, "throughput_tps": 35.0, "supports_tools": 1, "supports_json_mode": 1, "speciality": "agents_locaux", "recommended_use": "Tier Léger — agents locaux, RAG confidentiel"},
+        {"id": "qwen2.5-14b-instruct-1m", "provider_id": "ajean_pc", "display_name": "Qwen 2.5 14B Instruct 1M", "tier": "local", "context_input": 1000000, "context_output": 32768, "throughput_tps": 35.0, "supports_tools": 1, "supports_json_mode": 1, "speciality": "agents_locaux", "recommended_use": "Tier Léger — agents locaux, RAG confidentiel (AJEAN llama.cpp)"},
+        {"id": "ajean_pc", "provider_id": "ajean_pc", "display_name": "AJEAN llama.cpp (Qwen 2.5 14B 1M)", "tier": "local", "routing_tier": "leger", "context_input": 1000000, "context_output": 32768, "cost_input_per_m": 0.0, "cost_output_per_m": 0.0, "supports_tools": 1, "supports_json_mode": 1, "supports_streaming": 1, "speciality": "local_principal", "recommended_use": "Clé de routage AJEAN — llama.cpp 14B local (coût 0)"},
         {"id": "qwen3-coder-next", "provider_id": "local", "display_name": "Qwen 3 Coder Next", "tier": "local", "routing_tier": "leger", "context_input": 131072, "context_output": 32768, "throughput_tps": 28.0, "supports_tools": 1, "speciality": "code", "recommended_use": "Génération de code local"},
         {"id": "qwen2.5-coder-32b", "provider_id": "local", "display_name": "Qwen 2.5 Coder 32B", "tier": "local", "context_input": 131072, "context_output": 32768, "throughput_tps": 18.0, "supports_tools": 1, "speciality": "code", "recommended_use": "Refactoring lourd confidentiel"},
         {"id": "gemma-4-31b", "provider_id": "local", "display_name": "Google Gemma 4 31B", "tier": "local", "routing_tier": "leger", "context_input": 131072, "context_output": 32768, "throughput_tps": 15.0, "speciality": "polyvalent", "recommended_use": "Modèle Google local dense"},
@@ -426,8 +437,8 @@ def seed_api_keys():
         {"id": "MISTRAL_API_KEY", "provider_id": "mistral", "env_var": "MISTRAL_API_KEY", "project_name": "tab5-engine Mistra", "key_type": "free", "quota_rpm": 30, "quota_rpd": None, "quota_tpm": None, "last_tested": "2026-05-28"},
         {"id": "COHERE_API_KEY", "provider_id": "cohere", "env_var": "COHERE_API_KEY", "project_name": "Cohere Trial", "key_type": "free", "quota_rpm": 10, "quota_rpd": None, "quota_tpm": None, "last_tested": "2026-05-28"},
 
-        {"id": "CEREBRAS_API_KEY", "provider_id": "cerebras", "env_var": "CEREBRAS_API_KEY", "project_name": "Cerebras Free Tier", "key_type": "free", "quota_rpm": 30, "quota_rpd": 14400, "quota_tpm": None, "last_tested": "2026-05-28"},
-        {"id": "CEREBRAS_PAYANT_API_KEY", "provider_id": "cerebras", "env_var": "CEREBRAS_PAYANT_API_KEY", "project_name": "Cerebras Paid Tier", "key_type": "paid", "quota_rpm": 60, "quota_rpd": None, "quota_tpm": 1000000, "last_tested": "2026-07-24"},
+        {"id": "CEREBRAS_API_KEY", "provider_id": "cerebras", "env_var": "CEREBRAS_API_KEY", "project_name": "Cerebras PayGo Team", "key_type": "paid", "quota_rpm": 60, "quota_rpd": None, "quota_tpm": 1000000, "last_tested": "2026-08-23"},
+        {"id": "CEREBRAS_PAYANT_API_KEY", "provider_id": "cerebras", "env_var": "CEREBRAS_PAYANT_API_KEY", "project_name": "Cerebras PayGo Team (alias)", "key_type": "paid", "quota_rpm": 60, "quota_rpd": None, "quota_tpm": 1000000, "last_tested": "2026-08-23"},
         {"id": "OPENROUTER_API_KEY", "provider_id": "openrouter", "env_var": "OPENROUTER_API_KEY", "project_name": "OpenRouter Free", "key_type": "free", "quota_rpm": 20, "quota_rpd": None, "quota_tpm": None, "last_tested": "2026-05-28"},
         {"id": "XAI_API_KEY", "provider_id": "xai", "env_var": "XAI_API_KEY", "project_name": "tab5-engine", "key_type": "paid", "quota_rpm": 60, "quota_rpd": None, "quota_tpm": 1000000, "last_tested": "2026-06-01"},
         {"id": "DEEPINFRA_API_KEY", "provider_id": "deepinfra", "env_var": "DEEPINFRA_API_KEY", "project_name": "DeepInfra Paid", "key_type": "paid", "quota_rpm": 100, "quota_rpd": None, "quota_tpm": None, "last_tested": "2026-06-04"},
@@ -702,7 +713,9 @@ def seed_access_channels():
 
 
 
-    # Cerebras API → 3 modèles (Canal Payant + Canal Gratuit en secours)
+    # Cerebras API → 3 modèles (D-15 : plus de palier gratuit.
+    # CEREBRAS_PAYANT_API_KEY = canal par défaut ; CEREBRAS_API_KEY = même
+    # clé Team PayGo, conservée comme alias de compatibilité.)
     cerebras_models = [
         ("gpt-oss-120b", "gpt-oss-120b", 150, 450.0),
         ("gemma-4-31b-cerebras", "gemma-4-31b", 120, 500.0),
@@ -930,8 +943,8 @@ def seed_quota_realtime():
         # Cohere API (Trial)
         {"api_key_id": "COHERE_API_KEY", "limit_rpm": 10, "limit_rpd": None, "limit_tpm": None, "external_status": "ok"},
 
-        # Cerebras API (Free + Paid)
-        {"api_key_id": "CEREBRAS_API_KEY", "limit_rpm": 30, "limit_rpd": 14400, "limit_tpm": None, "external_status": "ok"},
+        # Cerebras API (D-15 : les deux = PayGo Team)
+        {"api_key_id": "CEREBRAS_API_KEY", "limit_rpm": 60, "limit_rpd": None, "limit_tpm": 1000000, "external_status": "ok"},
         {"api_key_id": "CEREBRAS_PAYANT_API_KEY", "limit_rpm": 60, "limit_rpd": None, "limit_tpm": 1000000, "external_status": "ok"},
         # Alibaba Coding Plan Lite — 1200 req/5h (~4 RPM), ~600 RPD (18000/mois)
         {"api_key_id": "DASHSCOPE_API_KEY", "limit_rpm": 4, "limit_rpd": 600, "limit_tpm": None, "external_status": "ok"},

@@ -21,6 +21,7 @@ import { getByPath, setByPath } from "../lib/dotpath";
 import {
   PageHeader, Card, Explain, Button, Pill, LoadingState, ErrorState, EmptyState,
 } from "../components/ui/primitives";
+import { ExplicationPage } from "../components/guide/GuideHeader";
 
 export function Configuration() {
   const queryClient = useQueryClient();
@@ -120,6 +121,24 @@ export function Configuration() {
             Chaque champ indique ce qu'il fait et l'effet concret de sa modification.
           </>
         }
+      />
+
+      <ExplicationPage
+        cle="configuration"
+        className="mb-6"
+        objectif="Modifier les réglages du moteur sans ouvrir de fichier : vos changements restent un brouillon tant que vous ne les enregistrez pas."
+        comprendre={
+          <p>
+            Les réglages sont enregistrés dans <code className="font-mono text-xs text-sky-300">config.json</code> et rechargés à
+            chaud par le moteur. Une section regroupe les champs d’un même sujet (modèles des agents, niveaux de routage,
+            budgets et quotas…) : utilisez la recherche ou les groupes pour y aller directement. Les clés d’accès des
+            fournisseurs ne se modifient pas ici : elles s’éditent côté serveur, et cette page n’en montre que la présence.
+          </p>
+        }
+        sources={[
+          { route: "GET /api/config", role: "réglages actuels" },
+          { route: "GET /api/keys", role: "présence des secrets (lecture seule)" },
+        ]}
       />
 
       <div className="space-y-6">

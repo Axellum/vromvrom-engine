@@ -175,11 +175,11 @@ def get_antigravity_status() -> dict[str, Any]:
                 decoded_text = raw_bytes.decode('ascii', errors='ignore')
                 json_match = re.search(r"\{[^{}]*\"state\"\s*:\s*\"[^\"]+\"[^{}]*\}", decoded_text)
                 if json_match:
-                     json_str = json_match.group(0)
-                     oauth_data = json.loads(json_str)
-                     result["connected"] = oauth_data.get("state") == "signedIn"
+                    json_str = json_match.group(0)
+                    oauth_data = json.loads(json_str)
+                    result["connected"] = oauth_data.get("state") == "signedIn"
                 else:
-                     result["connected"] = "signedIn" in decoded_text
+                    result["connected"] = "signedIn" in decoded_text
             except Exception:
                 pass
 

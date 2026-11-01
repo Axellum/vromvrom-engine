@@ -448,11 +448,14 @@ async def ping_model(model_id: str):
             timeout=20.0,
         )
         return {"ok": True, "latency_ms": round((_time.perf_counter() - start) * 1000)}
-    except Exception as e:
+    except Exception as exc:
+        # Même fuite que /api/models-health : le message d'une HTTPError porte
+        # l'URL complète (`?key=…`). Masquer AVANT de tronquer.
+        from core.log_redaction import masquer_secrets
         return {
             "ok": False,
             "latency_ms": round((_time.perf_counter() - start) * 1000),
-            "error": str(e)[:200],
+            "error": masquer_secrets(str(exc))[:200],
         }
 
 
@@ -473,6 +476,7 @@ def get_models_health():
     (cf. core.models_db.audit_zone_grise). Forme additive : les clés existantes
     (sonde, modeles, muets, eteints_par_la_sonde) restent inchangées.
     """
+    from core.log_redaction import masquer_secrets
     from core.model_health_probe import intervalle_sonde, peut_desactiver, sonde_activee
     from core.runtime_db import get_connection
 
@@ -487,7 +491,10 @@ def get_models_health():
         {
             "model_id": ligne[0], "dernier_test": ligne[1], "dernier_succes": ligne[2],
             "echecs_consecutifs": ligne[3], "succes_consecutifs": ligne[4],
-            "desactive_par_sonde": bool(ligne[5]), "derniere_erreur": ligne[6],
+            "desactive_par_sonde": bool(ligne[5]),
+            # Expurgé à la lecture : les lignes écrites avant le correctif
+            # peuvent encore contenir une clé d'API dans le message d'erreur.
+            "derniere_erreur": masquer_secrets(ligne[6]),
             "latence_ms": ligne[7],
         }
         for ligne in lignes

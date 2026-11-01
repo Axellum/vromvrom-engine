@@ -8,11 +8,11 @@
 
 *Vroom Vroom — ça tourne à plein régime 🏁*
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.136%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.162%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-60%20fichiers%20pytest-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-280%2B%20fichiers%20pytest-brightgreen)](tests/)
 
 *Construit pour Home Assistant · Fonctionne avec n'importe quel projet*
 
@@ -20,6 +20,8 @@
 > Outil personnel partagé avec la communauté. Le backend (DAG, async, routage Elo) tourne tous les jours. **L'IHM React (`ihm-v2/`) est dans le dépôt** — un `npm run build` et `gui_server.py` la sert sur `/`. Attendez-vous à des aspérités.
 
 🇬🇧 **[English version → README.md](README.md)** &nbsp;·&nbsp; 🗺️ **[Quels LLMs utiliser ? → STRATEGIES.fr.md](STRATEGIES.fr.md)**
+
+📖 **[Guide d'utilisation — installer, comprendre, régler, exploiter → docs/guide](docs/guide/README.md)**
 
 </div>
 
@@ -54,13 +56,21 @@
 | 🌐 **Swarm distribué** | Dispatch de tâches vers des workers distants (Raspberry Pi, VM, etc.) |
 | 🔌 **Système de plugins** | Ajout d'agents custom via `plugins/<nom>/agent.py` + `plugin.json` |
 
+### 🆕 Nouveautés de cette version
+
+- **Une interface qui explique le moteur.** Navigation par intention (Découvrir · Utiliser · Régler · Surveiller · Avancé). L'*Accueil* dit en une phrase si tout va bien et pourquoi, avec des chiffres sourcés ; *Comprendre le moteur* montre le trajet d'une demande sur une carte cliquable et peut rejouer une vraie demande ; *Démo vocale & maison* détaille chaque maillon, du mot d'éveil à la réponse dite. Les pages principales ont un bloc « Comprendre cette page » repliable et citent la source de leurs chiffres ; une donnée inconnue s'affiche « — », jamais zéro.
+- **Sauvegarde des bases.** Copie à chaud et cohérente des bases SQLite et des fichiers de configuration, avec manifeste (sha256, contrôle d'intégrité) et rétention : `python -m core.sauvegarde`, `GET/POST /api/sauvegardes`, page *Sauvegardes*, minuterie systemd dans `deploy/`. Jamais le `.env`.
+- **Simulation vocale sans effet.** `POST /api/vocal/simulate` montre le chemin qu'une phrase prendrait (commande Home Assistant, question d'état, discussion) **sans rien exécuter**.
+- **Vue des outils MCP.** `GET /api/mcp/overview` et la page *Outils MCP* listent les outils offerts par le moteur et les serveurs qu'il utilise.
+- **Erreurs plus sûres.** Les clés d'API sont masquées dans les erreurs de santé des fournisseurs (`/api/models-health`), à l'écriture comme à la lecture.
+
 ---
 
 ## 🏗️ Architecture
 
 ```
 vromvrom-engine/
-├── gui_server.py          # Point d'entrée FastAPI (lifespan + 15 routeurs)
+├── gui_server.py          # Point d'entrée FastAPI (lifespan + 34 routeurs)
 ├── main.py                # CLI — lancement direct sans HTTP
 │
 ├── core/                  # Cœur du moteur
@@ -97,14 +107,14 @@ vromvrom-engine/
 │   ├── tool_registry.py   # Registre avec timeouts ciblés par outil
 │   └── sanitizer.py       # Masquage des secrets (6 patterns)
 │
-├── api/routes/            # 15 modules de routes FastAPI
+├── api/routes/            # 34 modules de routes FastAPI
 ├── services/              # Logique métier découplée du HTTP
 ├── plugins/               # Plugins custom (chargement dynamique)
 ├── workflows/             # Définitions de workflows JSON (graphes)
 ├── static/                # IHM HTML/JS (repli si ihm-v2 n'est pas buildée)
 ├── ihm-v2/                # IHM React/Vite/TS (Chat, HA, catalogue LLM, Prompt Studio…)
-├── tests/                 # 60 fichiers de tests pytest
-└── docs/                  # Documentation architecture
+├── tests/                 # plus de 280 fichiers de tests pytest
+└── docs/                  # Documentation architecture + guide d'utilisation (docs/guide/)
 ```
 
 ### Pipeline de routage hybride
@@ -141,7 +151,8 @@ Requête utilisateur
 ## ⚙️ Installation rapide
 
 ### Prérequis
-- Python 3.11+
+- Python 3.12+ (la version testée en CI)
+- Node.js 20.19+ ou 22.12+ pour construire l'interface React (facultatif)
 - Au moins **une clé API LLM** (Gemini gratuit fonctionne, voir `.env.example`)
 
 ### Étapes
@@ -204,7 +215,7 @@ Sans `ihm-v2/dist`, le moteur retombe sur l'IHM legacy `static/` (aussi sous `/v
 
 Dev avec HMR : `cd ihm-v2 && npm run dev` (Vite `:5173`, proxy `/api` vers `:8000`).
 
-L'IHM React inclut Chat (SSE + outils), Home Assistant / vocal, catalogue LLM, Prompt Studio, observabilité et configuration.
+L'IHM React inclut l'Accueil (état en une phrase), Comprendre le moteur, Démo vocale & maison, Chat (SSE + outils), Home Assistant, Modèles & routage, Outils MCP, Sauvegardes, Prompt Studio, observabilité et configuration. Visite guidée : [docs/guide](docs/guide/README.md).
 
 ### Via l'API REST
 
@@ -213,10 +224,14 @@ import httpx
 
 response = httpx.post(
     "http://localhost:8000/api/execute",
-    json={"message": "Analyse ce code Python et propose des améliorations"},
-    headers={"Authorization": "Bearer <MOTEUR_API_KEY>"}
+    json={
+        "user_prompt": "Analyse ce code Python et propose des améliorations",
+        "source": {"type": "web", "mode": "chat"},
+    },
+    headers={"Authorization": "Bearer <MOTEUR_API_KEY>"},
+    timeout=120,
 )
-print(response.json()["result"])
+print(response.json()["response"])
 ```
 
 ### Comme Proxy pour IDEs (Cursor, Cline, Continue)

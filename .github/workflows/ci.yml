@@ -64,8 +64,36 @@ jobs:
           pip install -r requirements.txt -r requirements-dev.txt
       - name: Seed des bases (modèles)
         run: |
+          cp config.example.json config.json
+          cp config.example.json config.json
+          cp config.example.json config.json
           cp ha_commands.json.example ha_commands.json
           cp pricing_strategy.json.example pricing_strategy.json
           python seed_models_db.py
       - name: pytest
         run: pytest --tb=short -q
+
+  # ihm-v2/dist n'est pas suivi par git : il est reconstruit sur la prod à chaque
+  # déploiement touchant ihm-v2/. Sans ce job, une régression TypeScript n'est
+  # découverte qu'au déploiement, sur le Deck, et part en rollback — c'est ce qui
+  # est arrivé le 2026-08-09. `npm run build` enchaîne `tsc -b` puis `vite build`,
+  # donc le typage est couvert ici.
+  frontend:
+    name: 🎨 Build ihm-v2
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ihm-v2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # vite 8, rolldown et @vitejs/plugin-react exigent
+          # `^20.19.0 || >=22.12.0` (cf. ihm-v2/package.json → engines).
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ihm-v2/package-lock.json
+      - name: Installer les dépendances
+        run: npm ci --no-audit --no-fund
+      - name: tsc -b && vite build
+        run: npm run build

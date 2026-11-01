@@ -163,3 +163,79 @@ class ProviderScorer:
             providers_list.sort(key=lambda x: self.score(x[0]))
 
         return providers_list
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Routage DreamCoder par historique de réussite (TODO de budget_guard.py :
+# « pas branché sur DreamCoder pour l'instant, chantier séparé »).
+#
+# Le choix n'est PAS basé sur des mots-clés de la tâche, mais sur le taux de
+# réussite historique par (type de tâche × provider), déjà en base via
+# l'Elo (`model_elo_scores`, nourri par les verdicts de fin de tâche).
+# Un modèle qui a échoué 3 fois sur un domaine sans aucun succès n'y reçoit
+# plus rien, quel que soit son prix.
+SEUIL_ECHECS_DOMAINE = 3
+
+
+def classer_providers_pour_tache(providers: list, domaine: str) -> tuple[list, dict]:
+    """
+    Classe des providers d'exécution DreamCoder pour une tâche d'un domaine
+    donné, selon l'historique de réussite de leur modèle.
+
+    Ordre produit :
+      1. modèles AVEC historique sur le domaine — taux de réussite
+         décroissant, Elo en départage ;
+      2. modèles SANS historique — après les précédents (on ne bloque pas un
+         modèle neuf d'apprendre), départagés par le score coût/quota/latence
+         classique de `ProviderScorer`.
+
+    Exclusion dure : `losses >= SEUIL_ECHECS_DOMAINE` et `wins == 0` sur le
+    domaine → le provider est retiré, peu importe son coût.
+
+    :param providers: providers candidats (déjà filtrés santé/concurrence).
+    :param domaine: domaine de la tâche (clé de l'historique Elo).
+    :return: (liste ordonnée de providers, exclusions {provider: raison}).
+    """
+    from core.elo_scorer import get_domain_stats
+    from core.sante_providers import MODELE_PAR_PROVIDER
+
+    if not providers:
+        return [], {}
+
+    stats_par_modele: dict[str, dict] = {}
+    try:
+        for entree in get_domain_stats(domaine):
+            stats_par_modele[entree["model"]] = entree
+    except Exception as e:
+        logger.warning(f"[Routing] Historique du domaine '{domaine}' indisponible : {e}")
+
+    exclusions: dict[str, str] = {}
+    avec_historique: list[tuple[str, dict]] = []
+    sans_historique: list[str] = []
+
+    for provider in providers:
+        modele = MODELE_PAR_PROVIDER.get(provider, provider).strip().lower()
+        stats = stats_par_modele.get(modele)
+        if not stats or stats["matches"] <= 0:
+            sans_historique.append(provider)
+            continue
+        if stats["losses"] >= SEUIL_ECHECS_DOMAINE and stats["wins"] == 0:
+            exclusions[provider] = (
+                f"{stats['losses']} échecs sur '{domaine}', aucun succès — "
+                f"écarté indépendamment du prix"
+            )
+            continue
+        avec_historique.append((provider, stats))
+
+    # Meilleur taux de réussite d'abord ; Elo en départage à taux égal.
+    avec_historique.sort(key=lambda p_s: (-p_s[1]["win_rate"], -p_s[1]["elo"]))
+    ordonnes = [p for p, _ in avec_historique]
+
+    if sans_historique:
+        # Une seule instance de scorer pour tout le lot (quotas/scores en bulk).
+        scorer = ProviderScorer(sans_historique)
+        def _cout(provider: str) -> float:
+            return scorer.score(MODELE_PAR_PROVIDER.get(provider, provider))
+        ordonnes += sorted(sans_historique, key=_cout)
+
+    return ordonnes, exclusions

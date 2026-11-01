@@ -249,7 +249,10 @@ async def notifier_alerte(message: str) -> bool:
         return False
     try:
         from core.daemon_loop import _send_ha_notification
-        ok = await _send_ha_notification("Alerte quotas/soldes LLM", message)
+        ok = await _send_ha_notification(
+            "Alerte quotas/soldes LLM", message,
+            notification_id="moteur_quotas_llm",
+        )
         if ok:
             logger.warning("[ALERTE QUOTAS] Notifiée à Home Assistant : %s",
                            message.replace("\n", " | "))

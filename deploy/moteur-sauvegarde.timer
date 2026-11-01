@@ -1,0 +1,17 @@
+# Timer systemd --user : déclenche moteur-sauvegarde.service chaque jour à 04h30.
+# 04h30 : hors des heures d'usage vocal de la maison. La copie à chaud ne bloque pas
+# le moteur (lecture seule, instantané SQLite), mais autant la faire quand rien ne se passe.
+#
+# Non installé par le dépôt : voir docs/guide/05_exploiter.md.
+
+[Unit]
+Description=Sauvegarde quotidienne des bases de vromvrom-engine (04h30)
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+# Machine éteinte à 04h30 : la sauvegarde manquée part au prochain démarrage au lieu d'être perdue.
+Persistent=true
+Unit=moteur-sauvegarde.service
+
+[Install]
+WantedBy=timers.target

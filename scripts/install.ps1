@@ -2,7 +2,7 @@
 # install.ps1 — Installation du moteur multi-agents (#T255) — Windows
 #
 # Comportement identique à scripts/install.sh (Linux / macOS) :
-#   1. Vérifie que Python ≥ 3.11 est disponible (échec clair sinon) ;
+#   1. Vérifie que Python ≥ 3.12 est disponible (échec clair sinon) ;
 #   2. Crée le venv (.venv/) et installe requirements.txt ;
 #   3. Génère .env À PARTIR DE .env.example s'il n'existe pas — et JAMAIS
 #      s'il existe déjà (un écrasement détruirait les clés de l'utilisateur) ;
@@ -23,13 +23,13 @@ Set-Location $RepoRoot
 
 Write-Host "==> Installation du moteur multi-agents dans : $RepoRoot"
 
-# ── 1. Version de Python (≥ 3.11 obligatoire) ──
+# ── 1. Version de Python (≥ 3.12 obligatoire) ──
 $Python = $null
 foreach ($candidate in @("python", "py")) {
     if (Get-Command $candidate -ErrorAction SilentlyContinue) { $Python = $candidate; break }
 }
 if (-not $Python) {
-    Write-Host "ERREUR : Python introuvable. Installez Python ≥ 3.11 (https://www.python.org/downloads/) puis relancez ce script." -ForegroundColor Red
+    Write-Host "ERREUR : Python introuvable. Installez Python ≥ 3.12 (https://www.python.org/downloads/) puis relancez ce script." -ForegroundColor Red
     exit 1
 }
 # `py` est le lanceur Windows : forcer Python 3.
@@ -43,11 +43,11 @@ if ($PyMajor -notmatch '^\d+$') {
 }
 $Major = [int]$PyMajor
 $Minor = [int]$PyMinor
-if ($Major -lt 3 -or ($Major -eq 3 -and $Minor -lt 11)) {
-    Write-Host "ERREUR : Python $PyVersion détecté — le moteur exige Python ≥ 3.11. Mettez Python à jour puis relancez ce script." -ForegroundColor Red
+if ($Major -lt 3 -or ($Major -eq 3 -and $Minor -lt 12)) {
+    Write-Host "ERREUR : Python $PyVersion détecté — le moteur exige Python ≥ 3.12. Mettez Python à jour puis relancez ce script." -ForegroundColor Red
     exit 1
 }
-Write-Host "==> Python $PyVersion détecté (≥ 3.11 requis : OK)"
+Write-Host "==> Python $PyVersion détecté (≥ 3.12 requis : OK)"
 
 # ── 2. Venv + dépendances ──
 $VenvDir = Join-Path $RepoRoot ".venv"

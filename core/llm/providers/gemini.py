@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import shutil
-import uuid
+import tempfile
 from typing import Any
 
 import requests
@@ -18,15 +18,43 @@ from .base import LLMProvider, run_cli_command
 
 logger = logging.getLogger(__name__)
 
-# [Audit sécu 10/07 — IPC Antigravity] Préfixe des fichiers d'échange avec la CLI
-# Antigravity. Le nom complet est UNIQUE par appel (cf. GeminiCLIProvider.generate) :
-# il est dicté par notre propre prompt, donc la CLI s'y adapte sans qu'aucun
-# changement ne soit nécessaire de son côté.
-_EXCHANGE_PREFIX = "antigravity_exchange_temp"
+# CreateProcess ~32k ; on reste largement en dessous pour le `-p` inline.
+_MAX_PROMPT_ARGV = 20000
 
-# Nom historique, à sortie fixe. Conservé UNIQUEMENT comme filet de sécurité en
-# lecture, au cas où la CLI ignorerait le nom demandé (cf. _lire_fichier_echange).
-_LEGACY_EXCHANGE_FILE = f"{_EXCHANGE_PREFIX}.txt"
+# Clés d'API à retirer de l'environnement du sous-processus : `agy` avec
+# `modelProvider: gemini` dans settings.json partirait sur l'API payante
+# (ce qu'Axel refuse). L'abo Google est le keyring / la session `agy`.
+_CLES_API_A_ECARTER = (
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GENAI_API_KEY",
+    "AV_API_KEY",
+    "ANTIGRAVITY_API_KEY",
+    "ANTIGRAVITY_TOKEN",
+)
+
+
+def chemin_agy() -> str | None:
+    """Binaire headless Antigravity CLI (`agy`), pas le lanceur d'IDE."""
+    home = os.path.expanduser("~")
+    candidats = [
+        shutil.which("agy"),
+        shutil.which("agy.exe"),
+        os.path.join(home, "AppData", "Local", "agy", "bin", "agy.exe"),
+        os.path.join(home, ".local", "bin", "agy"),
+    ]
+    for chemin in candidats:
+        if chemin and os.path.isfile(chemin):
+            return chemin
+    return None
+
+
+def _env_agy_abonnement() -> dict[str, str]:
+    """Environnement du sous-processus : session Google, jamais une clé API."""
+    env = os.environ.copy()
+    for cle in _CLES_API_A_ECARTER:
+        env.pop(cle, None)
+    return env
 
 
 def _supprimer_silencieusement(chemin: str | None) -> None:
@@ -178,109 +206,99 @@ class GeminiProvider(LLMProvider):
         )
 
 
-class GeminiCLIProvider(LLMProvider):
-    """Provider pour exécuter localement la CLI Antigravity en mode chat (OAuth Claude Pro)."""
+# Slug catalogue moteur → id `agy --model` (sortie de `agy models` 23/08).
+_AGY_MODELE: dict[str, str] = {
+    "gemini-3.5-flash-medium-cli": "gemini-3.7-flash-medium",
+    "gemini-3.7-flash-medium-cli": "gemini-3.7-flash-medium",
+    "gemini-3.5-flash-high-cli": "gemini-3.7-flash-high",
+    "gemini-3.7-flash-high-cli": "gemini-3.7-flash-high",
+    "gemini-cli": "gemini-3.7-flash-medium",
+    "antigravity": "gemini-3.7-flash-medium",
+}
 
-    def __init__(self, mode: str = "agent", model_name: str = "gemini-cli"):
+
+def modele_agy(slug: str) -> str:
+    """Id modèle passé à `agy --model`."""
+    return _AGY_MODELE.get(slug) or "gemini-3.7-flash-medium"
+
+
+class GeminiCLIProvider(LLMProvider):
+    """Gemini via `agy` (CLI Antigravity, session Google / abo) — jamais l'API."""
+
+    def __init__(self, mode: str = "chat", model_name: str = "gemini-cli"):
+        # `model_name` = slug catalogue moteur → `agy --model` (D-21 : medium).
         self.mode = mode
         self.model_name = model_name
-        user_home = os.path.expanduser("~")
-        self.cmd_path = os.path.join(user_home, "AppData", "Local", "Programs", "Antigravity IDE", "bin", "antigravity-ide.cmd")
-        if not os.path.exists(self.cmd_path):
-            self.cmd_path = os.path.join(user_home, "AppData", "Local", "Programs", "Antigravity", "bin", "antigravity.cmd")
-        if not os.path.exists(self.cmd_path):
-            self.cmd_path = (
-                shutil.which("antigravity-ide") or
-                shutil.which("antigravity-ide.cmd") or
-                shutil.which("antigravity") or
-                shutil.which("antigravity.exe") or
-                "antigravity-ide"
-            )
-
-    def _lire_fichier_echange(self, exchange_file: str) -> str | None:
-        """
-        Lit la réponse écrite par la CLI, puis supprime le fichier lu.
-
-        Le fichier attendu est celui, unique, demandé dans le prompt de cet appel.
-        S'il est absent, on tente le nom historique à sortie fixe : filet de
-        sécurité au cas où la CLI ignorerait le nom demandé. Ce repli est
-        best-effort et reste soumis, lui, au croisement de réponses entre appels
-        concurrents — c'est précisément ce que le nom unique élimine sur le
-        chemin nominal. Retourne None si aucun fichier n'a été produit.
-        """
-        for chemin in (exchange_file, _LEGACY_EXCHANGE_FILE):
-            if not os.path.exists(chemin):
-                continue
-            if chemin == _LEGACY_EXCHANGE_FILE:
-                logger.warning(
-                    "[GeminiCLI] La CLI a écrit dans le fichier d'échange historique "
-                    f"('{_LEGACY_EXCHANGE_FILE}') au lieu du nom unique demandé "
-                    f"('{exchange_file}') : réponses potentiellement croisées si "
-                    "plusieurs appels tournent en parallèle."
-                )
-            with open(chemin, encoding="utf-8", errors="ignore") as f:
-                contenu = f.read().strip()
-            _supprimer_silencieusement(chemin)
-            return contenu
-        return None
+        self.cmd_path = chemin_agy() or "agy"
 
     def generate(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
+        agy = chemin_agy()
+        if not agy:
+            raise RuntimeError(
+                "CLI Antigravity (`agy`) introuvable. Installer via "
+                "https://antigravity.google/docs/cli/install puis `agy` une "
+                "fois pour ouvrir la session Google (abonnement, pas de clé API)."
+            )
+        self.cmd_path = agy
+
         prompt = f"{system_prompt}\n\n{user_prompt}".strip()
-
-        # [Audit sécu 10/07] Un nom de fichier FIXE et relatif au CWD servait
-        # d'IPC avec la CLI : deux appels concurrents (les providers tournent en
-        # parallèle via generate_async → asyncio.to_thread) se supprimaient et se
-        # relisaient mutuellement, d'où des réponses croisées ; et un appel parti
-        # en timeout laissait sa réponse être lue par l'appel suivant. Le nom est
-        # désormais unique par appel — et comme c'est notre prompt qui le dicte,
-        # rien ne change côté Antigravity.
-        exchange_file = f"{_EXCHANGE_PREFIX}_{uuid.uuid4().hex[:12]}.txt"
-
-        # Résidu éventuel d'un ancien appel au format historique : on repart propre.
-        _supprimer_silencieusement(_LEGACY_EXCHANGE_FILE)
-
-        full_prompt = (
-            f"{prompt}\n\n"
-            f"CRITIQUE : Tu doit absolument écrire ton résultat ou ton analyse finale dans le fichier texte nommé '{exchange_file}' dans ton espace de travail actuel. Ne fais rien d'autre."
-        )
-
-        # Fichier temp si prompt long (>8000 chars, limite Windows CLI)
         prompt_file = None
-        if len(full_prompt) > 8000:
-            import tempfile
-            try:
-                tmp = tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', suffix='.txt', delete=False)
-                tmp.write(full_prompt)
+        extra_dirs: list[str] = []
+        try:
+            if len(prompt) > _MAX_PROMPT_ARGV:
+                tmp = tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", suffix=".txt", delete=False,
+                )
+                tmp.write(prompt)
                 tmp.close()
                 prompt_file = tmp.name
-                cmd = [self.cmd_path, 'chat', '-m', self.mode, f'@{prompt_file}']
-                logger.info(f'[GeminiCLI] Prompt long ({len(full_prompt)} chars) -> fichier temp : {prompt_file}')
-            except Exception as e:
-                logger.warning(f'[GeminiCLI] Impossible de créer fichier temp : {e}')
-                cmd = [self.cmd_path, 'chat', '-m', self.mode, full_prompt[:8000]]
-        else:
-            cmd = [self.cmd_path, 'chat', '-m', self.mode, full_prompt]
-        logger.debug(f'Exécution Gemini CLI : {self.cmd_path} chat -m {self.mode} [prompt]')
+                extra_dirs = [os.path.dirname(prompt_file)]
+                prompt_agy = (
+                    f"Lis le fichier UTF-8 '{os.path.basename(prompt_file)}' "
+                    "et exécute uniquement les instructions qu'il contient. "
+                    "Réponds par le livrable demandé, sans outil."
+                )
+                logger.info(
+                    f"[GeminiCLI] Prompt long ({len(prompt)} chars) -> {prompt_file}"
+                )
+            else:
+                prompt_agy = prompt
 
-        try:
-            result = run_cli_command(cmd, capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=300)
-            response_text = self._lire_fichier_echange(exchange_file)
-            if response_text is None:
-                response_text = result.stdout.strip()
-                if not response_text:
-                    if result.returncode != 0:
-                        raise RuntimeError(f"Antigravity CLI error ({result.returncode}): {result.stderr}")
-                    else:
-                        raise RuntimeError("Antigravity CLI n'a produit aucune sortie et aucun fichier d'échange.")
+            cmd = [agy, "--sandbox", "--print-timeout", "4m"]
+            cmd.extend(["--model", modele_agy(self.model_name)])
+            for dossier in extra_dirs:
+                cmd.extend(["--add-dir", dossier])
+            cmd.extend(["-p", prompt_agy])
+            logger.debug(
+                "[GeminiCLI] agy --sandbox --model %s -p [prompt]",
+                modele_agy(self.model_name),
+            )
+
+            result = run_cli_command(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=300,
+                env=_env_agy_abonnement(),
+            )
+            response_text = (result.stdout or "").strip()
+            if not response_text:
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        f"Antigravity CLI (`agy`) error ({result.returncode}): "
+                        f"{result.stderr}"
+                    )
+                raise RuntimeError(
+                    "Antigravity CLI (`agy`) n'a produit aucune sortie. "
+                    "Ouvrir un terminal et lancer `agy` une fois pour signer "
+                    "l'abonnement Google (pas GEMINI_API_KEY)."
+                )
         except Exception as e:
-            logger.error(f"Erreur lors de l'appel Gemini CLI (Antigravity): {e}")
-            raise e
+            logger.error(f"Erreur lors de l'appel Gemini CLI (agy): {e}")
+            raise
         finally:
-            # Sans ce nettoyage, un appel interrompu (timeout de 300 s, exception)
-            # laisserait derrière lui un fichier d'échange et le fichier de prompt
-            # long — d'autant plus visibles maintenant que chaque appel a son
-            # propre nom.
-            _supprimer_silencieusement(exchange_file)
             _supprimer_silencieusement(prompt_file)
 
         prompt_tokens = max(1, len(prompt) // 4)
@@ -290,6 +308,7 @@ class GeminiCLIProvider(LLMProvider):
         record_usage("gemini-cli", prompt_tokens, completion_tokens, session_id=kwargs.get("session_id"))
 
         return response_text
+
 
     def generate_structured(self, system_prompt: str, user_prompt: str, schema: dict[str, Any], **kwargs) -> dict[str, Any]:
         sys_prompt = system_prompt + "\nTu DOIS répondre UNIQUEMENT au format JSON strict."

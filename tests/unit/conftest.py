@@ -85,6 +85,23 @@ def _interdire_reseau(monkeypatch, request):
     monkeypatch.setattr(socket.socket, "connect", _connect_interdit)
 
 
+@pytest.fixture(autouse=True)
+def _ajean_http_coupe_hors_live(monkeypatch, request):
+    """D-19 : le fallback LAN `ajean_http_ok` ne doit pas sonder 192.168.1.10 en unit.
+
+    `_choisir_provider_tache` GET /v1/models si AJEAN n'est pas dans `sains`.
+    Sans ce stub, la CI tape le PC local et le garde-fou réseau casse la suite.
+    Un test qui veut le chemin LAN patche `ajean_http_ok` à True lui-même.
+    """
+    if request.node.get_closest_marker("live"):
+        return
+
+    async def _coupe(_pid, timeout_s=1.0):
+        return False
+
+    monkeypatch.setattr("core.llm.ajean_adapter.ajean_http_ok", _coupe, raising=False)
+
+
 # ─────────────────────────────────────────────────────────────────
 # Isolation des services d'observabilité (Langfuse / OTel)
 # ─────────────────────────────────────────────────────────────────
@@ -98,6 +115,38 @@ def _interdire_reseau(monkeypatch, request):
 # Ce fixture autouse purge ces variables AVANT chaque test et réinitialise le
 # singleton : un test unitaire ne doit jamais activer de client d'observabilité
 # réel, quel que soit le contenu du .env de la machine.
+
+
+# ─────────────────────────────────────────────────────────────────
+# Isolation des chemins de slot DreamCoder (#T420)
+# ─────────────────────────────────────────────────────────────────
+#
+# Même mécanique que ci-dessus, et découverte de la même façon : le load_dotenv()
+# de niveau module des tests `live` fait entrer TOUT le .env de la machine dans le
+# process. Depuis #T420, une machine qui draine y déclare
+# MOTEUR_DREAMCODER_REPO_PATHS — et les tests du garde-fou « pas de drainage sans
+# clone » se mettent à voir un clone dédié qu'ils n'ont pas configuré.
+#
+# Symptôme trompeur : 8 tests verts un par un, rouges en suite complète, et verts
+# au CI (qui n'a pas de .env). Le réglage d'une machine ne doit pas décider du
+# verdict de sa suite de tests.
+
+
+@pytest.fixture(autouse=True)
+def _isoler_slots_dreamcoder(monkeypatch):
+    """
+    Purge les réglages DreamCoder hérités du .env de la machine.
+
+    Troisième occurrence du même piège : une machine qui draine déclare son clone
+    (`MOTEUR_DREAMCODER_REPO_PATHS`, #T420) et sa fenêtre de tâche élargie
+    (`MOTEUR_DREAMCODER_TACHE_TIMEOUT_S`, portée à 900 s le 21/08 pour les
+    analyses). Les tests des garde-fous et des fenêtres voient alors une valeur
+    qu'ils n'ont pas configurée — verts un par un, rouges en suite complète, et
+    verts au CI qui n'a pas de `.env`. Le réglage d'une machine ne doit jamais
+    décider du verdict de sa suite de tests.
+    """
+    for cle in ("MOTEUR_DREAMCODER_REPO_PATHS", "MOTEUR_DREAMCODER_TACHE_TIMEOUT_S"):
+        monkeypatch.delenv(cle, raising=False)
 
 
 @pytest.fixture(autouse=True)

@@ -134,7 +134,8 @@
     "auditor_confidence_threshold": 6.0,
     "auditor_dedup_similarity_threshold": 0.75,
     "auditor_max_corpus_chars": 150000,
-    "dreamcoder_repo_path": ""
+    "dreamcoder_repo_path": "",
+    "dreamcoder_autoriser_depot_courant": false
   },
   "swarm": {
     "enabled": false,
@@ -153,6 +154,21 @@
     "ollama_url": "http://localhost:11434",
     "llamacpp_url": "http://127.0.0.1:8080",
     "model": "qwen2.5-14b-instruct"
+  },
+  "provider_timeouts": {
+    "_documentation": "Timeout (connect, read) en secondes par provider openai-compat. Connect court : un hôte local éteint doit échouer vite et basculer sur le cloud. Read long : une génération locale avec historique dépasse souvent 15 s.",
+    "ajean_pc": [2.0, 120.0],
+    "ajean_deck": [2.0, 120.0]
+  },
+  "provider_timeouts": {
+    "_documentation": "Timeout (connect, read) en secondes par provider openai-compat. Connect court : un hôte local éteint doit échouer vite et basculer sur le cloud. Read long : une génération locale avec historique dépasse souvent 15 s.",
+    "ajean_pc": [2.0, 120.0],
+    "ajean_deck": [2.0, 120.0]
+  },
+  "provider_timeouts": {
+    "_documentation": "Timeout (connect, read) en secondes par provider openai-compat. Connect court : un hôte local éteint doit échouer vite et basculer sur le cloud. Read long : une génération locale avec historique dépasse souvent 15 s.",
+    "ajean_pc": [2.0, 120.0],
+    "ajean_deck": [2.0, 120.0]
   },
   "context_compression_threshold": 1500,
   "max_tool_output_chars": 4000

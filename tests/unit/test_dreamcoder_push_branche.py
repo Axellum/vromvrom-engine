@@ -9,7 +9,9 @@ contrat : on pousse quand on peut, on rend une raison lisible quand on ne peut
 pas, et on ne casse JAMAIS une tâche réussie sur un problème de transport.
 """
 
+import os
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -188,3 +190,76 @@ def test_git_terminal_prompt_desactive(depot_avec_origin):
     assert appel["kwargs"]["timeout"] == 90.0
     assert appel["args"] == [
         "git", "push", "--set-upstream", "origin", depot_avec_origin["branche"]]
+
+
+# ── [#T327] Poussée par jeton GitHub ─────────────────────────────────────────
+
+def test_conversion_ssh_vers_https():
+    """
+    Le clone du Deck a son `origin` en SSH, servi par une clé en LECTURE SEULE.
+    Le jeton ne vaut qu'en HTTPS : sans cette conversion, il ne servirait à rien.
+    """
+    from agents.dreamer_agent import _url_https_github
+
+    assert _url_https_github("git@github.com:Axellum/moteur_agents.git") == \
+        "https://github.com/Axellum/moteur_agents.git"
+    assert _url_https_github("https://github.com/Axellum/moteur_agents.git") == \
+        "https://github.com/Axellum/moteur_agents.git"
+
+
+def test_remote_non_github_ignore():
+    """Un remote qui n'est pas GitHub ne reçoit jamais le jeton."""
+    from agents.dreamer_agent import _url_https_github
+
+    assert _url_https_github("no-push://le-deck-est-une-cible-de-deploiement") is None
+    assert _url_https_github("git@gitlab.com:x/y.git") is None
+
+
+def test_le_jeton_ne_fuit_ni_dans_la_config_ni_dans_la_ligne_de_commande(depot_avec_origin):
+    """
+    Le jeton doit vivre dans l'ENVIRONNEMENT du seul processus git :
+      - dans `.git/config`, il survivrait au cycle et partirait en sauvegarde ;
+      - dans la ligne de commande, n'importe quel `ps` de la machine le lirait.
+    """
+    _git(["remote", "set-url", "--push", "origin",
+          "git@github.com:Axellum/moteur_agents.git"], cwd=depot_avec_origin["clone"])
+
+    ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    aiguillage = _AiguillagePush(reponse=ok)
+
+    with patch.dict("os.environ", {"MOTEUR_GITHUB_PUSH_TOKEN": "ghp_secret_de_test"}), \
+         patch("agents.dreamer_agent.subprocess.run", aiguillage):
+        res = _pousser_branche_tache(depot_avec_origin["clone"], depot_avec_origin["branche"])
+
+    assert res["pushed"] is True
+    appel = aiguillage.appels_push[0]
+
+    # Le secret n'est nulle part dans la commande…
+    assert not any("ghp_secret_de_test" in str(a) for a in appel["args"])
+    # …mais l'en-tête d'autorisation est bien passé par l'environnement.
+    entete = appel["kwargs"]["env"]["GIT_CONFIG_VALUE_0"]
+    assert entete.startswith("Authorization: Basic ")
+    assert appel["kwargs"]["env"]["GIT_CONFIG_KEY_0"] == "http.extraheader"
+    # …et il cible bien l'URL HTTPS, seule forme que le jeton sait authentifier.
+    assert "https://github.com/Axellum/moteur_agents.git" in appel["args"]
+
+    # Rien n'a été écrit dans la config du dépôt.
+    config = (Path(depot_avec_origin["clone"]) / ".git" / "config").read_text(encoding="utf-8")
+    assert "ghp_secret_de_test" not in config
+    assert "extraheader" not in config
+
+
+def test_sans_jeton_le_chemin_historique_est_conserve(depot_avec_origin):
+    """Sans opt-in explicite, on pousse vers `origin` comme avant."""
+    ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    aiguillage = _AiguillagePush(reponse=ok)
+
+    env_sans_jeton = {k: v for k, v in os.environ.items() if k != "MOTEUR_GITHUB_PUSH_TOKEN"}
+    with patch.dict("os.environ", env_sans_jeton, clear=True), \
+         patch("agents.dreamer_agent.subprocess.run", aiguillage):
+        _pousser_branche_tache(depot_avec_origin["clone"], depot_avec_origin["branche"])
+
+    appel = aiguillage.appels_push[0]
+    assert appel["args"] == [
+        "git", "push", "--set-upstream", "origin", depot_avec_origin["branche"]]
+    assert "GIT_CONFIG_KEY_0" not in appel["kwargs"]["env"]

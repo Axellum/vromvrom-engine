@@ -75,16 +75,81 @@ FAST_PATH_SYSTEM_PROMPT = (
     "N'invente jamais d'état domotique, de météo ou d'agenda."
 )
 
-# Cerebras gpt-oss-120b en tête : bench local 2026-07-21 ~430 ms TTFT
-# vs ~1,8 s Gemini 3.5 Flash free / DeepSeek (SSE mode=chat). Fallback cloud
-# si quota Cerebras (30 RPM) ou indispo.
+# ⚠️ 20/08/2026 : cette liste est un REPLI — l'ordre live est
+# config.json → routing_policy.fast_path_providers.
+# Aligné sur config.json (22/08) : AJEAN a remplacé Ollama sur le PC (#T353).
+# `ollama_pc` reste dans le registre (#T354) mais plus ici — éteint (mesure 18/08).
+# La sonde d'hôte (#T360) écarte `ajean_pc` s'il ne répond pas.
 FAST_PATH_PROVIDERS = [
-    "gpt-oss-120b",
-    "ollama_pc",  # Ollama PC (GPU locale, fine-tune domotique) — local-first ; repli cloud si PC éteint (connect timeout 2s)
+    "ajean_pc",
     "gemini-3.5-flash-free",
     "deepseek-chat",
     "gemini-2.5-flash-free",
 ]
+
+# 23/08 Axel : le Tab (source tab5) garde Cerebras (gpt-oss-120b) en tête.
+# Crédits à recharger côté Axel (probe 18/08 : HTTP 402). Repli = FAST_PATH.
+TAB_LLM_PROVIDERS = ["gpt-oss-120b"]
+TAB_SOURCE_TYPES = frozenset({"tab5"})
+
+
+def _fast_path_providers_config(source_type: str | None = None) -> list[str]:
+    """Cascade du fast path, lue depuis config.json (routing_policy.fast_path_providers).
+
+    Réglage d'exploitation : c'est l'ordre dans lequel le chat rapide et la
+    discussion vocale tentent les providers. Repli sur FAST_PATH_PROVIDERS si la
+    clé est absente ou vide. Lu via load_config() (cache invalidé par mtime) :
+    une édition de config.json est prise en compte sans redémarrage.
+
+    `source_type=tab5` : Cerebras d'abord (`tab_llm_providers`), puis le fast-path
+    habituel (AJEAN, Gemini, …). L'IHM / IDE n'est pas concernée.
+    """
+    try:
+        from core.llm_gateway import load_config
+        cfg = load_config()
+        policy = cfg.get("routing_policy") or {}
+        liste = policy.get("fast_path_providers")
+        if not (isinstance(liste, list) and liste):
+            liste = list(FAST_PATH_PROVIDERS)
+        else:
+            liste = [str(p) for p in liste]
+        if source_type in TAB_SOURCE_TYPES:
+            tab = policy.get("tab_llm_providers")
+            if not (isinstance(tab, list) and tab):
+                tab = list(TAB_LLM_PROVIDERS)
+            else:
+                tab = [str(p) for p in tab]
+            vus: set[str] = set()
+            ordonnes: list[str] = []
+            for pid in list(tab) + liste:
+                if pid in vus:
+                    continue
+                vus.add(pid)
+                ordonnes.append(pid)
+            return ordonnes
+        return liste
+    except Exception:
+        if source_type in TAB_SOURCE_TYPES:
+            return list(TAB_LLM_PROVIDERS) + [
+                p for p in FAST_PATH_PROVIDERS if p not in TAB_LLM_PROVIDERS
+            ]
+        return list(FAST_PATH_PROVIDERS)
+
+
+def detail_exception(e: BaseException) -> str:
+    """
+    Message d'erreur de pipeline qui dit de QUOI il est fait.
+
+    `str(KeyError("verify_fix"))` rend `'verify_fix'` : un mot entre guillemets,
+    sans type, sans origine. Mesuré le 21/08 au matin — deux tâches autonomes
+    sur quatre mortes sur `❌ 'verify_fix'` et `❌ 'verify_implementation'`, des
+    noms d'étapes inventés par le planner et introuvables dans le dépôt. Le
+    journal ne disait pas même qu'il s'agissait d'une clé absente.
+
+    Le type précède toujours ; le message ne suit que s'il en existe un.
+    """
+    message = str(e).strip()
+    return f"{type(e).__name__}: {message}" if message else type(e).__name__
 
 
 async def run_fast_path(
@@ -99,6 +164,7 @@ async def run_fast_path(
     inject_project_context: bool = False,
     conversation_id: str | None = None,
     enable_vocal_tools: bool = False,
+    source_type: str | None = None,
 ) -> str | None:
     """
     Exécute le fast-path (casual_chat) en essayant les providers rapides dans l'ordre.
@@ -113,6 +179,7 @@ async def run_fast_path(
         token_tracker   : Instance TokenTracker
         fast_path_cache : TTLCache(maxsize=100, ttl=15) partagé depuis AppState
         enable_vocal_tools : Boucle outils allowlist (HA/calendrier/web/mémoire)
+        source_type     : `tab5` → Cerebras (`gpt-oss-120b`) en tête de cascade
 
     Returns:
         str  : Réponse du LLM si succès
@@ -164,7 +231,7 @@ async def run_fast_path(
     # Désactiver le cache TTL quand les outils sont actifs (commandes HA / web).
     _override_key = (
         f"{tier_override or ''}|{model_override or ''}|{conversation_id or ''}"
-        f"|tools={int(enable_vocal_tools)}"
+        f"|tools={int(enable_vocal_tools)}|src={source_type or ''}"
     )
     _cache_key = hashlib.md5(
         f"{system_prompt}||{_override_key}||{user_prompt}".encode()
@@ -192,7 +259,10 @@ async def run_fast_path(
             candidates.append((f"tier:{tier_override}", tier_provider))
         except Exception as tier_err:
             logger.warning(f"[FAST_PATH] Tier '{tier_override}' non résolu : {tier_err}")
-    candidates.extend(FAST_PATH_PROVIDERS)
+    if source_type:
+        candidates.extend(_fast_path_providers_config(source_type))
+    else:
+        candidates.extend(_fast_path_providers_config())
 
     from core.vocal_tools import provider_supports_openai_tools, run_vocal_tool_loop
 
@@ -641,9 +711,12 @@ async def run_full_pipeline(
         }
     except Exception as e:
         await _cleanup_mcp(mcp_bridge)
-        record_session_end(session_id, "error", error_message=str(e))
-        logger.error(f"[PIPELINE] Erreur : {e}")
-        return {"status": "error", "error": f"❌ {str(e)}"}
+        detail = detail_exception(e)
+        record_session_end(session_id, "error", error_message=detail)
+        # La trace part au JOURNAL, pas dans la réponse : un message rendu à
+        # l'utilisateur n'a pas à porter une pile d'appels.
+        logger.error("[PIPELINE] Erreur : %s", detail, exc_info=True)
+        return {"status": "error", "error": f"❌ {detail}"}
 
     # ── Extraction du résultat ──
     history_dicts = [state_update_to_dict(h) for h in final_state.history]
@@ -924,6 +997,7 @@ async def run_engine_background(
     on_event_callback,
     session_id: str | None = None,
     execution_key: str | None = None,
+    project_id: str | None = None,
 ) -> None:
     """
     Lance le moteur en arrière-plan pour /api/run (fire-and-forget).
@@ -946,6 +1020,26 @@ async def run_engine_background(
 
     try:
         config = load_config()
+        config = dict(config)
+        from core.projects import projet_par_id, resoudre_projet_pour_tache
+        projet = projet_par_id(project_id) or resoudre_projet_pour_tache(
+            {"project_id": project_id} if project_id else {},
+            objectif=objective,
+        )
+        if projet.id != "moteur":
+            cible = projet.chemin_travail_agent()
+            if cible:
+                config["repo_root"] = cible
+                logger.info(
+                    "[ENGINE_BG] Projet %s → dépôt %s (%s)",
+                    projet.id, cible, projet.git_remote,
+                )
+            else:
+                raise FileNotFoundError(
+                    f"Projet '{projet.id}' ({projet.label}) : aucun dossier Git "
+                    f"local. Attendu remote {projet.git_remote}. Pose "
+                    f"MOTEUR_PROJECT_{projet.id.upper()}_PATH ou projects.json."
+                )
         # [P1-2.1] Router canonique (factory) au lieu d'un Router nu : active le
         # slow-path LLM, le RAG et le classement Elo sur le flux prod /api/run.
         router = state.get_shared_router()
@@ -1074,6 +1168,7 @@ def _fast_path_provider_candidates(
     gateway,
     tier_override: str | None,
     model_override: str | None,
+    source_type: str | None = None,
 ) -> list:
     candidates: list = []
     if model_override:
@@ -1085,7 +1180,10 @@ def _fast_path_provider_candidates(
             candidates.append((f"tier:{tier_override}", tier_provider))
         except Exception as tier_err:
             logger.warning(f"[STREAM_DISCUSSION] Tier '{tier_override}' non résolu : {tier_err}")
-    candidates.extend(FAST_PATH_PROVIDERS)
+    if source_type:
+        candidates.extend(_fast_path_providers_config(source_type))
+    else:
+        candidates.extend(_fast_path_providers_config())
     return candidates
 
 
@@ -1100,6 +1198,7 @@ async def stream_discussion_fast_path_sse(
     model_override: str | None = None,
     conversation_id: str | None = None,
     enable_vocal_tools: bool = True,
+    source_type: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Générateur SSE pour le mode Discussion vocal (mode=chat).
@@ -1166,7 +1265,9 @@ async def stream_discussion_fast_path_sse(
         # lire son base_url, et de connaître le nombre de candidats restants pour
         # ne JAMAIS vider la cascade (le dernier est tenté même s'il est muet).
         candidats_resolus: list[tuple[str, object]] = []
-        for entry in _fast_path_provider_candidates(gateway, tier_override, model_override):
+        for entry in _fast_path_provider_candidates(
+            gateway, tier_override, model_override, source_type=source_type
+        ):
             if isinstance(entry, tuple):
                 # Override de tier : déjà une paire (nom, provider) prête à l'emploi.
                 candidats_resolus.append(entry)

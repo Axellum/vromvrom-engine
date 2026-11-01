@@ -18,6 +18,7 @@ import pytest
 from tools.git_safety import (
     git_finalize_agent_branch,
     git_prepare_agent_branch,
+    git_rollback_checkpoint,
     lister_stash_agents,
 )
 
@@ -106,6 +107,33 @@ def test_conflit_pop_echec_non_ambigu_et_stash_intact(depot_git):
     # Le stash est TOUJOURS présent dans la pile (git ne le dépile qu'en cas de succès)
     _, stash_list, _ = _git(repo, "stash", "list")
     assert "user_pre_agent_session_conflit" in stash_list
+
+
+def test_rollback_restaure_le_stash_user(depot_git):
+    """Rollback après échec : le stash `user_pre_agent_` est bien dépilé.
+
+    Bug du 20/08 : git_rollback_checkpoint ne cherchait que les préfixes
+    `pre_agent_checkpoint_`/`agent_checkpoint_` ; le stash créé par
+    git_prepare_agent_branch (`user_pre_agent_…`) n'était jamais restauré
+    après `reset --hard` + `clean -fd`, détruisant le travail non commité
+    (fixes de redémarrage avalés par une tentative de tâche en prod).
+    """
+    repo = str(depot_git)
+    config = depot_git / "config.json"
+    config.write_text("ligne_1 = valeur_user\nligne_2 = valeur_base\n", encoding="utf-8")
+
+    branch = git_prepare_agent_branch("session_rollback", repo_path=repo)
+    assert "user_pre_agent_session_rollback" in _git(repo, "stash", "list")[1]
+
+    statut = git_rollback_checkpoint(repo)
+    assert "restauré" in statut
+    # La modification locale utilisateur est revenue dans le working tree
+    assert config.read_text(encoding="utf-8") == "ligne_1 = valeur_user\nligne_2 = valeur_base\n"
+    # Aucun stash résiduel : le rollback a dépilé le stash utilisateur
+    _, stash_list, _ = _git(repo, "stash", "list")
+    assert "user_pre_agent_" not in stash_list
+    # (le retour sur la branche d'origine est la responsabilité de l'appelant,
+    # pas de git_rollback_checkpoint : voir _process_one_dreamcoder_task)
 
 
 def test_lister_stash_agents_filtre_agents_et_ne_supprime_rien(depot_git):

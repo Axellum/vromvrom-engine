@@ -18,30 +18,89 @@ Limite assumée : les écrits passés par d'autres chemins (`safe_io.py`,
 `terminal`, scripts) ne sont pas couverts par la garde — elle protège le cycle
 read_file → génération LLM → write_file des agents.
 """
+import contextvars
 import hashlib
 import os
 import threading
 
-# [P0-audit-2026-07-09] Racine autorisée pour write_file/read_file. Par défaut le
-# dossier PARENT de moteur_agents/ (workspace canonique documenté dans CLAUDE.md,
-# ex. . ; sur Linux/Deck, parent du dossier de déploiement) —
-# même profondeur (3 dirname depuis un fichier de tools/) que project_root plus bas
-# dans validate_config_yaml(). Surchargeable via MOTEUR_WORKSPACE_ROOT si la
-# topologie diffère. realpath() résout aussi les symlinks/junctions (E:/H:), même
-# garde-fou que core/mcp_tools/homeassistant.py::validate_config_format.
-_DEFAULT_WORKSPACE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# [P0-audit-2026-07-09] Racine autorisée pour write_file/read_file = l'écosystème
+# (Tab5, docs, MiniTab), pas le parent immédiat du moteur. Un worktree imbriqué
+# (`moteur_agents_into/moteur_agents`) faisait tomber `00ProjetTab` hors workspace.
+# Détection : core.projects.racine_espace_de_travail (MOTEUR_WORKSPACE_ROOT prime).
+try:
+    from core.projects import racine_espace_de_travail as _racine_espace
+    _DEFAULT_WORKSPACE_ROOT = _racine_espace()
+except Exception:
+    _DEFAULT_WORKSPACE_ROOT = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
 _WORKSPACE_ROOT = os.path.realpath(
     os.environ.get("MOTEUR_WORKSPACE_ROOT", "").strip() or _DEFAULT_WORKSPACE_ROOT
 )
 
 
-def _resolve_within_workspace(filepath: str) -> tuple[str | None, str | None]:
-    """Résout `filepath` (relatif = par rapport au CWD courant, comme open() nativement)
-    et vérifie qu'il reste dans `_WORKSPACE_ROOT`. Retourne (chemin_résolu, None) si
-    autorisé, ou (None, message_erreur) sinon — ne change AUCUN comportement pour un
-    chemin déjà dans le workspace, ne fait que refuser ceux qui en sortent.
+# [#T388] Racine de résolution des chemins RELATIFS pour la session courante.
+#
+# Une tâche DreamCoder travaille dans un clone dédié, mais le processus serveur
+# a pour CWD le dossier de PRODUCTION. Un agent qui écrit `docs/travail/x.md`
+# atterrissait donc dans la prod, pas dans son clone : le 18/08, quatre tâches
+# ont été déclarées « réussies » avec quatre branches VIDES, pendant que leurs
+# livrables se déposaient dans le dossier de prod (1,13 M de tokens pour rien).
+#
+# La consigne textuelle « utilise des chemins absolus », injectée dans le prompt,
+# ne suffit pas : elle demande au modèle de compenser un défaut d'outillage. La
+# racine est donc imposée ICI, hors de portée du prompt.
+#
+# ContextVar et non variable globale : les tâches d'un DAG tournent dans de vrais
+# threads (`asyncio.to_thread`), qui héritent d'une COPIE du contexte — chaque
+# tâche garde sa racine sans écraser celle des autres, ce qui est indispensable
+# au drainage parallèle où trois clones sont actifs en même temps.
+_racine_travail: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "racine_travail", default=None
+)
+
+
+def definir_racine_travail(chemin: str | None):
     """
-    resolved = os.path.realpath(os.path.abspath(filepath))
+    Fixe la racine des chemins relatifs pour la session courante.
+
+    :return: le jeton de réinitialisation (`ContextVar.reset`), pour rendre la
+        racine précédente en fin de session.
+    """
+    return _racine_travail.set(os.path.realpath(chemin) if chemin else None)
+
+
+def reinitialiser_racine_travail(jeton) -> None:
+    """Restaure la racine d'avant `definir_racine_travail`."""
+    try:
+        _racine_travail.reset(jeton)
+    except (ValueError, LookupError):
+        # Jeton posé dans un autre contexte (thread/tâche) : la copie de contexte
+        # disparaît d'elle-même, il n'y a rien à restaurer.
+        pass
+
+
+def racine_travail_courante() -> str | None:
+    """Racine de résolution active, ou None (comportement historique : le CWD)."""
+    return _racine_travail.get()
+
+
+def _resolve_within_workspace(filepath: str) -> tuple[str | None, str | None]:
+    """Résout `filepath` et vérifie qu'il reste dans `_WORKSPACE_ROOT`.
+
+    Un chemin relatif se résout contre la racine de travail de la session quand
+    il y en a une (tâche DreamCoder dans son clone), sinon contre le CWD comme
+    `open()` le fait nativement. Un chemin absolu n'est jamais réinterprété.
+
+    Retourne (chemin_résolu, None) si autorisé, ou (None, message_erreur) sinon.
+    """
+    racine = _racine_travail.get()
+    if racine and not os.path.isabs(filepath):
+        candidat = os.path.join(racine, filepath)
+    else:
+        candidat = filepath
+
+    resolved = os.path.realpath(os.path.abspath(candidat))
     if resolved == _WORKSPACE_ROOT or resolved.startswith(_WORKSPACE_ROOT + os.sep):
         return resolved, None
     return None, (
@@ -103,6 +162,59 @@ def _fingerprint(resolved: str) -> str:
     return f"taille:{st.st_size};mtime:{st.st_mtime_ns};sha256:{h.hexdigest()}"
 
 
+# [#T397] Fichiers de SECRETS : interdits d'ecriture aux outils d'agent, ou
+# qu'ils soient dans le workspace.
+#
+# Incident du 18/08 : la tache autonome #35 (« [T144] infra - CRLF dans .env du
+# Deck ») a recu pour mission de reecrire le .env de PRODUCTION. Elle a lance un
+# `run_terminal_command` sur `./.env`, s'est declaree `completed` (91 142
+# tokens), et son diff ne montrait que `skills.json` -- .env etant gitignore,
+# AUCUN garde-fou ne pouvait voir les degats. Quinze minutes plus tard les 4
+# providers sains du cycle de 19h00 etaient tous morts (cles perdues ou
+# perimees), le moteur n'avait plus un seul modele joignable, et cinq taches du
+# backlog passaient en `failed` a 0 token pour une panne qui n'etait pas la
+# leur.
+#
+# La lecon n'est pas « mieux valider le diff » : un fichier ignore par git est
+# invisible aux garde-fous de diff, donc la seule barriere possible est en
+# amont, sur le chemin. Rotation et depannage des cles restent des gestes
+# humains.
+_MOTIFS_FICHIERS_SENSIBLES = (
+    ".env",           # + .env.bak, .env.local, .env.pre_t326… (prefixe)
+    "id_rsa",
+    "id_ed25519",
+    "credentials.json",
+    "google_token.json",
+)
+_SUFFIXES_SENSIBLES = (".pem", ".key", ".p12", ".pfx", "_key.json", "_secret.json")
+# Les gabarits SANS valeur reelle restent modifiables : documenter une nouvelle
+# variable fait partie du travail legitime d'un agent.
+_EXCEPTIONS_SENSIBLES = (".env.example", ".env.template", ".env.sample", ".env.dist")
+
+
+def est_chemin_sensible(chemin: str) -> bool:
+    """Vrai si `chemin` designe un fichier de secrets (cles, jetons, .env)."""
+    nom = os.path.basename((chemin or "").replace("\\", "/").rstrip("/")).lower()
+    if not nom or nom in _EXCEPTIONS_SENSIBLES:
+        return False
+    if any(nom.endswith(suffixe) for suffixe in _SUFFIXES_SENSIBLES):
+        return True
+    return any(nom == motif or nom.startswith(motif + ".") for motif in _MOTIFS_FICHIERS_SENSIBLES)
+
+
+def refus_si_sensible(chemin: str) -> str | None:
+    """Message de refus si `chemin` est un fichier de secrets, None sinon."""
+    if not est_chemin_sensible(chemin):
+        return None
+    return (
+        f"Erreur de securite : ecriture refusee sur {chemin!r} -- c'est un fichier de "
+        "secrets (cles d'API, jetons). Aucun agent ne le modifie : une cle perdue "
+        "coupe tout le moteur sans qu'aucun test ni aucun diff ne le voie "
+        "(incident du 18/08). Si la tache l'exige vraiment, elle doit etre rendue "
+        "a un humain."
+    )
+
+
 def read_file(filepath: str) -> str:
     """Lit le contenu d'un fichier depuis le disque local."""
     resolved, error = _resolve_within_workspace(filepath)
@@ -131,11 +243,52 @@ def read_file(filepath: str) -> str:
     except Exception as e:
         return f"Erreur de lecture: {e}"
 
+def _refus_hors_depot_de_travail(resolved: str) -> str | None:
+    """
+    Refuse une ÉCRITURE hors du dépôt de travail d'une tâche autonome.
+
+    [#T433] Quand une racine de travail est posée (tâche DreamCoder dans son
+    clone), l'agent n'a rien à écrire ailleurs. Mesuré le 21/08 : l'agent a
+    déposé `analyse_wake_word.py`, `filter_audio_results.py` et
+    `find_active_configs.py` à la RACINE DE L'ESPACE DE TRAVAIL, à côté du
+    dépôt. `git add -A` dans le clone n'a donc rien vu, la branche est restée
+    vide, et la tâche a été comptée en échec alors que le travail existait.
+
+    `_resolve_within_workspace` autorise tout l'espace — c'est ce qu'il faut
+    pour LIRE les autres projets (#T425). Mais écrire est autre chose : sans
+    cette garde, un agent peut aussi écrire dans le dépôt de production.
+
+    Hors tâche autonome (aucune racine posée), rien ne change.
+    """
+    racine = racine_travail_courante()
+    if not racine:
+        return None
+    reel = os.path.realpath(resolved)
+    racine_reelle = os.path.realpath(racine)
+    if reel == racine_reelle or reel.startswith(racine_reelle + os.sep):
+        return None
+    return (
+        f"Erreur: écriture refusée hors du dépôt de travail. "
+        f"'{resolved}' est en dehors de '{racine}'. Un fichier écrit ailleurs "
+        f"n'entre dans aucun commit : il serait perdu et la tâche comptée en "
+        f"échec. Écris sous '{racine}' — la LECTURE, elle, reste ouverte au "
+        f"reste de l'espace de travail."
+    )
+
+
 def write_file(filepath: str, content: str) -> str:
     """Écrit du texte dans un fichier (crée les dossiers parents si nécessaire)."""
     resolved, error = _resolve_within_workspace(filepath)
     if error:
         return error
+    # [#T433] Une tâche autonome écrit dans SON clone, nulle part ailleurs.
+    hors_depot = _refus_hors_depot_de_travail(resolved)
+    if hors_depot:
+        return hors_depot
+    # [#T397] Un fichier de secrets n'est jamais reecrit par un agent.
+    refus = refus_si_sensible(resolved)
+    if refus:
+        return refus
     try:
         with _lock_for(resolved):
             existed = os.path.exists(resolved)

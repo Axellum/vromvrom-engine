@@ -58,6 +58,10 @@ def _patch_garde_disponibles(monkeypatch):
 
     monkeypatch.setattr(budget_guard, "db_read_lock_context", _faux_verrou)
     monkeypatch.setattr(budget_guard, "_provider_cooldown", {})
+    # AJEAN hors-ligne dans ces tests : sans ça, sains=None ferait un GET LAN.
+    async def _ajean_mort(_pid, timeout_s=1.0):
+        return False
+    monkeypatch.setattr("core.llm.ajean_adapter.ajean_http_ok", _ajean_mort)
     # Aucune clé cloud par défaut : les seuls candidats possibles sont ceux
     # qu'on stubbe explicitement.
     for var in ("CEREBRAS_API_KEY", "DASHSCOPE_API_KEY", "BAILIAN_CODING_PLAN_API_KEY",
@@ -122,10 +126,21 @@ async def test_cli_desactives_exclut_les_providers_cli(monkeypatch):
     garde = _garde_sans_gemini_free(monkeypatch)
     monkeypatch.setattr(garde, "_check_gemini_cli_availability", lambda: True)
     monkeypatch.setattr(garde, "_check_claude_cli_availability", lambda: True)
+    monkeypatch.setenv("COHERE_API_KEY", "cle-de-test")
+
+    choisi = await garde.get_available_provider()
+    assert choisi == "cohere-free"  # premier candidat non-CLI du round-robin (D-15 : cerebras hors gratuit)
+
+
+@pytest.mark.asyncio
+async def test_cerebras_paygo_hors_rotation_gratuite(monkeypatch):
+    """D-15 : une clé Cerebras ne doit plus faire élire cerebras-free (PayGo)."""
+    monkeypatch.setenv("MOTEUR_DISABLE_CLI_PROVIDERS", "1")
+    garde = _garde_sans_gemini_free(monkeypatch)
     monkeypatch.setenv("CEREBRAS_API_KEY", "cle-de-test")
 
     choisi = await garde.get_available_provider()
-    assert choisi == "cerebras-free"  # premier candidat non-CLI du round-robin
+    assert choisi != "cerebras-free"
 
 
 @pytest.mark.asyncio

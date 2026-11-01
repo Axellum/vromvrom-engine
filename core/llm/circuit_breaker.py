@@ -19,6 +19,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def decrire_exception(exc: Exception) -> str:
+    """Produit une description lisible et compacte d'une exception pour les logs.
+
+    Retourne le type de l'exception et son message, tronqué à 200 caractères
+    pour éviter de polluer les journaux avec des stack traces géantes.
+    """
+    if exc is None:
+        return "<aucune exception>"
+    nom = type(exc).__name__
+    message = str(exc).strip()
+    if not message:
+        return nom
+    if len(message) > 200:
+        message = message[:197] + "..."
+    return f"{nom}: {message}"
+
+
 class CircuitBreakerState(Enum):
     CLOSED = "CLOSED"
     OPEN = "OPEN"
@@ -149,7 +166,8 @@ class CircuitBreaker:
         self._failure_count += 1
         logger.warning(
             f"[CIRCUIT BREAKER] Échec détecté sur {self.name} "
-            f"({self._failure_count}/{self.failure_threshold}) : {exception}"
+            f"({self._failure_count}/{self.failure_threshold}) : "
+            f"{decrire_exception(exception)}"
         )
 
         if self._state == CircuitBreakerState.CLOSED:

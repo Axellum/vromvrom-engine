@@ -145,3 +145,116 @@ class TestNoLeakInPayload:
             assert "_thought_signature" not in json.dumps(payload)
 
         asyncio.run(_run())
+
+
+# ──────────────────────────────────────────────────────────────────
+# Tests : generate_structured n'accepte que les objets JSON (#FIX 20/08)
+# ──────────────────────────────────────────────────────────────────
+
+class TestStructuredReponseNonObjet:
+    """Une réponse JSON de type liste est un format INVALIDE.
+
+    Mesuré en prod le 19/08 : sur la task_38, un provider OpenAI-compatible a
+    retourné un JSON array au lieu de l'objet attendu. generate_structured le
+    renvoyait tel quel et le planner crashe sur `'list' object has no
+    attribute 'get'`. Le contrat est `-> dict` : toute autre forme JSON est
+    traitée comme invalide ({}) pour que la cascade bascule proprement.
+    """
+
+    def _provider(self):
+        return OpenAICompatibleProvider(
+            provider_name="TestProvider",
+            base_url="http://fake.local/v1/chat/completions",
+            api_key="cle-test-fake",
+            model="gemma-4-31b-cerebras",
+        )
+
+    @patch("core.openai_compat_provider.SharedHTTPPool.get_session")
+    def test_liste_retournee_par_le_llm_devient_dict_vide(self, mock_get_session):
+        """Une liste JSON ne doit plus jamais atteindre le planner."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '[{"plan": []}]'}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3},
+        }
+        mock_get_session.return_value.post.return_value = mock_response
+
+        resultat = self._provider().generate_structured("Sys", "User", schema={})
+        assert resultat == {}
+
+    @patch("core.openai_compat_provider.SharedHTTPPool.get_session")
+    def test_dict_inchange(self, mock_get_session):
+        """L'objet JSON reste la voie normale, sans transformation."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '{"plan": [{"task_id": "t1"}]}'}}],
+            "usage": {},
+        }
+        mock_get_session.return_value.post.return_value = mock_response
+
+        resultat = self._provider().generate_structured("Sys", "User", schema={})
+        assert resultat == {"plan": [{"task_id": "t1"}]}
+
+    @patch("core.openai_compat_provider.SharedHTTPPool.get_session")
+    def test_thinking_puis_liste_sans_objet_ignoree(self, mock_get_session):
+        """Le repli raw_decode (thinking DeepSeek) n'accepte pas les listes seules."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Réflexion...\n[[], []]"}}],
+            "usage": {},
+        }
+        mock_get_session.return_value.post.return_value = mock_response
+
+        resultat = self._provider().generate_structured("Sys", "User", schema={})
+        assert resultat == {}
+
+class TestAjeanThinkingCoupe:
+    """llama.cpp Qwen : thinking remplit reasoning_content, content reste vide."""
+
+    def _ajean(self):
+        return OpenAICompatibleProvider(
+            provider_name="ajean",
+            base_url="http://fake.local/v1/chat/completions",
+            api_key="none",
+            model="qwen",
+            json_prompt_only=True,
+        )
+
+    def test_payload_coupe_le_thinking(self):
+        payload = self._ajean()._finaliser_payload({"model": "qwen", "messages": []})
+        assert payload["chat_template_kwargs"]["enable_thinking"] is False
+
+    def test_provider_cloud_ne_touche_pas_au_template(self):
+        cloud = OpenAICompatibleProvider(
+            provider_name="deepseek",
+            base_url="http://fake.local/v1/chat/completions",
+            api_key="k",
+            model="deepseek-chat",
+        )
+        payload = cloud._finaliser_payload({"model": "deepseek-chat", "messages": []})
+        assert "chat_template_kwargs" not in payload
+
+    def test_contenu_prefere_content(self):
+        assert self._ajean()._contenu_assistant({
+            "content": "PRET",
+            "reasoning_content": "long thinking",
+        }) == "PRET"
+
+    def test_contenu_repli_sur_reasoning_si_content_vide(self):
+        assert self._ajean()._contenu_assistant({
+            "content": "",
+            "reasoning_content": "PRET",
+        }) == "PRET"
+
+    @patch("core.openai_compat_provider.SharedHTTPPool.get_session")
+    def test_generate_envoie_enable_thinking_false(self, mock_get_session):
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "PRET"}}],
+            "usage": {},
+        }
+        mock_get_session.return_value.post.return_value = mock_response
+        assert self._ajean().generate("sys", "PRET") == "PRET"
+        payload = mock_get_session.return_value.post.call_args.kwargs["json"]
+        assert payload["chat_template_kwargs"]["enable_thinking"] is False
+

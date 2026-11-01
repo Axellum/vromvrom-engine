@@ -20,6 +20,7 @@ import {
   fetchBacklogTasks, fetchBacklogStats, createBacklogTask, deleteBacklogTask,
   type BacklogTask, type BacklogStatus,
 } from '../api/backlog';
+import { fetchProjects } from '../api/projects';
 import { useEngineStore } from '../state/engineStore';
 import {
   PageHeader, Card, Explain, Warn, Button, Metric, Pill,
@@ -45,14 +46,16 @@ const STATUS_TONE: Record<BacklogStatus, 'neutral' | 'good' | 'warn' | 'bad' | '
 
 function RunNowCard() {
   const [objective, setObjective] = useState('');
+  const [projectId, setProjectId] = useState('moteur');
   const status = useEngineStore((s) => s.status);
   const isRunning = status === 'running';
+  const projectsQ = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
 
   const run = useMutation({
     mutationFn: (obj: string) =>
       apiFetch<{ session_id: string }>('/api/run', {
         method: 'POST',
-        body: JSON.stringify({ objective: obj }),
+        body: JSON.stringify({ objective: obj, project_id: projectId }),
       }),
     onSuccess: () => setObjective(''),
   });
@@ -80,9 +83,29 @@ function RunNowCard() {
             className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500 disabled:opacity-50"
             placeholder="Ex : Analyse les logs du daemon des dernières 24 h et résume les anomalies."
           />
+          <label className="mt-3 mb-1.5 block text-xs font-medium text-slate-400">
+            Projet (git de destination)
+          </label>
+          <select
+            value={projectId}
+            onChange={(e) => setProjectId(e.target.value)}
+            disabled={isRunning}
+            className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500 disabled:opacity-50"
+          >
+            {(projectsQ.data?.projects ?? [
+              { id: 'moteur', label: 'tab5-engine' },
+              { id: 'tab5', label: 'Tab5 V2' },
+              { id: 'ecosystem', label: 'Écosystème' },
+            ]).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label} ({p.id})
+              </option>
+            ))}
+          </select>
           <p className="mt-1.5 text-xs text-slate-600">
-            L'endpoint n'accepte que l'objectif. Le choix des agents, du modèle et du
-            budget est décidé par le routeur et la configuration du moteur — pour
+            Le projet choisit le dépôt Git où les fichiers seront écrits (Tab5
+            → <code>00ProjetTab</code>, pas le clone moteur). Le choix des
+            agents, du modèle et du budget reste décidé par le routeur — pour
             forcer une puissance sur une requête ponctuelle, utilisez le{' '}
             <strong>Chat</strong> et son sélecteur de tier.
           </p>
@@ -213,6 +236,8 @@ function BacklogCard() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState(2);
+  const [projectId, setProjectId] = useState('moteur');
+  const projectsQ = useQuery({ queryKey: ['projects'], queryFn: fetchProjects });
 
   const tasksQ = useQuery({
     queryKey: ['backlog', 'tasks'],
@@ -230,7 +255,7 @@ function BacklogCard() {
   };
 
   const create = useMutation({
-    mutationFn: () => createBacklogTask({ title, description, priority }),
+    mutationFn: () => createBacklogTask({ title, description, priority, project_id: projectId }),
     onSuccess: () => {
       setTitle('');
       setDescription('');
@@ -281,6 +306,19 @@ function BacklogCard() {
           />
           <div className="flex items-center gap-3">
             <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-sky-500"
+            >
+              {(projectsQ.data?.projects ?? [
+                { id: 'moteur', label: 'moteur' },
+                { id: 'tab5', label: 'tab5' },
+                { id: 'ecosystem', label: 'ecosystem' },
+              ]).map((p) => (
+                <option key={p.id} value={p.id}>{p.id}</option>
+              ))}
+            </select>
+            <select
               value={priority}
               onChange={(e) => setPriority(Number(e.target.value))}
               className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-sm outline-none focus:border-sky-500"
@@ -319,6 +357,9 @@ function BacklogCard() {
                       <span className="text-xs text-slate-600">
                         P{t.priority} · #{t.id}
                       </span>
+                      {t.project_id && (
+                        <span className="font-mono text-[11px] text-sky-300">{t.project_id}</span>
+                      )}
                       {t.git_branch && (
                         <span className="inline-flex items-center gap-1 font-mono text-[11px] text-violet-300">
                           <GitBranch className="h-3 w-3" />

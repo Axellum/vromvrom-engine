@@ -314,6 +314,7 @@ async def _summarize_data_for_tts(
         fast_path_cache=fast_path_cache,
         system_prompt_suffix=_SUMMARIZE_SUFFIX,
         conversation_id=conversation_id,
+        source_type="tab5",
     )
     return _sanitize_tts(raw or "")
 
@@ -366,6 +367,7 @@ async def run_web_specialist(
         fast_path_cache=fast_path_cache,
         system_prompt_suffix=suffix,
         conversation_id=conversation_id,
+        source_type="tab5",
     )
     text = _sanitize_tts(raw or "")
     if not text:
@@ -493,6 +495,7 @@ async def run_deep_specialist(
         tier_override=tier_override,
         model_override=model_override,
         inject_project_context=True,
+        source_type="tab5",
     )
     text = _sanitize_tts(raw or "", max_sentences=6, max_chars=650)
     if not text:

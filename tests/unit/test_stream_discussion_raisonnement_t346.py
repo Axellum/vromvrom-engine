@@ -163,7 +163,11 @@ async def _drainer(gateway, provider_name, cache):
         patch.object(
             pipeline_service, "_fast_path_hote_muet", AsyncMock(return_value=False)
         ),
-        patch.object(pipeline_service, "FAST_PATH_PROVIDERS", [provider_name]),
+        # La cascade est lue depuis config.json (routing_policy.fast_path_providers)
+        # depuis le 20/08 : patcher la seule constante ne suffit plus.
+        patch.object(
+            pipeline_service, "_fast_path_providers_config", lambda *_a, **_k: [provider_name]
+        ),
         patch.object(
             pipeline_service, "_persist_fast_path_async", new_callable=AsyncMock
         ),

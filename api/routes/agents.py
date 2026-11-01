@@ -93,6 +93,8 @@ class RunRequestBody(BaseModel):
     # la clé d'exécution retombe sur la source de la requête (voir
     # core.app_state._cle_execution).
     session_id: str | None = None
+    # Projet cible (moteur / tab5 / ecosystem). Absent → déduit de l'objectif.
+    project_id: str | None = None
 
 
 class ExecuteRequestBody(BaseModel):
@@ -146,7 +148,8 @@ async def run_task(body: RunRequestBody):
 
     from services.pipeline_service import run_engine_background
     asyncio.create_task(run_engine_background(
-        body.objective, _on_event, session_id=session_id, execution_key=execution_key
+        body.objective, _on_event, session_id=session_id, execution_key=execution_key,
+        project_id=body.project_id,
     ))
     return {
         "message": "Tâche démarrée en arrière-plan.",
@@ -332,6 +335,81 @@ async def _try_ha_deterministic_shortcut(
     return result
 
 
+async def _try_ha_everyday_shortcut(
+    body: "ExecuteRequestBody",
+    request_source,
+    session_id: str,
+) -> dict | None:
+    """
+    Questions du quotidien en mode domotique (« quelle heure est-il ? », « on est
+    quel jour ? », « quel temps fait-il ? »), APRÈS la commande déterministe et
+    AVANT le routeur.
+
+    Le 19/10/2026, l'agent « Domotique » de HA répondait « Je n'ai pas compris
+    la commande domotique. » à ces dix phrases-là, alors que l'agent
+    « Discussion » répondait juste : les résolveurs Zero-LLM de météo et
+    d'heure n'étaient branchés que dans `vocal_host` (mode Discussion), et le
+    mode `ha` bloque le `casual_chat` du routeur exprès (pas de bavardage LLM
+    sur le pipeline domotique). La phrase finissait donc en `ha_mode_failure`
+    après ~1 s de routeur.
+
+    Mêmes résolveurs et même ordre que le mode Discussion (météo puis heure).
+    Une phrase qui porte un verbe d'action domotique (« ferme », « allume »,
+    « mets »…) n'est jamais prise ici : elle suit la cascade d'avant (repli LLM
+    domotique compris), à l'identique.
+
+    Retourne None si ce n'est pas une question du quotidien ou si la source
+    (HA) ne répond pas : la cascade continue comme avant.
+    """
+    from services.datetime_query import resolve_datetime_query
+    from services.ha_weather_query import resolve_weather_query
+
+    if prompt_has_domotic_action(body.user_prompt):
+        return None
+
+    with VocalAuditTimer() as timer:
+        routing_type = "ha_weather"
+        try:
+            response_text = await resolve_weather_query(body.user_prompt)
+        except Exception as exc:
+            logger.warning("[EXECUTE] Météo HA (mode ha) échec : %s", exc)
+            response_text = None
+        if response_text is None:
+            routing_type = "ha_datetime"
+            response_text = resolve_datetime_query(body.user_prompt)
+    if response_text is None:
+        return None
+
+    log_vocal_request(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    logger.info("[EXECUTE] 🏠🕒 HA quotidien (%s) → %s", routing_type, response_text)
+    result = build_ha_fast_path_response(
+        session_id,
+        response_text,
+        routing_type,
+        {"routing_type": routing_type},
+    )
+    log_vocal_response(
+        session_id=session_id,
+        user_prompt=body.user_prompt,
+        source_type=request_source.type.value,
+        source_mode=request_source.mode.value,
+        routing_type=routing_type,
+        agents_used=[routing_type],
+        response_text=response_text,
+        latency_ms=timer.elapsed_ms,
+        tts_enabled=request_source.tts_enabled,
+        device_id=request_source.device_id,
+    )
+    return result
+
+
 async def _handle_discussion_mode(
     body: "ExecuteRequestBody",
     request_source,
@@ -401,6 +479,7 @@ async def _handle_discussion_mode(
                     device_id=request_source.device_id,
                     tier_override=body.tier,
                     model_override=body.model,
+                    source_type=request_source.type.value,
                 ),
                 timeout=execute_timeout,
             )
@@ -482,6 +561,11 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
         shortcut = await _try_ha_deterministic_shortcut(body, request_source, session_id)
         if shortcut is not None:
             return shortcut
+        # 4) Questions du quotidien (météo, heure, date) APRÈS la commande : une
+        #    commande reconnue garde toujours la priorité.
+        everyday_reply = await _try_ha_everyday_shortcut(body, request_source, session_id)
+        if everyday_reply is not None:
+            return everyday_reply
 
     # ── Mode Discussion : hors registre d'exécution et hors routeur ──
     # Ce chemin ne touche pas l'Engine partagé : il n'a donc pas de créneau à
@@ -586,6 +670,7 @@ async def execute_chat(body: ExecuteRequestBody, _auth=Depends(optional_auth)):
                             model_override=body.model,
                             system_prompt_suffix=suffix,
                             inject_project_context=True,
+                            source_type=request_source.type.value,
                         ),
                         timeout=execute_timeout,
                     )
@@ -942,16 +1027,28 @@ class CodeRequestBody(BaseModel):
     context_files: list[str] = []
 
 
+def _read_context_file(path: str) -> str:
+    """
+    Lecture synchrone d'un fichier de contexte (E/S disque bloquante).
+    Exécutée hors de la boucle d'événements via `asyncio.to_thread` dans
+    `run_code_task` pour ne pas geler la coroutine asyncio.
+    """
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read()[:40_000]
+
+
 @router.post("/api/code")
 async def run_code_task(body: CodeRequestBody, _auth=Depends(optional_auth)) -> dict[str, Any]:
     """Coding front HTTP (#T204) — équivalent `python -m tools.code_front`."""
     from services.coding_front import run_coding_task
 
+    # [#T204] Lecture des fichiers de contexte déléguée à un thread pool :
+    # `open().read()` est une E/S bloquante qui ne doit pas geler la boucle
+    # d'événements d'une coroutine asyncio.
     file_contents: dict[str, str] = {}
     for path in body.context_files[:5]:
         try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                file_contents[path] = f.read()[:40_000]
+            file_contents[path] = await asyncio.to_thread(_read_context_file, path)
         except OSError as exc:
             logger.warning("[API_CODE] Fichier ignoré %s : %s", path, exc)
 

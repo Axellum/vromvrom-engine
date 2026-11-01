@@ -53,6 +53,8 @@ import logging
 import os
 import time
 
+from core.log_redaction import masquer_secrets
+
 logger = logging.getLogger(__name__)
 
 # Intervalle entre deux cycles. Une heure par défaut : une clé morte doit se voir
@@ -269,11 +271,14 @@ def lire_sante(model_id: str) -> dict:
         d = dict(ligne)
         if not avec_alerte:
             d[_COLONNE_ALERTE] = None
+        # Lignes écrites avant l'expurgation à l'écriture : on masque à la lecture.
+        d["derniere_erreur"] = masquer_secrets(d.get("derniere_erreur"))
         return d
     return {
         "model_id": ligne[0], "dernier_test": ligne[1], "dernier_succes": ligne[2],
         "echecs_consecutifs": ligne[3], "succes_consecutifs": ligne[4],
-        "desactive_par_sonde": ligne[5], "derniere_erreur": ligne[6],
+        "desactive_par_sonde": ligne[5],
+        "derniere_erreur": masquer_secrets(ligne[6]),
         "latence_ms": ligne[7],
         _COLONNE_ALERTE: ligne[8] if avec_alerte else None,
     }
@@ -297,6 +302,11 @@ def _ecrire_sante(model_id: str, **champs) -> None:
     inconnues = set(champs) - _COLONNES_SANTE
     if inconnues:
         raise ValueError(f"Colonnes de santé inconnues : {sorted(inconnues)}")
+    # Expurgation À L'ÉCRITURE : le message d'une exception de fournisseur peut
+    # porter la clé d'API (URL `?key=…`, en-tête Bearer). Jamais en base, donc
+    # jamais dans une route, un export ou une sauvegarde.
+    if champs.get("derniere_erreur"):
+        champs["derniere_erreur"] = masquer_secrets(str(champs["derniere_erreur"]))
 
     from core.runtime_db import get_connection
     conn = get_connection()
@@ -357,7 +367,9 @@ async def tester_modele(model_id: str, gateway=None) -> tuple[bool | None, str, 
         )
         return True, "", (time.perf_counter() - debut) * 1000
     except Exception as exc:
-        return False, str(exc)[:300], (time.perf_counter() - debut) * 1000
+        # Masquer AVANT de tronquer : une clé coupée à 300 caractères échapperait
+        # au motif de détection.
+        return False, masquer_secrets(str(exc))[:300], (time.perf_counter() - debut) * 1000
 
 
 # ── Cycle complet ───────────────────────────────────────────────────────────

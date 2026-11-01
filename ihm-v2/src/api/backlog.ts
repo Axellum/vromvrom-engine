@@ -27,6 +27,7 @@ export interface BacklogTask {
   created_at: number;
   scheduled_at: number | null;
   git_branch: string | null;
+  project_id?: string | null;
   result_summary: string | null;
   tokens_used: number | null;
   error_message: string | null;
@@ -48,6 +49,7 @@ export async function createBacklogTask(input: {
   description: string;
   priority?: number;
   scheduled_at?: number | null;
+  project_id?: string | null;
 }): Promise<{ status: string; task_id: number }> {
   return apiFetch("/api/backlog/tasks", {
     method: "POST",
@@ -56,6 +58,7 @@ export async function createBacklogTask(input: {
       description: input.description,
       priority: input.priority ?? 2,
       scheduled_at: input.scheduled_at ?? null,
+      project_id: input.project_id ?? null,
     }),
   });
 }

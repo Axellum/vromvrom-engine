@@ -15,6 +15,8 @@ class AsyncDBSerializer:
     Singleton thread-safe : sérialise les accès à SQLite.
     Chaque opération est encapsulée dans une coroutine et exécutée
     par un worker unique (asyncio.Task) sous forme de file FIFO.
+    L'exécution de la fonction synchrone est déléguée à un thread
+    via `asyncio.to_thread` afin de ne jamais geler la boucle d'événements.
     """
 
     _instance = None
@@ -60,8 +62,11 @@ class AsyncDBSerializer:
             try:
                 func, future = await self._queue.get()
                 try:
-                    # Exécution synchrone dans le worker dédié
-                    result = func()
+                    # Changement : l'appel direct `result = func()` bloquait la boucle
+                    # d'événements principale. On exécute désormais la fonction dans un
+                    # thread séparé via asyncio.to_thread, ce qui libère l'event loop
+                    # pendant l'exécution des opérations SQLite synchrones.
+                    result = await asyncio.to_thread(func)
                     if not future.cancelled():
                         future.set_result(result)
                 except Exception as e:

@@ -38,6 +38,9 @@ jobs:
 
     - name: Seed models registry DB
       run: |
+        cp config.example.json config.json
+        cp config.example.json config.json
+        cp config.example.json config.json
         cp ha_commands.json.example ha_commands.json
         cp pricing_strategy.json.example pricing_strategy.json
         python seed_models_db.py

@@ -127,7 +127,7 @@ def test_cerebras_models_db_registration(_catalogue_cerebras):
 
 
 def test_cerebras_free_path_prefers_free_key(monkeypatch):
-    """cerebras-free → gpt-oss-120b doit binder la clé free, pas la payante."""
+    """Compat : gpt-oss-120b bind CEREBRAS_API_KEY, gemma bind PAYANT (même si les deux sont PayGo)."""
     monkeypatch.setenv("CEREBRAS_API_KEY", "csk-free-test-key")
     monkeypatch.setenv("CEREBRAS_PAYANT_API_KEY", "csk-paid-test-key")
     gateway = LLMGateway()

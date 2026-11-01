@@ -78,6 +78,11 @@ _VOLET_ON_MARKERS = frozenset({
     "monte", "ouvre", "ouvrir", "leve",
     "remonte", "remontre", "releve",
 })
+# [#T490] Mots qui ne nomment ni une action ni un appareil : un fragment de
+# phrase du catalogue fait seulement de ces mots (et d'un verbe) ne désigne rien.
+_MOTS_OUTILS = frozenset({
+    "le", "la", "les", "l", "du", "de", "des", "d", "a", "au", "aux", "un", "une", "et",
+})
 # Écho TTS / phrases d'état — ne pas interpréter comme commande
 _VOLET_STATUS_MARKERS = frozenset({"sont", "est", "ete", "etait", "etaient", "seront", "deja", "maintenant"})
 _VOLET_COVER_ENTITY = "cover.living_room_blind"
@@ -420,6 +425,32 @@ def _est_question_sans_ordre(prompt: str, norm: str) -> bool:
     return True
 
 
+def _fragment_suffisant(norm: str, phrase_norm: str) -> bool:
+    """
+    [#T490] La phrase dite est-elle un MORCEAU d'une phrase du catalogue assez
+    précis pour agir ?
+
+    Mesuré en prod le 01/11 dans `vocal_audit_log` : « Coupe. » a éteint la
+    lumière du salon, parce que « coupe » est contenu dans « coupe la lumiere du
+    salon ». Le test d'inclusion se faisait caractère par caractère, sans autre
+    condition : « La. », « Le. », « Du. », « Salon. » ou « Lumière. » seuls
+    allumaient le salon, « Chambre. » la chambre. Un mot isolé arrive pourtant
+    souvent : un bout de phrase coupé par le STT, un « okay » mal entendu.
+
+    Le morceau n'est retenu que s'il est fait de mots entiers de la phrase et
+    qu'il nomme À LA FOIS une action et une cible : « allume la lumiere » reste
+    reconnu (STT qui a perdu « du salon »), « coupe » seul ne l'est plus. Même
+    principe que #T363 : ne jamais actionner la maison sur un doute.
+    """
+    if f" {norm} " not in f" {phrase_norm} ":
+        return False
+    actions = _ACTION_ON_MARKERS | _ACTION_OFF_MARKERS | _VOLET_ON_MARKERS
+    mots = norm.split()
+    if not any(mot in actions for mot in mots):
+        return False
+    return any(mot not in actions and mot not in _MOTS_OUTILS for mot in mots)
+
+
 def match_ha_command(prompt: str) -> HACommandMatch | None:
     """
     Match déterministe ha_commands.json avec tolérance STT (exact puis fuzzy).
@@ -471,7 +502,7 @@ def match_ha_command(prompt: str) -> HACommandMatch | None:
                 matched_phrase=phrase_norm,
                 service_data=service_data,
             )
-            if norm == phrase_norm or phrase_norm in norm or norm in phrase_norm:
+            if norm == phrase_norm or phrase_norm in norm or _fragment_suffisant(norm, phrase_norm):
                 return ensure_volet_via_script(hit)
             score = SequenceMatcher(None, norm, phrase_norm).ratio()
             if score > best_score:

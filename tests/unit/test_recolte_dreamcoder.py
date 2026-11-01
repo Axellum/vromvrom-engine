@@ -100,8 +100,13 @@ def test_corps_de_pr_porte_le_contexte_d_execution():
     assert "Standardiser query_deepseek" in corps
     assert "$0.0123" in corps
     assert "8421" in corps
-    # La CI GitHub est morte (#T382) : la relecture humaine est la seule barrière.
-    assert "pytest tests/unit" in corps
+    # [#T421] La case de relecture visait « pytest tests/unit en local, la CI
+    # GitHub est morte (#T382) ». Vérifié le 19/08 : la CI tourne et passe en
+    # ~2 min sur toutes les PR du 18 et du 19 — le diagnostic #T382 était faux
+    # (cf. `CI_DIAGNOSTIC_T382.md`, produit par un agent). La case renvoie donc
+    # au statut réel de la PR.
+    assert "La CI de la PR est verte" in corps
+    assert "Le diff fait ce que la tâche demandait" in corps
 
 
 def test_corps_de_pr_survit_a_un_rapport_absent():

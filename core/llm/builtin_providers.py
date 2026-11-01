@@ -89,6 +89,7 @@ class _PluginOpenAICompat(ProviderPlugin):
             # l'API veut son propre nom (cf. le 404 de `gemma-4-31b-cerebras`).
             model=spec.nom_api,
             extra_headers=config.get("extra_headers"),
+            json_prompt_only=registre_id in ("ajean_pc", "ajean_deck"),
         )
         verifier_interface_transport(transport)
         return transport
@@ -235,7 +236,7 @@ class LMStudioLocalPlugin(ProviderPlugin):
             supports_tools=True,
             supports_json_mode=True,
             speciality='agents_locaux',
-            recommended_use='Tier Léger — agents locaux, RAG confidentiel',
+            recommended_use='Tier Léger — agents locaux, RAG confidentiel (AJEAN llama.cpp)',
         ),
         ModelSpec(
             id='qwen3-coder-next',
@@ -392,11 +393,11 @@ class OllamaLocalPlugin(_PluginOpenAICompat):
 class AjeanPlugin(_PluginOpenAICompat):
     """Provider AJEAN (llama.cpp / llama-server, port 8080).
 
-    Déclaration purement déclarative : AJEAN n'est PAS encore mis en tête de cascade
-    (FAST_PATH_PROVIDERS intact, `services/pipeline_service.py` non modifié). L'hôte
-    n'écoute pas encore sur le LAN — action d'Axel (basculer llama-server sur 0.0.0.0 +
-    ouvrir le pare-feu 8080). D'ici là, `ajean_pc` échoue en connect timeout et la
-    cascade bascule en silence sur le cloud.
+    Executor local des workflows (23/08) : BudgetGuard et `_choisir_provider_tache`
+    l'élisent en tête. L'hôte PC doit écouter sur le LAN (`--host 0.0.0.0` +
+    pare-feu 8080). Sinon la sonde d'hôte (#T360) l'écarte et la cascade
+    bascule sur le cloud. Réglages : `core/llm/ajean_adapter.py` /
+    `deploy/ajean_workflow.json`.
     """
 
     _DESCRIPTEUR = ProviderDescriptor(
@@ -408,7 +409,7 @@ class AjeanPlugin(_PluginOpenAICompat):
         auth=AuthSpec(kind='none', instructions='Aucune clé : llama.cpp n\'authentifie pas (API OpenAI-compatible, port 8080).'),
         confidentiality='total',
         cascade_priority=1.1,
-        notes="AJEAN = llama.cpp (llama-server) sur le PC local, Qwen2.5-14B-Instruct-1M-Q4_K_M. Déclaré par IP LAN (192.168.1.10), jamais par nom DNS, pour rester dans la famille locale (#T337, _est_hote_local). ajean_deck (127.0.0.1) est l'accès loopback au MÊME service — pas un provider distinct, d'où l'absence de descripteur propre (même logique qu'ollama_local/ollama_pc).",
+        notes="AJEAN = llama.cpp (llama-server) sur le PC local, Qwen2.5-14B-Instruct-1M-Q4_K_M. Déclaré par IP LAN (192.168.1.10), jamais par nom DNS, pour rester dans la famille locale (#T337, _est_hote_local). ajean_deck (127.0.0.1) est l'accès loopback au MÊME service. 23/08 : branché executor des workflows (BudgetGuard + DreamCoder). Profil llama-server : -ngl 999 -c 32768 -ctk/-ctv q8_0 --host 0.0.0.0 --port 8080 --jinja.",
         models=(
         ModelSpec(
             id=AJEAN_DEFAULT_MODEL,
@@ -419,8 +420,8 @@ class AjeanPlugin(_PluginOpenAICompat):
             supports_tools=True,
             supports_json_mode=True,
             supports_streaming=True,
-            speciality='domotique',
-            recommended_use='Inférence locale llama.cpp — contexte 1M, Q4_K_M sur GPU',
+            speciality='code_local',
+            recommended_use='Executor local des workflows (DreamCoder / DAG) — contexte 32k, Q4_K_M sur GPU',
         ),
         ),
     )
@@ -796,7 +797,7 @@ class GeminiCLIPluginInterne(ProviderPlugin):
             supports_streaming=True,
             speciality='agents_cli',
             recommended_use='CLI Antigravity IDE — mode high compute',
-            notes='Amorti ~0.20$/M tokens',
+            notes='Amorti ~0.20$/M tokens. Août 2026 : Antigravity à jour sert Gemini 3.7 Flash ; `-m` = mode chat, pas l\'id modèle.',
         ),
         ModelSpec(
             id='gemini-3.5-flash-medium-cli',
@@ -1146,7 +1147,7 @@ class DeepSeekPlugin(_PluginOpenAICompat):
         ),
         ModelSpec(
             id='deepseek-v4-pro',
-            api_model_id='deepseek-chat',
+            api_model_id='deepseek-v4-pro',
             display_name='DeepSeek V4 Pro',
             tier='paid',
             routing_tier='fort',
@@ -1260,7 +1261,7 @@ class CerebrasPlugin(_PluginOpenAICompat):
         auth=AuthSpec(
             kind='api_key',
             env_var='CEREBRAS_API_KEY',
-            instructions='Clé gratuite pour gpt-oss-120b ; CEREBRAS_PAYANT_API_KEY optionnelle pour gemma/zai (la clé free sert de secours).',
+            instructions='PayGo Team (D-15, 23/08) : CEREBRAS_API_KEY et CEREBRAS_PAYANT_API_KEY sont la même clé facturée. Plus de palier gratuit.',
         ),
         confidentiality='none',
         cascade_priority=2.3,
@@ -1322,8 +1323,9 @@ class CerebrasPlugin(_PluginOpenAICompat):
         return self._DESCRIPTEUR
 
     def build(self, credentials, model=None):
-        # Double clé : gpt-oss-120b (rotation BudgetGuard) consomme la clé
-        # gratuite ; gemma/zai préfèrent la clé payante, free en secours.
+        # D-15 : plus de palier gratuit. Les deux env vars portent la clé
+        # Team PayGo. gpt-oss-120b lit CEREBRAS_API_KEY en premier (Tab) ;
+        # gemma/zai préfèrent CEREBRAS_PAYANT_API_KEY (même secret).
         cle_free = (credentials.get('CEREBRAS_API_KEY') or '').strip()
         cle_payante = (credentials.get('CEREBRAS_PAYANT_API_KEY') or '').strip()
         par_id = {m.id: m for m in self.descriptor.models}

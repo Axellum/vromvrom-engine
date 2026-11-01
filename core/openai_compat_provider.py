@@ -296,12 +296,19 @@ class OpenAICompatibleProvider(LLMProvider):
         model: str,
         extra_headers: dict[str, str] = None,
         timeout: tuple = None,
+        json_prompt_only: bool = False,
     ):
         self.provider_name = provider_name
         self.base_url = base_url
         self.api_key = api_key
         self.model = model
         self.timeout = timeout if timeout is not None else get_timeout("openai_compat")
+        # [#20/08] llama.cpp impose sa grammaire JSON « peg-native » dès que
+        # response_format json_object est envoyé — le Qwen 2.5 1M produit une
+        # sortie non conforme et le serveur répond 500. Pour ces providers, on
+        # n'envoie PAS response_format : le prompt exige déjà le JSON strict et
+        # le parsing tolérant (raw_decode) récupère l'objet dans la réponse.
+        self.json_prompt_only = json_prompt_only
 
         # Construction des headers HTTP standard + optionnels
         self.headers = {
@@ -364,6 +371,33 @@ class OpenAICompatibleProvider(LLMProvider):
             )
         return _repli_max_output_tokens()
 
+    def _finaliser_payload(self, payload: dict) -> dict:
+        """Complète le payload llama.cpp (AJEAN) avant l'envoi.
+
+        Qwen3.8 thinking : `max_tokens=64` (sonde PRET) partait tout entier
+        dans `reasoning_content`, `content` restait `''`, finish=length —
+        AJEAN était déclaré mort alors que `/v1/models` répond 200 (mesuré
+        23/08). `enable_thinking=false` rend `PRET` en 3 tokens.
+        """
+        if self.json_prompt_only:
+            kwargs_tpl = dict(payload.get("chat_template_kwargs") or {})
+            kwargs_tpl.setdefault("enable_thinking", False)
+            payload["chat_template_kwargs"] = kwargs_tpl
+        return payload
+
+    def _contenu_assistant(self, message: dict) -> Any:
+        """Texte utile : `content` d'abord, sinon le canal thinking."""
+        if "tool_calls" in message:
+            return message
+        content = message.get("content") or ""
+        if isinstance(content, str) and content.strip():
+            return content
+        for cle in ("reasoning_content", "reasoning"):
+            valeur = message.get(cle)
+            if isinstance(valeur, str) and valeur.strip():
+                return valeur
+        return content if isinstance(content, str) else ""
+
     # ──────────────────────────────────────────────────────────────
     # generate() — Appel standard (non-streaming)
     # ──────────────────────────────────────────────────────────────
@@ -404,6 +438,8 @@ class OpenAICompatibleProvider(LLMProvider):
         else:
             payload["max_tokens"] = self._max_tokens_par_defaut()
 
+        payload = self._finaliser_payload(payload)
+
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate)")
         # Utilisation du pool HTTP persistant (réutilisé entre les appels)
         _http = SharedHTTPPool.get_session()
@@ -434,7 +470,7 @@ class OpenAICompatibleProvider(LLMProvider):
         if "tool_calls" in message:
             return message
 
-        return message.get("content", "")
+        return self._contenu_assistant(message)
 
     async def generate_async(self, system_prompt: str, user_prompt: str, **kwargs) -> Any:
         """
@@ -469,6 +505,8 @@ class OpenAICompatibleProvider(LLMProvider):
         else:
             payload["max_tokens"] = self._max_tokens_par_defaut()
 
+        payload = self._finaliser_payload(payload)
+
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_async)")
         # httpx n'accepte pas le tuple (connect, read) de requests → convertir.
         _to = self.timeout
@@ -495,7 +533,7 @@ class OpenAICompatibleProvider(LLMProvider):
         message = resp_json["choices"][0]["message"]
         if "tool_calls" in message:
             return message
-        return message.get("content", "")
+        return self._contenu_assistant(message)
 
     # ──────────────────────────────────────────────────────────────
     # generate_structured() — Réponse JSON forcée
@@ -505,7 +543,14 @@ class OpenAICompatibleProvider(LLMProvider):
         self, system_prompt: str, user_prompt: str,
         schema: dict[str, Any], **kwargs,
     ) -> dict[str, Any]:
-        """Génère une réponse JSON structurée via response_format json_object."""
+        """Génère une réponse JSON structurée via response_format json_object.
+
+        [#20/08] Les providers locaux `json_prompt_only` (llama.cpp) ne reçoivent
+        PAS response_format : la grammaire JSON « peg-native » de llama-server
+        rejette la sortie du Qwen 2.5 1M (500 « does not match the expected
+        peg-native format »). Le prompt exige déjà le JSON strict et le parsing
+        tolérant ci-dessous récupère l'objet dans la réponse.
+        """
         sys_prompt = system_prompt + "\nTu DOIS répondre UNIQUEMENT au format JSON strict."
 
         payload = {
@@ -514,14 +559,17 @@ class OpenAICompatibleProvider(LLMProvider):
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "response_format": {"type": "json_object"},
             "temperature": kwargs.get("temperature", 0.0),
         }
+        if not self.json_prompt_only:
+            payload["response_format"] = {"type": "json_object"}
 
         if "max_tokens" in kwargs:
             payload["max_tokens"] = kwargs["max_tokens"]
         else:
             payload["max_tokens"] = self._max_tokens_par_defaut()
+
+        payload = self._finaliser_payload(payload)
 
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_structured)")
         # Pool HTTP persistant
@@ -534,9 +582,22 @@ class OpenAICompatibleProvider(LLMProvider):
         resp_json = response.json()
         self._record_usage(resp_json.get("usage"), session_id=kwargs.get("session_id"))
 
-        content = resp_json["choices"][0]["message"].get("content", "{}")
+        content = self._contenu_assistant(resp_json["choices"][0]["message"])
+        if not isinstance(content, str):
+            content = "{}"
+        # Le contrat de generate_structured est `-> dict` : une réponse JSON de
+        # type LISTE (ex. `[{"plan": ...}]`) est un format invalide, pas un
+        # succès. La renvoyer telle quelle faisait crasher les consommateurs
+        # (planner, reviewer, router…) sur `'list' object has no attribute
+        # 'get'` — observé en prod sur la task_38 le 19/08/2026.
         try:
-            return json.loads(content)
+            obj = json.loads(content)
+            if isinstance(obj, dict):
+                return obj
+            logger.warning(
+                f"{self.provider_name} a retourné un JSON non-objet "
+                f"({type(obj).__name__}) — réponse traitée comme invalide."
+            )
         except json.JSONDecodeError:
             # Le thinking DeepSeek peut précéder le JSON — on l'extrait via raw_decode
             try:
@@ -544,14 +605,14 @@ class OpenAICompatibleProvider(LLMProvider):
                 for m in __import__("re").finditer(r"[{\[]", content):
                     try:
                         obj, _ = decoder.raw_decode(content, m.start())
-                        if isinstance(obj, (dict, list)):
+                        if isinstance(obj, dict):
                             return obj
                     except json.JSONDecodeError:
                         continue
             except Exception:
                 pass
             logger.error(f"{self.provider_name} n'a pas retourné un JSON valide: {content[:200]}")
-            return {}
+        return {}
 
     # ──────────────────────────────────────────────────────────────
     # generate_stream() — Streaming SSE natif
@@ -597,6 +658,8 @@ class OpenAICompatibleProvider(LLMProvider):
             payload["max_tokens"] = kwargs["max_tokens"]
         else:
             payload["max_tokens"] = self._max_tokens_par_defaut()
+
+        payload = self._finaliser_payload(payload)
 
         logger.debug(f"Appel API {self.provider_name} ({self.model}) (generate_stream)")
         # Pool HTTP persistant (stream=True via Session)
@@ -707,7 +770,7 @@ OPENAI_COMPAT_PROVIDERS = {
         "base_url": "https://api.cerebras.ai/v1/chat/completions",
         "env_key": "CEREBRAS_API_KEY",
         "default_model": "llama3.3-70b",
-        "description": "Cerebras — Free Tier d'inférence Wafer Scale ultra-rapide",
+        "description": "Cerebras — PayGo Team, inférence Wafer Scale (plus de palier gratuit, D-15)",
     },
     "openrouter": {
         "base_url": "https://openrouter.ai/api/v1/chat/completions",
@@ -772,18 +835,14 @@ OPENAI_COMPAT_PROVIDERS = {
         "default_model": "domotique-qwen7b:q4",
         "description": "Ollama PC via LAN — joignable depuis le Deck (GPU locale, fine-tune domotique)",
     },
-    # === AJEAN (llama.cpp / llama-server) — déclaratif, NON branché en cascade ===
-    # Runtime llama.cpp du PC d'Axel (b10451, Qwen2.5-14B-Instruct-1M-Q4_K_M), API
-    # OpenAI-compatible sur le port 8080. Deux entrées symétriques : le PC d'Axel
-    # (192.168.1.10, joignable depuis le Deck) et le Deck lui-même (127.0.0.1, pour sa
-    # propre instance à venir). Hôtes déclarés par IP privée/loopback, JAMAIS par nom
-    # DNS : `LLMGateway._est_hote_local` (core/llm_gateway.py) classe toute IP privée
-    # comme locale (#T337, mode privacy_level=local_only) alors qu'un nom d'hôte serait
-    # traité comme externe/cloud. Pas de clé d'API : llama.cpp n'authentifie pas.
-    # ⚠️ PRÉREQUIS RÉSEAU (action d'Axel, hors périmètre) : llama-server écoute encore
-    # --host 127.0.0.1, donc 192.168.1.10:8080 est injoignable depuis le Deck. Il faut
-    # basculer sur 0.0.0.0 et ouvrir le pare-feu Windows sur 8080. Tant que ce n'est
-    # pas fait, ces providers échouent en connect timeout (repli cloud silencieux).
+    # === AJEAN (llama.cpp / llama-server) — executor des workflows (23/08) ===
+    # Runtime llama.cpp du PC local (b10451, Qwen2.5-14B-Instruct-1M-Q4_K_M), API
+    # OpenAI-compatible sur le port 8080. Deux entrées symétriques : le PC local
+    # (192.168.1.10, joignable depuis le Deck) et le Deck lui-même (127.0.0.1).
+    # Hôtes déclarés par IP privée/loopback, JAMAIS par nom DNS (#T337).
+    # Pas de clé d'API : llama.cpp n'authentifie pas.
+    # Réglages llama-server : core/llm/ajean_adapter.py + deploy/ajean_workflow.json
+    # (`--host 0.0.0.0`, port 8080, -ngl 999, -c 32768, KV q8_0, --jinja).
     "ajean_pc": {
         "base_url": "http://192.168.1.10:8080/v1/chat/completions",
         "env_key": "AJEAN_API_KEY",  # Pas de clé requise : llama.cpp n'authentifie pas

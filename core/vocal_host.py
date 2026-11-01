@@ -204,6 +204,7 @@ async def _run_sync_discussion(
     routing_type: str,
     agent_name: str,
     enable_vocal_tools: bool = False,
+    source_type: str | None = None,
 ) -> str:
     from core.vocal_tts_cache import sanitize_discussion_tts
     from services.pipeline_service import run_fast_path
@@ -221,6 +222,7 @@ async def _run_sync_discussion(
         inject_project_context=False,
         conversation_id=conversation_id,
         enable_vocal_tools=enable_vocal_tools,
+        source_type=source_type,
     )
     text = sanitize_discussion_tts(raw or "")
     if not text:
@@ -358,12 +360,13 @@ async def handle_discussion(
     device_id: str | None = None,
     tier_override: str | None = None,
     model_override: str | None = None,
+    source_type: str | None = None,
 ) -> DiscussionHostResult:
     """
     Point d'entrée Host Discussion : chat sync ou job async selon intent.
 
     Priorité : Zero-LLM HA (commandes) → spécialistes web/calendrier →
-    chat Cerebras (outils seulement pour lecture d'état HA).
+    chat (Cerebras si source Tab, sinon fast-path AJEAN).
     """
     intent, score = classify_vocal_intent(user_prompt)
     meta: dict[str, Any] = {
@@ -480,6 +483,7 @@ async def handle_discussion(
             routing_type="discussion_chat",
             agent_name="discussion_chat",
             enable_vocal_tools=use_tools,
+            source_type=source_type,
         )
         agents = ["discussion_chat", "vocal_host"]
         if use_tools:

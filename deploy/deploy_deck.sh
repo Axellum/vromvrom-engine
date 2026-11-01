@@ -13,15 +13,16 @@
 #     ./deploy/deploy_deck.sh master --force  # accepte d'écraser des modifs locales
 #
 # Depuis Windows :
-#     ssh -i ~/.ssh/id_ed25519_deck deck@192.168.1.x \
-#         '/home/deck/dev_station/moteur_agents/deploy/deploy_deck.sh master'
+#     ssh -i ~/.ssh/id_ed25519 deck@192.168.1.x \
+#         '/opt/vromvrom-engine/deploy/deploy_deck.sh master'
 #
 # Garanties :
 #   - les fichiers NON SUIVIS ne sont jamais touchés (bases .db de production,
 #     LoRA, datasets) : on utilise `git reset --hard`, jamais `git clean` ;
-#   - config.json et pricing_strategy.json sont préservés, y compris à travers
-#     un rollback : ce sont de l'état runtime réécrit par le moteur lui-même
-#     (POST /api/config et POST /api/pricing → safe_json_write) ;
+#   - config.json, pricing_strategy.json, skills.json et docs/CHANGELOG_AUTO.md
+#     sont préservés, y compris à travers un rollback : ce sont de l'état
+#     runtime réécrit par le moteur lui-même (POST /api/config, POST /api/pricing,
+#     DocGenerator → safe_json_write / append changelog) ;
 #   - refus de déployer si des fichiers suivis ont été modifiés à la main sur
 #     la prod (c'est exactement ce qui a causé la divergence) — sauf --force ;
 #   - TOUT échec après la bascule (dépendances, build frontend, redémarrage,
@@ -30,7 +31,7 @@
 
 set -euo pipefail
 
-REPO="${MOTEUR_REPO:-/home/deck/dev_station/moteur_agents}"
+REPO="${MOTEUR_REPO:-/opt/vromvrom-engine}"
 SERVICE="${MOTEUR_SERVICE:-moteur_agents.service}"
 CONTAINER="${MOTEUR_CONTAINER:-ubuntu-dev}"
 HEALTH_URL="${MOTEUR_HEALTH_URL:-http://127.0.0.1:8000/healthz}"
@@ -47,7 +48,26 @@ HEALTH_DELAY=2
 # rattachement à origin. Sans cette préservation, le `git reset --hard` de la
 # première bascule les supprimerait, et le routeur ML repartirait de zéro :
 # `MLRouter.train()` exige min_samples=50 avant de pouvoir se réentraîner.
-PRESERVE=(config.json pricing_strategy.json models/ml_router.pkl models/ml_router_meta.json)
+# [#T408] `skills.json` est de l'ETAT RUNTIME, pas du code : le registre de
+# competences (`core/skill_registry`) y ecrit ce que les agents apprennent, et
+# le depot en versionne un `[]` vide. Consequence mesuree le 19/08 a 00h50 : un
+# cycle autonome enregistre une competence a 21h35, et le deploiement suivant
+# REFUSE de partir -- « fichiers suivis modifies directement sur la prod ».
+# Autrement dit, chaque nuit de travail autonome bloquait la mise en production
+# du lendemain. Il rejoint config.json et pricing_strategy.json, qui sont dans
+# ce cas depuis plus longtemps.
+# [#T408 suite 22/08] `docs/CHANGELOG_AUTO.md` est le même piège : DocGenerator
+# y append les sessions du moteur, le dépôt versionne le fichier, et le
+# déploiement suivant refuse (« fichiers suivis modifiés directement sur la
+# prod »). Mesuré après merge #451 : /healthz 200, puis ÉCHEC sur ce seul
+# fichier. Ce n'est pas une dérive manuelle — on le préserve comme skills.json.
+# [25/09] `ha_logger_key.json` (clé du compte de service GCP de Cloud Logging)
+# était SUIVI par git depuis le merge #288 du 12/08, malgré `*_key.json` dans
+# .gitignore. Il sort de l'index ; sans cette préservation, le `git reset --hard`
+# du premier déploiement suivant le supprimerait de la prod (suivi dans OLD_SHA,
+# absent de NEW_SHA) et Cloud Logging s'arrêterait en silence. Restauré après la
+# bascule, il redevient un fichier ignoré, comme `.env`.
+PRESERVE=(config.json pricing_strategy.json skills.json models/ml_router.pkl models/ml_router_meta.json docs/CHANGELOG_AUTO.md ha_logger_key.json)
 
 BRANCH="master"
 DRY_RUN=0
@@ -169,12 +189,30 @@ install_deps() {
         python3 -m pip install --quiet --break-system-packages -r requirements.txt
 }
 
+# Cache npm DEDIE au deploiement, hors du cache partage ~/.npm.
+#
+# Incident du 18/08 : le deploiement a echoue au `npm ci` sur
+# « EACCES: permission denied, mkdir /home/deck/.npm/_cacache/content-v2/… ».
+# 56 entrees du cache partage appartenaient a l'**uid 100000** — ecrites le
+# 13/08 depuis un conteneur rootless dont le mapping d'utilisateur differe.
+# Tant que les versions demandees etaient deja en cache, personne ne voyait
+# rien ; le jour ou dependabot a monte 4 paquets, `npm ci` a du ecrire dans
+# un de ces dossiers et le deploiement est parti en rollback. Le diagnostic
+# est couteux : la CI est verte, le lock est coherent, et le rebuild du
+# rollback reussit — il reinstalle des versions deja en cache.
+#
+# Un cache ecrit UNIQUEMENT par `podman exec -u deck ubuntu-dev` ne peut
+# plus etre empoisonne par un autre mapping d'utilisateur.
+NPM_CACHE="${MOTEUR_NPM_CACHE:-/home/deck/.npm-deploy}"
+
 build_frontend() {
     # ihm-v2/dist est monté par gui_server.py (StaticFiles sur /). Il n'est pas
     # suivi par git : sans rebuild, l'IHM reste sur l'ancien build alors que
     # /healthz répond 200. npm n'existe que dans le conteneur, pas sur l'hôte.
-    log "ihm-v2 a changé — build du frontend dans $CONTAINER"
-    podman exec -u deck --workdir "$REPO/ihm-v2" "$CONTAINER" npm ci --silent \
+    log "ihm-v2 a changé — build du frontend dans $CONTAINER (cache : $NPM_CACHE)"
+    # `--silent` masquait la cause reelle des echecs : on garde la sortie.
+    podman exec -u deck --workdir "$REPO/ihm-v2" "$CONTAINER" \
+        npm ci --cache "$NPM_CACHE" --no-audit --no-fund \
         && podman exec -u deck --workdir "$REPO/ihm-v2" "$CONTAINER" npm run build
 }
 

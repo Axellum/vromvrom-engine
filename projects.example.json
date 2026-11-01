@@ -1,0 +1,17 @@
+{
+  "_documentation": "Copier vers projects.json (gitignoré) pour surcharger les chemins machine-locaux. Sans overlay, le moteur détecte 00ProjetTab / contexte_ia en remontant depuis ce dépôt. Variables d'env équivalentes : MOTEUR_PROJECT_TAB5_PATH, MOTEUR_PROJECT_ECOSYSTEM_PATH, MOTEUR_PROJECT_<ID>_WORK_PATHS (séparateur os.pathsep).",
+  "projects": {
+    "tab5": {
+      "local_path": "C:\\chemin\\vers\\00ProjetTab",
+      "work_paths": [],
+      "politique": "humain"
+    },
+    "ecosystem": {
+      "local_path": "C:\\chemin\\vers\\espace_de_travail",
+      "politique": "humain"
+    },
+    "moteur": {
+      "politique": "clone"
+    }
+  }
+}

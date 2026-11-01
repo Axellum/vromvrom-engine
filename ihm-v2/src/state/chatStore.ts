@@ -59,12 +59,27 @@ export interface ChatMessage {
 /** [#T194] Tiers réels du backend (get_provider_for_tier) + "auto" (cascade). */
 export type Tier = "leger" | "moyen" | "fort" | "auto";
 
+/**
+ * UUID v4 avec repli : `crypto.randomUUID()` n'existe qu'en contexte sécurisé
+ * (HTTPS ou localhost). L'IHM est servie en HTTP simple sur le LAN du Deck
+ * (http://192.168.1.10:8000), où l'API est absente — l'appel direct y crashait
+ * le store au démarrage (page noire). Le repli utilise `crypto.getRandomValues`, disponible partout.
+ */
+function uuidv4(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const octets = crypto.getRandomValues(new Uint8Array(16));
+  octets[6] = (octets[6] & 0x0f) | 0x40; // version 4
+  octets[8] = (octets[8] & 0x3f) | 0x80; // variante RFC 4122
+  const hex = Array.from(octets, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // UUID v4 persisté en localStorage — identifie la session chat courante.
 function getOrCreateChatSessionId(): string {
   const key = "chat_session_id";
   const existing = localStorage.getItem(key);
   if (existing) return existing;
-  const id = crypto.randomUUID();
+  const id = uuidv4();
   localStorage.setItem(key, id);
   return id;
 }
@@ -211,7 +226,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   clearHistory: () => set({ messages: [] }),
 
   newSession: () => {
-    const id = crypto.randomUUID();
+    const id = uuidv4();
     localStorage.setItem("chat_session_id", id);
     set({ messages: [], chatSessionId: id, hydrated: true });
   },

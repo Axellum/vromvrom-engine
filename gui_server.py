@@ -170,9 +170,15 @@ async def lifespan(app: FastAPI):
     # Sans cet appel, dreamer_main_loop() interroge get_next_task() sur une table
     # inexistante → "no such table: backlog_tasks" à chaque cycle DreamCoder.
     try:
-        from core.backlog_db import init_backlog_db
+        from core.backlog_db import init_backlog_db, recuperer_taches_running_orphelines
         await init_backlog_db()
         logger.info("[STARTUP] 🗂️ Table backlog_tasks initialisée.")
+        orphelines = await recuperer_taches_running_orphelines()
+        if orphelines.get("failed") or orphelines.get("pending"):
+            logger.warning(
+                "[STARTUP] 🧹 Tâches running orphelines : %s → failed, %s → pending.",
+                orphelines["failed"], orphelines["pending"],
+            )
     except Exception as e:
         logger.error(f"[STARTUP] ❌ Échec init backlog_tasks : {e}")
 
@@ -228,6 +234,38 @@ async def lifespan(app: FastAPI):
     from core.auditor_agent import auditor_main_loop
     asyncio.create_task(auditor_main_loop())
     logger.info("[STARTUP] 🕵️ Auditeur autonome (backlog auto-alimenté, opt-in via config) lancé.")
+
+    # Veille planifiée modèles & tarifs (toutes les 24 h par défaut) :
+    # rapport + application protégée (backup/vérification/exclusions) +
+    # notification HA. Coupable par MOTEUR_VEILLE_ENABLED=0 ;
+    # MOTEUR_VEILLE_APPLIQUER=0 la réduit au rapport seul.
+    from core.veille_scheduler import veille_main_loop
+    asyncio.create_task(veille_main_loop())
+    logger.info("[STARTUP] 📅 Veille planifiée modèles & tarifs lancée.")
+
+    # [#T480] Vigie : Gmail + fils de forum → alertes sur le téléphone par HA.
+    # Lecture seule sur les sources ; mails triés par LLM LOCAL uniquement (D-23).
+    # Désactivée par défaut : rien ne part tant que MOTEUR_VIGIE_ENABLED=1 n'est
+    # pas posé dans le .env de l'hôte (un merge sur master n'envoie rien).
+    from core.vigie.reglages import lire_reglages as _reglages_vigie
+    if _reglages_vigie().actif:
+        from core.vigie import vigie_main_loop
+        asyncio.create_task(vigie_main_loop())
+        logger.info("[STARTUP] 🔭 Vigie (Gmail + forums → téléphone) lancée.")
+    else:
+        logger.info("[STARTUP] 🔭 Vigie désactivée (MOTEUR_VIGIE_ENABLED=0).")
+
+    # [TASK_DISCOVERY] Auto-découverte planifiée des tâches : scan horaire,
+    # dédup sur tout le backlog (clé stable), filtre « DÉCISION AXEL »,
+    # plafond dur d'injections par run. Coupable par TASK_DISCOVERY_ENABLED=0.
+    # Le singleton est celui du router API : /status et la boucle partagent
+    # le même état.
+    if os.environ.get("TASK_DISCOVERY_ENABLED", "1") not in ("0", "false", "False"):
+        from api.routes.task_discovery import _scheduler as _task_discovery_scheduler
+        _task_discovery_scheduler.start()
+        logger.info("[STARTUP] 🔎 Auto-découverte de tâches planifiée lancée (intervalle 1 h).")
+    else:
+        logger.info("[STARTUP] 🔎 Auto-découverte de tâches désactivée (TASK_DISCOVERY_ENABLED=0).")
 
     asyncio.create_task(swarm_heartbeat_loop())
     logger.info("[STARTUP] 📡 Heartbeat Swarm Workers lancé.")
@@ -291,6 +329,11 @@ async def lifespan(app: FastAPI):
             await _watchdog.stop()
         except Exception:
             pass
+    try:
+        from api.routes.task_discovery import _scheduler as _task_discovery_scheduler
+        _task_discovery_scheduler.stop()
+    except Exception:
+        pass
     logger.info("[SHUTDOWN] 🛑 Arrêt propre du tab5-engine.")
     # Fermeture propre du sérialiseur SQLite
     try:
@@ -492,6 +535,21 @@ from api.routes.backlog import router as backlog_router
 
 app.include_router(backlog_router, dependencies=_AUTH_DEP)
 
+from api.routes.projects import router as projects_router
+
+app.include_router(projects_router, dependencies=_AUTH_DEP)
+
+# [TASK_DISCOVERY] Auto-Découverte et typage de tâches par Tier LLM
+from api.routes.task_discovery import router as task_discovery_router
+
+app.include_router(task_discovery_router, dependencies=_AUTH_DEP)
+
+# [RENDEMENT] Entonnoir de production DreamCoder : tenté → poussé → récolté
+# → mergé, et tokens par PR mergée.
+from api.routes.rendement import router as rendement_router
+
+app.include_router(rendement_router, dependencies=_AUTH_DEP)
+
 # Persistance des conversations Chat IHM (T83)
 from api.routes.chat_messages import router as chat_messages_router
 
@@ -512,6 +570,23 @@ app.include_router(vocal_router, dependencies=_AUTH_DEP)
 from api.routes.setup import router as setup_router
 
 app.include_router(setup_router, dependencies=_AUTH_DEP)
+
+# [SAUVEGARDES] Inventaire et déclenchement des sauvegardes des bases (core/sauvegarde.py).
+from api.routes.sauvegardes import router as sauvegardes_router
+
+app.include_router(sauvegardes_router, dependencies=_AUTH_DEP)
+
+# [GUIDE] Écran « Guide » (état d'ensemble, cascade) et vue MCP exposé/consommé.
+from api.routes.guide import router as guide_router
+from api.routes.mcp_vue import router as mcp_vue_router
+
+app.include_router(guide_router, dependencies=_AUTH_DEP)
+app.include_router(mcp_vue_router, dependencies=_AUTH_DEP)
+
+# [SIMULATION VOCALE] POST /api/vocal/simulate : chemin d'une phrase, sans rien exécuter.
+from api.routes.vocal_simulation import router as vocal_simulation_router
+
+app.include_router(vocal_simulation_router, dependencies=_AUTH_DEP)
 
 
 
@@ -1253,4 +1328,11 @@ if __name__ == "__main__":
         )
     else:
         logger.info(f"[STARTUP] Lancement d'Uvicorn en mode standard sur {args.host}:{args.port}.")
-        uvicorn.run("gui_server:app", host=args.host, port=args.port, reload=False)
+        # [21/08] On passe l'OBJET app (et non la chaîne "gui_server:app") : lancé via
+        # `python gui_server.py`, le module s'exécute sous `__main__`, et uvicorn
+        # ré-importait "gui_server" → tout le top-level s'exécutait DEUX fois
+        # (ContextLoader, GCP logging, app_state…), doublant le démarrage et créant
+        # des fenêtres de course au boot (log du 21/08 : deux passes complètes avant
+        # l'ouverture du port). `python -m uvicorn gui_server:app` — un seul import —
+        # démarrait, lui, du premier coup. Le mode reload garde la chaîne (obligatoire).
+        uvicorn.run(app, host=args.host, port=args.port, reload=False)

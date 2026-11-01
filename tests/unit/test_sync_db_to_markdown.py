@@ -13,13 +13,14 @@ Trois invariants, testés dans l'ordre d'importance :
    `moteur_runtime.db` de prod dans les tests.
 """
 
+import logging
 import os
 from datetime import datetime
 
 import pytest
 
 from core import runtime_db
-from tools.sync_db_to_markdown import sync_db_to_markdown
+from tools.sync_db_to_markdown import _charger_session, sync_db_to_markdown
 
 # Objectif court et stable : le slug du dossier de sortie doit être déterministe.
 _OBJECTIF_DEMO = "Audit HA"
@@ -118,18 +119,34 @@ def test_dry_run_ne_ecrit_rien_du_tout(tmp_path):
     )
 
 
-def test_session_introuvable_refuse_decrire(tmp_path):
-    """Mode défensif : une session introuvable lève et n'écrit rien."""
+def test_session_introuvable_ne_leve_pas_exception(tmp_path):
+    """Mode défensif : une session introuvable ne lève pas d'exception,
+    journalise en WARNING et retourne ecrit=False."""
     db = _base_temporaire(tmp_path)
     out = tmp_path / "historique_vide"
     out.mkdir()
 
-    with pytest.raises(ValueError, match="Aucune session 'inexistante'"):
-        sync_db_to_markdown(
-            session_id="inexistante", db_path=db, out_dir=str(out)
-        )
+    resultat = sync_db_to_markdown(
+        session_id="inexistante", db_path=db, out_dir=str(out)
+    )
 
+    assert resultat["ecrit"] is False
     assert list(out.rglob("*")) == []
+
+
+def test_charger_session_introuvable_retourne_none_et_warning(tmp_path, caplog):
+    """`_charger_session` retourne `None` (sans lever d'exception) et émet un
+    WARNING lorsqu'aucune session n'est trouvée."""
+    db = _base_temporaire(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="tools.sync_db_to_markdown"):
+        resultat = _charger_session(db, "session_inexistante")
+
+    assert resultat is None, "session introuvable doit retourner None"
+    assert any(
+        "Aucune session 'session_inexistante' trouvée" in r.message
+        for r in caplog.records
+    ), "un WARNING doit être journalisé pour une session introuvable"
 
 
 def test_resume_complet_contient_les_sections(tmp_path):

@@ -3,7 +3,7 @@
 # install.sh — Installation du moteur multi-agents (#T255) — Linux / macOS
 #
 # Comportement identique à scripts/install.ps1 (Windows) :
-#   1. Vérifie que Python ≥ 3.11 est disponible (échec clair sinon) ;
+#   1. Vérifie que Python ≥ 3.12 est disponible (échec clair sinon) ;
 #   2. Crée le venv (.venv/) et installe requirements.txt ;
 #   3. Génère .env À PARTIR DE .env.example s'il n'existe pas — et JAMAIS
 #      s'il existe déjà (un écrasement détruirait les clés de l'utilisateur) ;
@@ -22,7 +22,7 @@ cd "$REPO_ROOT"
 
 echo "==> Installation du moteur multi-agents dans : $REPO_ROOT"
 
-# ── 1. Version de Python (≥ 3.11 obligatoire) ──
+# ── 1. Version de Python (≥ 3.12 obligatoire) ──
 PYTHON_BIN=""
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -31,17 +31,17 @@ for candidate in python3 python; do
     fi
 done
 if [ -z "$PYTHON_BIN" ]; then
-    echo "ERREUR : Python introuvable. Installez Python ≥ 3.11 (https://www.python.org/downloads/) puis relancez ce script." >&2
+    echo "ERREUR : Python introuvable. Installez Python ≥ 3.12 (https://www.python.org/downloads/) puis relancez ce script." >&2
     exit 1
 fi
 PY_MAJOR=$("$PYTHON_BIN" -c 'import sys; print(sys.version_info.major)')
 PY_MINOR=$("$PYTHON_BIN" -c 'import sys; print(sys.version_info.minor)')
 PY_VERSION=$("$PYTHON_BIN" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
-if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 11 ]; }; then
-    echo "ERREUR : Python $PY_VERSION détecté — le moteur exige Python ≥ 3.11. Mettez Python à jour puis relancez ce script." >&2
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 12 ]; }; then
+    echo "ERREUR : Python $PY_VERSION détecté — le moteur exige Python ≥ 3.12. Mettez Python à jour puis relancez ce script." >&2
     exit 1
 fi
-echo "==> Python $PY_VERSION détecté (≥ 3.11 requis : OK)"
+echo "==> Python $PY_VERSION détecté (≥ 3.12 requis : OK)"
 
 # ── 2. Venv + dépendances ──
 # Emplacement du python du venv : bin/ (Linux/macOS) ou Scripts/ (Windows/Git
@@ -86,12 +86,14 @@ from pathlib import Path
 
 path = Path(".env")
 key = secrets.token_hex(16)  # 32 caractères hexadécimaux
-text = path.read_text(encoding="utf-8", newline="")
+# newline= sur Path.read_text/write_text n'existe qu'en Python ≥ 3.13 ;
+# le moteur vise ≥ 3.12, donc ouverture explicite (universal newlines en lecture).
+text = path.read_text(encoding="utf-8")
 if re.search(r"(?m)^MOTEUR_API_KEY=.*$", text):
     text = re.sub(r"(?m)^MOTEUR_API_KEY=.*$", "MOTEUR_API_KEY=" + key, text)
 else:
     text = text.rstrip("\r\n") + "\nMOTEUR_API_KEY=" + key + "\n"
-path.write_text(text, encoding="utf-8", newline="")
+path.write_text(text, encoding="utf-8")
 print("==> MOTEUR_API_KEY générée (32 caractères hexadécimaux).")
 PYEOF
 fi

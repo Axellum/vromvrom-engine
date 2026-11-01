@@ -384,6 +384,10 @@ def record_usage(model: str, prompt_tokens: int, completion_tokens: int, session
             + (completion_tokens * price["output"])
         )
 
+    # [#46] Pas de verrou ici : l'INSERT est déjà sérialisé sous
+    # `session_history._db_lock`. `_lock` est celui des contrôles de budget
+    # (relecture de toute la table) : le prendre ferait attendre chaque
+    # enregistrement derrière eux, sans rien protéger de plus.
     try:
         from core.session_history import record_token_usage
         channel = classify_model_channel(model)
@@ -420,10 +424,13 @@ def reset_usage():
     """Remet à zéro tous les compteurs de tokens dans SQLite."""
     try:
         from core.runtime_db import get_connection
-        conn = get_connection()
-        conn.execute("DELETE FROM token_usage")
-        conn.commit()
-        conn.close()
+        with _lock:
+            conn = get_connection()
+            try:
+                conn.execute("DELETE FROM token_usage")
+                conn.commit()
+            finally:
+                conn.close()
         logger.info("[TOKEN TRACKER] Réinitialisation complète des compteurs effectuée en BDD.")
     except Exception as e:
         logger.warning(f"[TOKEN TRACKER] Erreur reset_usage SQLite : {e}")

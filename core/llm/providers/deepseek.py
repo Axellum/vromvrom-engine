@@ -18,7 +18,7 @@ import requests
 from core.llm_timeouts import get_timeout
 from core.openai_compat_provider import lever_pour_statut
 
-from ..circuit_breaker import CircuitBreaker
+from ..circuit_breaker import CircuitBreaker, decrire_exception
 from ..fallback_trace import marquer_modele_repondu
 from .base import LLMProvider, run_cli_command, tuer_arbre_process
 
@@ -735,7 +735,8 @@ class FallbackProvider(LLMProvider):
                     cb.record_failure(e)
                     backoff_delay = 0.5 + random.uniform(0, 0.5)
                     logger.warning(
-                        f"[FALLBACK GATEWAY] Échec du modèle {model_name} : {e}. "
+                        f"[FALLBACK GATEWAY] Échec du modèle {model_name} : "
+                        f"{decrire_exception(e)}. "
                         f"Backoff {backoff_delay:.1f}s avant le modèle suivant..."
                     )
                     time.sleep(backoff_delay)
@@ -838,7 +839,8 @@ class FallbackProvider(LLMProvider):
                         cb.record_failure(e)
                         backoff_delay = 0.5 + random.uniform(0, 0.5)
                         logger.warning(
-                            f"[FALLBACK GATEWAY] Échec du modèle {model_name} : {e}. "
+                            f"[FALLBACK GATEWAY] Échec du modèle {model_name} : "
+                            f"{decrire_exception(e)}. "
                             f"Backoff async {backoff_delay:.1f}s avant le modèle suivant..."
                         )
                         await asyncio.sleep(backoff_delay)

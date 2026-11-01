@@ -8,11 +8,11 @@
 
 *Vroom Vroom — running at full throttle 🏁*
 
-[![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.136%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue?logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.162%2B-009688?logo=fastapi)](https://fastapi.tiangolo.com)
 [![asyncio](https://img.shields.io/badge/asyncio-native-green)](https://docs.python.org/3/library/asyncio.html)
 [![License](https://img.shields.io/github/license/Axellum/vromvrom-engine)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-60%20pytest%20files-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/Tests-280%2B%20pytest%20files-brightgreen)](tests/)
 [![CI](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/ci.yml)
 [![Python CI & Security](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/python-tests.yml)
 [![ToolMaker Validate](https://github.com/Axellum/vromvrom-engine/actions/workflows/toolmaker_validate.yml/badge.svg)](https://github.com/Axellum/vromvrom-engine/actions/workflows/toolmaker_validate.yml)
@@ -23,6 +23,8 @@
 > Personal tool shared with the community. Backend (DAG, async, Elo routing) is used daily. The **React dashboard (`ihm-v2/`)** is included — build it once, then `gui_server.py` serves it at `/`. Expect rough edges.
 
 🇫🇷 **[Version française disponible → README.fr.md](README.fr.md)** &nbsp;·&nbsp; 🗺️ **[Which LLMs to use? → STRATEGIES.md](STRATEGIES.md)**
+
+📖 **[User guide — install, understand, configure, operate → docs/guide/en](docs/guide/en/README.md)** &nbsp;·&nbsp; 🇫🇷 [Guide en français](docs/guide/README.md)
 
 </div>
 
@@ -57,13 +59,21 @@
 | 🌐 **Distributed Swarm** | Dispatch tasks to remote workers (Raspberry Pi, VMs, etc.) |
 | 🔌 **Plugin system** | Add custom agents via `plugins/<name>/agent.py` + `plugin.json` |
 
+### 🆕 New in this release
+
+- **A dashboard that explains the engine.** Navigation by intent (Discover · Use · Configure · Monitor · Advanced). A *Home* page states in one sentence whether everything is fine and why, with sourced figures; *Understand the engine* shows the path of a request on a clickable map and can replay a real one; *Voice & home demo* walks through every link from the wake word to the spoken answer. The main pages have a foldable “Understand this page” block and cite where their figures come from; unknown data shows “—”, never zero.
+- **Database backups.** Hot, consistent copies of the SQLite databases and configuration files, with a manifest (sha256, integrity check) and retention: `python -m core.sauvegarde`, `GET/POST /api/sauvegardes`, a *Backups* page, and a systemd timer in `deploy/`. Never the `.env`.
+- **Dry-run voice simulation.** `POST /api/vocal/simulate` shows which path a sentence would take (Home Assistant command, state question, chat) **without executing anything**.
+- **MCP overview.** `GET /api/mcp/overview` and an *MCP tools* page list the tools the engine offers and the servers it uses.
+- **Safer errors.** API keys are masked in provider health errors (`/api/models-health`) before they are stored and when they are read.
+
 ---
 
 ## 🏗️ Architecture
 
 ```
 vromvrom-engine/
-├── gui_server.py          # FastAPI entry point (lifespan + 15 routers)
+├── gui_server.py          # FastAPI entry point (lifespan + 34 routers)
 ├── main.py                # CLI — direct launch without HTTP
 │
 ├── core/                  # Engine core
@@ -100,14 +110,14 @@ vromvrom-engine/
 │   ├── tool_registry.py   # Registry with per-tool timeouts
 │   └── sanitizer.py       # Secret masking (6 patterns)
 │
-├── api/routes/            # 15 FastAPI route modules
+├── api/routes/            # 34 FastAPI route modules
 ├── services/              # Business logic decoupled from HTTP
 ├── plugins/               # Custom plugins (dynamic loading)
 ├── workflows/             # JSON workflow definitions (graphs)
 ├── static/                # HTML/JS/CSS UI (glassmorphism, fallback if ihm-v2 is not built)
 ├── ihm-v2/                # React/Vite/TS dashboard (Chat, HA, LLM registry, Prompt Studio…)
-├── tests/                 # 60 pytest files
-└── docs/                  # Architecture documentation
+├── tests/                 # 280+ pytest files
+└── docs/                  # Architecture documentation + user guide (docs/guide/)
 ```
 
 ### Hybrid routing pipeline
@@ -144,7 +154,8 @@ User request
 ## ⚙️ Quick Start
 
 ### Requirements
-- Python 3.11+
+- Python 3.12+ (the version tested in CI)
+- Node.js 20.19+ or 22.12+ to build the React dashboard (optional)
 - At least **one LLM API key** (free Gemini tier works, see `.env.example`)
 
 ### Setup
@@ -207,7 +218,7 @@ If `ihm-v2/dist` is missing, the engine falls back to the legacy UI in `static/`
 
 Dev with HMR: `cd ihm-v2 && npm run dev` (Vite `:5173`, proxies `/api` to `:8000`).
 
-The React dashboard includes Chat (SSE + tools), Home Assistant / voice, LLM registry, Prompt Studio, observability, and config.
+The React dashboard includes Home (one-sentence status), Understand the engine, Voice & home demo, Chat (SSE + tools), Home Assistant, LLM registry and routing, MCP tools, Backups, Prompt Studio, observability, and config. Tour: [docs/guide/en](docs/guide/en/README.md).
 
 ### Via the REST API
 
@@ -216,10 +227,14 @@ import httpx
 
 response = httpx.post(
     "http://localhost:8000/api/execute",
-    json={"message": "Analyze this Python code and suggest improvements"},
-    headers={"Authorization": "Bearer <MOTEUR_API_KEY>"}
+    json={
+        "user_prompt": "Analyze this Python code and suggest improvements",
+        "source": {"type": "web", "mode": "chat"},
+    },
+    headers={"Authorization": "Bearer <MOTEUR_API_KEY>"},
+    timeout=120,
 )
-print(response.json()["result"])
+print(response.json()["response"])
 ```
 
 ### As a Drop-in Proxy for IDEs (Cursor, Cline, Continue)

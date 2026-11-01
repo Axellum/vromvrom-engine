@@ -1,7 +1,7 @@
 """
 tests/unit/test_ajean_declaration.py — Déclaration des providers AJEAN (llama.cpp).
 
-AJEAN = llama.cpp (llama-server, build b10451) sur le PC local, API OpenAI-compatible
+AJEAN = llama.cpp (llama-server) sur le PC local, API OpenAI-compatible
 sur le port 8080. Deux entrées symétriques : `ajean_pc` (192.168.1.10, joignable depuis
 le Deck) et `ajean_deck` (127.0.0.1, instance Deck à venir).
 
@@ -119,3 +119,11 @@ def test_ollama_toujours_constructibles():
     assert "ollama_pc" in gateway.providers
     for pid in ("ollama_local", "ollama_pc"):
         assert gateway.providers[pid].base_url.endswith("/v1/chat/completions")
+
+
+def test_repli_fast_path_suit_ajean_pas_ollama_pc():
+    """Le repli Python suit config.json : AJEAN, plus ollama_pc (éteint, 18/08)."""
+    from services.pipeline_service import FAST_PATH_PROVIDERS
+
+    assert "ollama_pc" not in FAST_PATH_PROVIDERS
+    assert FAST_PATH_PROVIDERS[0] == "ajean_pc"

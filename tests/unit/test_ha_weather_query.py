@@ -31,6 +31,7 @@ def test_variantes_formulations_detectees():
     assert match_weather_query("quel temps il fera") is not None
     assert match_weather_query("il va pleuvoir") is not None
     assert match_weather_query("il fait combien dehors") is not None
+    assert match_weather_query("Combien fait-il dehors ?") is not None
     assert match_weather_query("la météo") is not None
 
 
@@ -137,7 +138,10 @@ async def test_resolve_demain(monkeypatch):
     assert "Demain" in reply
     assert "ensoleillé" in reply          # condition du 18/08 traduite
     assert "28 degrés" in reply           # température du 18/08 lue
-    assert "10% de risques de précipitations" in reply  # 0.1 → 10 %
+    # `precipitation` est une hauteur en mm (`precipitation_unit: mm` sur
+    # l'entité de prod) : 0.1 → « 0,1 millimètre », jamais « 10 % ».
+    assert "0,1 millimètre de précipitations" in reply
+    assert "%" not in reply
 
 
 @pytest.mark.asyncio

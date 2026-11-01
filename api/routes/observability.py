@@ -75,6 +75,32 @@ async def circuit_breakers_status() -> dict:
     }
 
 
+@router.get("/agent-steps/{session_id}")
+async def trace_agent_steps(session_id: str, limite: int = 200) -> dict:
+    """
+    Trace pas-à-pas d'une session : un pas par invocation d'agent (#T422).
+
+    Sans lecteur, une table de trace est une table morte — c'était exactement
+    l'état de `agent_steps` avant #T422 : schéma, index et purge en place,
+    0 ligne sur la production. La route est montée avec `_AUTH_DEP` comme le
+    reste du module : une trace expose les objectifs et les erreurs internes.
+    """
+    from core.agent_steps import etapes_de_session
+
+    limite = max(1, min(limite, 1000))
+    etapes = etapes_de_session(session_id, limite=limite)
+    return {
+        "session_id": session_id,
+        "etapes": etapes,
+        "total": len(etapes),
+        "cout_usd": round(sum(e.get("cost_usd") or 0.0 for e in etapes), 6),
+        "jetons": sum(
+            (e.get("prompt_tokens") or 0) + (e.get("completion_tokens") or 0)
+            for e in etapes
+        ),
+    }
+
+
 @router.get("/prometheus", response_class=PlainTextResponse)
 async def prometheus_metrics() -> str:
     """Exposition Prometheus (format texte natif, sans dépendance externe)."""

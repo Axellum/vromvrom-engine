@@ -42,6 +42,7 @@ from core.llm.providers.deepseek import (
     _make_claude,
 )
 from core.llm.providers.gemini import GeminiCLIProvider, GeminiProvider
+from core.llm_timeouts import get_timeout
 
 # Décision Axel 13/08 : hors cascade auto, accès explicite `get_provider()` inchangé.
 # - slugs OpenRouter :free → 404 mesuré
@@ -82,6 +83,29 @@ MOTEUR_PRIVACY_LEVEL_ENV = "MOTEUR_PRIVACY_LEVEL"
 MOTEUR_PRIVACY_LOCAL_ONLY = "local_only"
 
 
+def _cli_desactives() -> bool:
+    """
+    [#T335] L'hôte déclare-t-il ne pas disposer des binaires CLI ?
+
+    Même variable que `core/budget_guard._cli_providers_disabled` — délibérément
+    lue par import pour qu'il n'y ait qu'UNE définition de « les CLI sont hors
+    jeu ici ». `budget_guard` n'importe pas ce module, donc pas de cycle.
+    """
+    from core.budget_guard import _cli_providers_disabled
+    return _cli_providers_disabled()
+
+
+def _est_modele_cli(model: str) -> bool:
+    """
+    Un modèle servi par un binaire en ligne de commande.
+
+    Convention du catalogue : le suffixe `-cli` (`gemini-3.5-flash-high-cli`,
+    `claude-opus-4.6-thinking-cli`…). C'est un nommage, pas une propriété du
+    provider — si la convention change, ce test doit changer avec elle.
+    """
+    return model.lower().endswith("-cli")
+
+
 def _est_exclu_cascade(model_id: str, excluded: set[str]) -> bool:
     """Exclusion exacte + préfixe dashscope/ (catalogue Deck peut encore avoir un routing_tier)."""
     if model_id in excluded:
@@ -119,8 +143,20 @@ def get_live_latency_penalty(model_name: str) -> float:
     `LIVE_LATENCY_MAX_PENALTY` pour rester un tie-breaker, jamais un remplacement
     du `cascade_priority` statique.
 
+    [#20/08] Les modèles listés dans `config.json → latency_penalty_exempt_models`
+    (les locaux lents mais gratuits, ex. le llama d'AJEAN) sont EXEMPTÉS : leur
+    latence est un choix assumé, et la pénalité les rétrogradait après un seul
+    appel (12 s/tour → +3.0 de score → plus jamais en tête).
+
     Retourne 0.0 tant qu'aucun appel réussi n'a encore mesuré de latence.
     """
+    try:
+        _cfg = load_config()
+        exempts = (_cfg.get("latency_penalty_exempt_models") or [])
+        if isinstance(exempts, list) and model_name in exempts:
+            return 0.0
+    except Exception:
+        pass
     try:
         avg_latency_ms = CircuitBreaker.get_or_create(model_name).avg_latency_ms
     except Exception:
@@ -248,7 +284,15 @@ class LLMGateway:
         from core.openai_compat_provider import AJEAN_DEFAULT_MODEL, OPENAI_COMPAT_PROVIDERS, OpenAICompatibleProvider
 
         def _make_compat(provider_id: str, model: str, api_key: str, timeout: tuple = None) -> OpenAICompatibleProvider:
-            """Crée un provider OpenAI-compatible à partir du registre centralisé."""
+            """Crée un provider OpenAI-compatible à partir du registre centralisé.
+
+            Timeout résolu en RÉGLAGE, jamais en dur : un `timeout` explicite de
+            l'appelant reste prioritaire (cas ollama_pc, budget vocal) ; sinon
+            `config.json → provider_timeouts.<provider_id>` ; sinon la famille
+            `openai_compat` (core/llm_timeouts.py). [#20/08] C'est ce réglage qui
+            porte ajean_pc : un read de 15 s tuait le llama local sur les longues
+            générations d'executor (httpx.ReadTimeout, message vide en log).
+            """
             config = OPENAI_COMPAT_PROVIDERS.get(provider_id, {})
             base_url = config.get("base_url", "")
             # Surcharge d'endpoint Coding Plan (CN vs Intl) via env.
@@ -260,6 +304,26 @@ class LLMGateway:
                         if override.endswith("/chat/completions")
                         else f"{override}/chat/completions"
                     )
+            if timeout is None:
+                try:
+                    _cfg = load_config()
+                    _pt = (_cfg.get("provider_timeouts") or {}).get(provider_id)
+                    if isinstance(_pt, (list, tuple)) and len(_pt) == 2:
+                        timeout = (float(_pt[0]), float(_pt[1]))
+                except Exception:
+                    timeout = None
+                if timeout is None:
+                    timeout = get_timeout("openai_compat")
+            # [#20/08] JSON sans response_format pour les providers locaux
+            # llama.cpp (500 « peg-native format » sur le Qwen 2.5 1M) :
+            # config.json → json_prompt_only_providers.
+            json_prompt_only = False
+            try:
+                _cfg = load_config()
+                _jpo = _cfg.get("json_prompt_only_providers") or []
+                json_prompt_only = isinstance(_jpo, list) and provider_id in _jpo
+            except Exception:
+                pass
             return OpenAICompatibleProvider(
                 provider_name=provider_id.capitalize(),
                 base_url=base_url,
@@ -267,6 +331,7 @@ class LLMGateway:
                 model=model,
                 extra_headers=config.get("extra_headers"),
                 timeout=timeout,
+                json_prompt_only=json_prompt_only,
             )
 
         # --- DeepSeek ---
@@ -278,7 +343,7 @@ class LLMGateway:
                 "deepseek-reasoner": _make_compat("deepseek", "deepseek-reasoner", ds_key),
                 "deepseek-r1": _make_compat("deepseek", "deepseek-reasoner", ds_key),
                 "deepseek-v4-flash": _make_compat("deepseek", "deepseek-chat", ds_key),
-                "deepseek-v4-pro": _make_compat("deepseek", "deepseek-chat", ds_key),
+                "deepseek-v4-pro": _make_compat("deepseek", "deepseek-v4-pro", ds_key),
             }
 
         # --- Mistral ---
@@ -302,10 +367,9 @@ class LLMGateway:
                 "command-r-latest": _make_compat("cohere", "command-r-08-2024", cohere_key),
             }
 
-        # --- Cerebras ---
-        # BudgetGuard « cerebras-free » → gpt-oss-120b : DOIT consommer la clé free
-        # (sinon la rotation gratuite facture la clé payante). Les modèles « paid »
-        # (gemma / zai) préfèrent CEREBRAS_PAYANT_API_KEY, free en secours.
+        # --- Cerebras (D-15 : PayGo Team, plus de palier gratuit) ---
+        # Les deux env vars portent la même clé facturée. gpt-oss-120b (Tab)
+        # lit CEREBRAS_API_KEY en premier ; gemma/zai préfèrent PAYANT.
         _cerebras = {}
         key_free_path = cerebras_free_key or cerebras_paid_key
         key_paid_path = cerebras_paid_key or cerebras_free_key
@@ -491,18 +555,17 @@ class LLMGateway:
             # attendre l'utilisateur ~30-90s en silence sur un cold start.
             "ollama_pc": _make_compat("ollama_pc", "domotique-qwen7b:q4", "ollama", timeout=(2.0, 15.0)),
 
-            # === AJEAN (llama.cpp / llama-server, port 8080) — déclaratif, NON branché ===
-            # Deux hôtes symétriques : le PC local (192.168.1.10) et le Deck (127.0.0.1).
-            # Déclarés par IP, jamais par nom DNS, pour rester dans la famille locale
-            # (#T337, `_est_hote_local`). Modèle par défaut = AJEAN_DEFAULT_MODEL (le
-            # réellement chargé). Timeout de connexion COURT (2s), comme ollama_pc : un
-            # hôte local éteint doit échouer vite et basculer sur le cloud. À ce jour
-            # llama-server écoute encore --host 127.0.0.1 : ajean_pc est donc injoignable
-            # depuis le Deck tant qu'Axel n'a pas basculé sur 0.0.0.0 + pare-feu ouvert.
-            # Pas encore mis en tête de cascade (FAST_PATH_PROVIDERS intact) : l'ouverture
-            # réseau est une décision d'exploitation en attente.
-            "ajean_pc": _make_compat("ajean_pc", AJEAN_DEFAULT_MODEL, "ajean", timeout=(2.0, 15.0)),
-            "ajean_deck": _make_compat("ajean_deck", AJEAN_DEFAULT_MODEL, "ajean", timeout=(2.0, 15.0)),
+    # === AJEAN (llama.cpp / llama-server, port 8080) — executor des workflows ===
+    # Deux hôtes symétriques : le PC local (192.168.1.10) et le Deck (127.0.0.1).
+    # Déclarés par IP, jamais par nom DNS, pour rester dans la famille locale
+    # (#T337, `_est_hote_local`). Modèle par défaut = AJEAN_DEFAULT_MODEL (le
+    # réellement chargé). Timeout en RÉGLAGE : config.json → provider_timeouts
+    # (connect court 2 s : un hôte local éteint doit échouer vite ; read long
+    # 120 s : une génération d'executor avec historique dépasse 15 s — mesuré
+    # le 20/08, un read de 15 s faisait disjoncter le llama à chaque tour long).
+    # 23/08 : branché en tête de BudgetGuard / `_choisir_provider_tache`.
+            "ajean_pc": _make_compat("ajean_pc", AJEAN_DEFAULT_MODEL, "ajean"),
+            "ajean_deck": _make_compat("ajean_deck", AJEAN_DEFAULT_MODEL, "ajean"),
         }
 
         self.providers: dict[str, LLMProvider] = {
@@ -548,6 +611,10 @@ class LLMGateway:
             "antigravity": GeminiCLIProvider(), # alias
             "gemini-3.5-flash-high-cli": GeminiCLIProvider(mode="chat", model_name="gemini-3.5-flash-high-cli"),
             "gemini-3.5-flash-medium-cli": GeminiCLIProvider(mode="chat", model_name="gemini-3.5-flash-medium-cli"),
+            # Antigravity à jour : ids `agy models` (3.7 Flash). Le slug
+            # catalogue 3.5-medium-cli pointe déjà vers 3.7-flash-medium.
+            "gemini-3.7-flash-high-cli": GeminiCLIProvider(mode="chat", model_name="gemini-3.7-flash-high-cli"),
+            "gemini-3.7-flash-medium-cli": GeminiCLIProvider(mode="chat", model_name="gemini-3.7-flash-medium-cli"),
         }
 
         # Choix du provider Gemini : Natif (caching + grounding) ou OpenAI-compatible (fallback)
@@ -901,6 +968,7 @@ class LLMGateway:
         local_only = (privacy_level == MOTEUR_PRIVACY_LOCAL_ONLY)
 
         actual_tier, allowed_models = self._resolve_tier_models(tier, config)
+        cli_desactives = _cli_desactives()
 
         providers_list = []
         for model in allowed_models:
@@ -916,6 +984,19 @@ class LLMGateway:
                 logger.info(
                     f"[LLMGateway] privacy_level=local_only : modèle cloud écarté du tier "
                     f"'{tier}' : {model}"
+                )
+                continue
+            # [#T335] Décision Axel 18/08 : les modèles CLI sortent du routage là où
+            # leurs binaires n'existent pas. `MOTEUR_DISABLE_CLI_PROVIDERS` ne
+            # couvrait que le round-robin de DreamCoder (`budget_guard`) — le chat
+            # et le vocal continuaient donc de les élire, puis d'échouer. Mesuré sur
+            # le Deck le 18/08 : `gemini-cli-abo` meurt sur `FileNotFoundError:
+            # 'antigravity-ide'`, `claude-cli-abo` rend « Credit balance is too low ».
+            # Or les `*-cli` sont présents dans les QUATRE tiers, `leger` compris.
+            if cli_desactives and _est_modele_cli(model):
+                logger.info(
+                    f"[LLMGateway] MOTEUR_DISABLE_CLI_PROVIDERS : modèle CLI écarté "
+                    f"du tier '{tier}' : {model}"
                 )
                 continue
             providers_list.append((model, provider))
@@ -1111,7 +1192,8 @@ def load_config(force_reload: bool = False) -> dict:
             "dreamer_model": "leger",
             "dreamer_schedule": "02:00",
             "dreamer_enabled": True,
-            "dreamer_idle_trigger_hours": 3,
+            "dreamer_idle_trigger_hours": 1,
+            "dreamer_hourly_minute": 0,
             "routines_model": "fort",
             # [#T202] Clone Git dédié aux tâches DreamCoder (branches task/*).
             # Vide = repli sur le dossier du moteur (poste de dev). Sur le Deck

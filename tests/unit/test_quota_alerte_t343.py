@@ -69,7 +69,7 @@ def notifications(monkeypatch):
     """Compte les notifications HA (aucun réseau)."""
     compteur = {"appels": 0, "messages": []}
 
-    async def _fake_send(title, message):
+    async def _fake_send(title, message, notification_id=None):
         compteur["appels"] += 1
         compteur["messages"].append(message)
         return True
@@ -124,7 +124,7 @@ async def test_notification_echouee_retentee_jusqu_au_succes(
     notification en succès → le cycle suivant ne renotifie pas."""
     compteur = {"appels": 0, "echecs_restants": 1}
 
-    async def _fake_send(title, message):
+    async def _fake_send(title, message, notification_id=None):
         compteur["appels"] += 1
         if compteur["echecs_restants"] > 0:
             compteur["echecs_restants"] -= 1
@@ -171,7 +171,7 @@ async def test_cycles_concurrents_une_seule_notification(
     l'aller-retour de notification et renotifierait (revue Bugbot PR #302)."""
     compteur = {"appels": 0}
 
-    async def _fake_send_lent(title, message):
+    async def _fake_send_lent(title, message, notification_id=None):
         compteur["appels"] += 1
         await asyncio.sleep(0.1)  # round-trip HA simulé : la fenêtre de concurrence
         return True

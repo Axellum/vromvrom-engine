@@ -56,7 +56,11 @@ async def _collect(gateway, noms_providers, mock_sonde):
     lignes = []
     with (
         patch.object(pipeline_service, "_fast_path_hote_muet", mock_sonde),
-        patch.object(pipeline_service, "FAST_PATH_PROVIDERS", noms_providers),
+        # La cascade est lue depuis config.json (routing_policy.fast_path_providers)
+        # depuis le 20/08 : patcher la seule constante ne suffit plus.
+        patch.object(
+            pipeline_service, "_fast_path_providers_config", lambda *_a, **_k: list(noms_providers)
+        ),
         patch.object(pipeline_service, "_persist_fast_path_async", new_callable=AsyncMock),
     ):
         gen = pipeline_service.stream_discussion_fast_path_sse(

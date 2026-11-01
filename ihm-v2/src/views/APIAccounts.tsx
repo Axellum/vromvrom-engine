@@ -6,6 +6,8 @@ import { Doughnut } from "react-chartjs-2";
 import { fetchAccounts, fetchCostPerSuccess, setManualBalance } from "../api/accounts";
 import type { ProviderAccount } from "../api/accounts";
 import { useUiStore } from "../state/uiStore";
+import { ExplicationPage } from "../components/guide/GuideHeader";
+import { Terme } from "../components/guide/Terme";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -162,6 +164,28 @@ export function APIAccounts() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-8 pb-20">
+      <ExplicationPage
+        cle="comptes"
+        className=""
+        objectif="Voir ce que chaque fournisseur a coûté, ce qu’il reste, et saisir un solde à la main quand le fournisseur ne le donne pas."
+        comprendre={
+          <>
+            <p>
+              Un <Terme id="fournisseur">fournisseur</Terme> facture les appels faits à ses modèles. Le montant « dépensé ce
+              mois-ci » additionne les coûts que le moteur a enregistrés ; il ne remplace pas la facture du fournisseur.
+            </p>
+            <p>
+              Certains fournisseurs ne publient pas leur solde. Pour ceux-là, vous pouvez le saisir vous-même : c’est une
+              indication de votre part, que le moteur ne peut pas vérifier auprès du fournisseur.
+            </p>
+          </>
+        }
+        sources={[
+          { route: "GET /api/billing", role: "comptes et soldes" },
+          { route: "GET /api/metrics/cost-per-success", role: "coût par réponse réussie" },
+        ]}
+      />
+
       {/* Bannière Top */}
       <div className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/80 p-6 shadow-lg">
         <div>

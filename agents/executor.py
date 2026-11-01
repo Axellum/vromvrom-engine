@@ -12,6 +12,8 @@ import json
 import logging
 import unicodedata
 
+import contextvars
+
 from agents.base_agent import BaseAgent
 from core.errors import classify_error
 from core.llm_gateway import LLMGateway
@@ -49,6 +51,137 @@ BASE_RETRY_DELAY = 1.0
 # jamais approcher du millier.
 MAX_TOOL_CALLS_PER_TURN = 20
 
+# [#T399] Les chemins annonces a l'agent doivent etre ceux que ses outils
+# utilisent reellement. Ils etaient ecrits en dur : « /config/moteur-master/ »
+# (ancien add-on Home Assistant) cote Linux, « e:/<espace de travail> » cote Windows
+# (jonction retiree le 18/08). Mesure en production le 18/08 a 19h06 : l'agent
+# lance `ls -R /config/moteur-master/api/routes/` puis `find /config`, se prend
+# deux « No such file or directory », et part fouiller `/home/deck/dev_station`
+# a l'aveugle -- des tours de boucle ReAct payes sur le quota gratuit pour
+# retrouver un dossier que le moteur connaissait deja.
+#
+# La verite vient de `racine_travail_courante()` (#T388), que DreamCoder
+# positionne sur le clone du slot avant chaque tache ; a defaut, la racine du
+# depot d'ou tourne le moteur.
+def _racine_de_travail() -> str:
+    """Racine que les outils utiliseront a cet instant precis."""
+    from tools.system import racine_travail_courante
+    racine = racine_travail_courante()
+    if racine:
+        return racine
+    from core.env_bootstrap import REPO_ROOT
+    return str(REPO_ROOT)
+
+
+def _regles_os(is_windows: bool) -> str:
+    """Regles 2 a 4 du prompt systeme, avec les chemins reels du moment."""
+    import os as _os
+    moteur = _racine_de_travail()
+    workspace = _os.path.dirname(moteur) or moteur
+    coeur = _os.path.join(moteur, "core")
+    if is_windows:
+        systeme = (
+            # [#T423] Ce paragraphe conseillait 'dir' et 'type'. Ce sont des
+            # commandes INTERNES de cmd.exe : sans shell (choix de securite),
+            # elles n'existent pas comme executables. Mesure le 21/08 sur la
+            # tache 49 : l'agent a brule ses 10 tours de boucle ReAct sur 'dir'
+            # et 'find' sans jamais ecrire un fichier, et le pipeline s'est
+            # declare satisfait sur une branche vide. On ne nomme plus que ce
+            # qui marche reellement.
+            "2. COMPATIBILITE WINDOWS : La machine hote tourne sous Windows, et "
+            "'run_terminal_command' s'execute SANS shell. Pour explorer et modifier "
+            "des fichiers, utilise les outils dedies : 'read_file', 'write_file', et "
+            "les outils MCP 'mcp_filesystem_list_directory' (lister un dossier) et "
+            "'mcp_filesystem_search_files' (chercher). N'utilise ni 'ls', 'grep', "
+            "'cat' (Unix, absents), ni 'dir', 'type', 'echo', 'copy' (internes a "
+            "cmd.exe : aucun fichier executable, donc aucun chemin ne les trouvera). "
+            "Attention aussi a 'find' : sous Windows c'est FIND.EXE, qui cherche une "
+            "chaine DANS un fichier et ne parcourt pas d'arborescence. Seuls de vrais "
+            "executables sont lancables directement ('python', 'git', 'findstr', "
+            "'pytest'...). Si une commande interne est vraiment necessaire, passe par "
+            "l'interpreteur : cmd /c \"<ta commande>\".\n"
+            "3. SECURITE DU SYSTEME : Ne modifie jamais de fichiers systeme Windows. "
+        )
+    else:
+        systeme = (
+            "2. COMPATIBILITE LINUX : La machine hote tourne sous Linux. N'execute pas de commandes "
+            "Windows comme 'dir', 'type', 'findstr' via 'run_terminal_command'. Utilise a la place "
+            "des commandes Unix standard comme 'ls', 'cat', 'grep', ou de preference les outils "
+            "integres Python.\n"
+            "3. SECURITE DU SYSTEME : Ne tente pas de modifier les repertoires systeme proteges. "
+        )
+    # [#T479] Cette regle affirmait TOUJOURS « le code Python du moteur est
+    # dans <racine>, donc core/ est dans <racine>/core » — y compris quand la
+    # racine de travail est un autre projet. Depuis le registre multi-projet,
+    # une tache Tab5 s'execute dans `00ProjetTab`, un depot ESPHome qui n'a
+    # aucun `core/` Python : on affirmait a l'agent l'existence d'un dossier
+    # inexistant. Mesure le 25/08 sur la tache 122 — 355 k jetons, branche vide.
+    # On ne decrit plus la structure du depot : on donne la racine, qui est la
+    # seule chose dont on soit sur, et on dit d'explorer avant d'ecrire.
+    #
+    # A ne pas confondre avec le defaut voisin (#T479, porte de livrable) :
+    # dans `00ProjetTab`, le dossier `Tab5/` EXISTE et `docs/analyses/` non.
+    # L'agent qui range son rapport sous `Tab5/docs/analyses/` ne devine pas
+    # mal — il lit ce qu'il voit. C'est la porte qui imposait la convention du
+    # depot moteur ; elle a ete assouplie de son cote.
+    if _os.path.isdir(coeur):
+        chemins = (
+            f"4. CHEMINS : La racine du depot de travail est '{moteur}'. Le code "
+            f"Python y est organise sous '{coeur}'. Utilise TOUJOURS des chemins "
+            "absolus, et n'invente aucune autre racine : celle-ci est celle que "
+            "tes outils utilisent reellement."
+        )
+    else:
+        chemins = (
+            f"4. CHEMINS : La racine du depot de travail est '{moteur}'. Ce depot "
+            "n'est PAS le moteur : n'y suppose aucune arborescence familiere "
+            "(pas de 'core/', pas de 'agents/'). Explore-la avant d'ecrire. "
+            "Utilise TOUJOURS des chemins absolus a partir de cette racine, et "
+            "n'invente aucun niveau intermediaire : celle-ci est celle que tes "
+            "outils utilisent reellement."
+        )
+    return (
+        systeme
+        + "ATTENTION : 'run_terminal_command' ne supporte ni les pipes ('|'), ni les redirections "
+        "('>', '<'), ni le chainage ('&&', ';'). Lance les commandes une par une.\n"
+        + f"Tout fichier cree ou modifie doit l'etre uniquement sous '{workspace}'.\n"
+        + chemins
+    )
+
+
+# [#T426] Plafond de tours ReAct pour la SESSION en cours.
+#
+# `payload.metadata["max_turns"]` ne porte que sur UN payload : les étapes d'un
+# DAG sont construites par le planner et n'héritent de rien. Poser la valeur sur
+# le payload initial n'atteignait donc aucune des étapes réellement exécutées —
+# mesuré le 21/08, le journal affichait toujours « tour x/10 » sur une tâche
+# d'analyse censée en avoir 24.
+#
+# ContextVar, comme la racine de travail (#T388) : les étapes tournent dans de
+# vrais threads (`asyncio.to_thread`) qui héritent d'une COPIE du contexte, donc
+# chaque tâche garde son plafond sans écraser celui des autres pendant un
+# drainage parallèle.
+_tours_react_session: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "tours_react_session", default=None
+)
+
+
+def definir_tours_react_session(tours: int | None):
+    """Fixe le plafond de tours des agents de la session. Rend le jeton de reset."""
+    return _tours_react_session.set(int(tours) if tours else None)
+
+
+def reinitialiser_tours_react_session(jeton) -> None:
+    try:
+        _tours_react_session.reset(jeton)
+    except (ValueError, LookupError):
+        pass
+
+
+def tours_react_session() -> int | None:
+    return _tours_react_session.get()
+
+
 class ExecutorAgent(BaseAgent):
     """
     Agent autonome chargé d'exécuter des actions techniques en utilisant les outils enregistrés.
@@ -58,14 +191,8 @@ class ExecutorAgent(BaseAgent):
         import os
         import sys
         is_windows = (sys.platform == 'win32' or os.name == 'nt')
-        if is_windows:
-            os_rules = """2. COMPATIBILITÉ WINDOWS : La machine hôte tourne sous Windows. N'utilise jamais de commandes terminal Unix comme 'ls', 'grep' ou 'cat' via 'run_terminal_command'. Utilise à la place les outils de manipulation de fichier de Python ('read_file', 'write_file') ou des commandes Windows natives ('dir', 'findstr', 'type').
-3. SÉCURITÉ DU SYSTÈME : Ne modifie jamais de fichiers système Windows (comme C:\\Windows ou C:\\Windows\\System32). Tout fichier créé ou modifié doit l'être uniquement dans le répertoire de l'application ou du workspace de l'utilisateur.
-4. CHEMINS : Le workspace est la racine du dépôt. Les fichiers core/ sont dans core/. Utilise TOUJOURS des chemins absolus."""
-        else:
-            os_rules = """2. COMPATIBILITÉ LINUX : La machine hôte tourne sous Linux (Alpine). N'exécute pas de commandes Windows comme 'dir', 'type', 'findstr' via 'run_terminal_command'. Utilise à la place des commandes Unix standard comme 'ls', 'cat', 'grep', ou de préférence les outils intégrés Python.
-3. SÉCURITÉ DU SYSTÈME : Ne tente pas de modifier les répertoires système protégés. Tout fichier créé ou modifié doit l'être uniquement dans le workspace (/config).
-4. CHEMINS : Le workspace principal est '/config'. Le tab5-engine (code Python) est dans '/config/moteur-master/'. Les fichiers core/ sont donc dans '/config/moteur-master/core/'. Utilise TOUJOURS des chemins absolus."""
+        self._is_windows = is_windows
+        os_rules = _regles_os(is_windows)
 
         from core.prompt_loader import load_agent_prompt
         default_prompt = (
@@ -92,8 +219,6 @@ class ExecutorAgent(BaseAgent):
             name="executor",
             system_prompt=prompt
         )
-        # Conservé pour interpoler {{OS_RULES}} à chaque invoke (relecture Markdown).
-        self._os_rules = os_rules
         self.gateway = llm_gateway
         self.tool_registry = tool_registry
         self.provider_name = provider_name
@@ -125,7 +250,10 @@ class ExecutorAgent(BaseAgent):
         """
         from core.prompt_loader import load_agent_prompt
         texte = load_agent_prompt(self.name, self.system_prompt)
-        os_rules = getattr(self, "_os_rules", "")
+        # [#T399] Recalcule a chaque appel : entre deux taches DreamCoder, la
+        # racine de travail change de clone. Une valeur figee a la construction
+        # enverrait l'agent ecrire dans le depot du slot precedent.
+        os_rules = _regles_os(getattr(self, "_is_windows", False))
         if os_rules and "{{OS_RULES}}" in texte:
             texte = texte.replace("{{OS_RULES}}", os_rules)
         return texte
@@ -266,7 +394,9 @@ class ExecutorAgent(BaseAgent):
             {"role": "user", "content": user_prompt}
         ]
 
-        max_turns = payload.metadata.get("max_turns", 10)
+        # [#T426] Priorité : ce que demande le payload, sinon le plafond de la
+        # session (posé pour les tâches d'analyse), sinon le défaut.
+        max_turns = payload.metadata.get("max_turns") or tours_react_session() or 10
         use_search_grounding = payload.metadata.get("use_search_grounding", False)
 
         # Lancement de la boucle ReAct initiale

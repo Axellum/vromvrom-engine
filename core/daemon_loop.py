@@ -270,8 +270,17 @@ async def _get_ha_state(entity_id: str) -> dict[str, Any]:
                 raise RuntimeError(f"HTTP {resp.status}")
 
 
-async def _send_ha_notification(title: str, message: str) -> bool:
-    """Envoie une notification persistante à Home Assistant."""
+async def _send_ha_notification(
+    title: str, message: str, notification_id: str | None = None
+) -> bool:
+    """Envoie une notification persistante à Home Assistant.
+
+    ``notification_id`` : identifiant stable pour les canaux *récurrents*. HA
+    remplace alors la notification précédente au lieu d'en ajouter une. Sans lui,
+    un canal quotidien empile une entrée par jour (7 « Veille catalogue » avaient
+    ainsi stagné dans l'UI au 02/09/2026). À laisser vide pour les alertes
+    d'incident, dont chaque occurrence doit rester visible.
+    """
     ha_token = get_ha_token()
     ha_url = get_ha_url()
     
@@ -289,7 +298,9 @@ async def _send_ha_notification(title: str, message: str) -> bool:
         "title": title,
         "message": message
     }
-    
+    if notification_id:
+        payload["notification_id"] = notification_id
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(

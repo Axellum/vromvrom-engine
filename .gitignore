@@ -8,7 +8,18 @@ __pycache__/
 *$py.class
 *.pyo
 .env
+
+# ── Sauvegardes de .env — SECRETS EN CLAIR, ne doivent JAMAIS être suivies ──
+# Constatées non ignorées sur le Deck le 2026-08-07 : un `git add -A` sur la
+# prod aurait publié les clés d'API sur GitHub.
+# La liste de motifs nommés ci-dessous laissait passer tout ce qui n'y figurait
+# pas : le 24/08, `.env.sauvegarde_2026-08-24` (PC et Deck) et
+# `.env.casse_2026-08-18_1909` (Deck, présent depuis 6 jours) apparaissaient en
+# `??` dans `git status` — un `git add .` les publiait. On inverse la règle :
+# TOUT `.env.*` est ignoré, et on ré-autorise nommément les rares exceptions.
+.env.*
 !.env.example
+!.env.example.*
 .venv/
 venv/
 env/
@@ -35,7 +46,11 @@ gcp_oauth*.json
 *.p12
 ha_logger_key.json
 
-# ── Bases de données SQLite (données runtime/personnelles) ──
+# Chemins machine-locaux des projets (Tab5, écosystème). Le gabarit suivi est
+# projects.example.json ; sans overlay le moteur détecte les dossiers tout seul.
+projects.json
+
+# ── Bases de données SQLite (runtime, ne pas tracker des binaires) ──
 *.db
 *.db-wal
 *.db-shm
@@ -84,6 +99,15 @@ test_output/
 scratch/
 backups_prod/
 
+# ── Sauvegardes des bases du moteur (core/sauvegarde.py) : copies de .db, jamais suivies ──
+sauvegardes/
+
+# ── Fichiers d'échange IPC avec la CLI Antigravity (un par appel, éphémères) ──
+# Nettoyés en `finally` par GeminiCLIProvider.generate, mais un kill -9 du moteur
+# peut en laisser : ils ne doivent jamais partir dans un `git add -A`.
+antigravity_exchange_temp.txt
+antigravity_exchange_temp_*.txt
+
 # ── Node.js ──
 node_modules/
 
@@ -122,3 +146,54 @@ models/
 # Benchmark Results
 *_results.txt
 *_results.md
+# ── Datasets Claude & Modèles Temporaires ──
+*.jsonl
+.claude/
+lora_domotique*/
+tts_samples*/
+ha_corpus_src/
+vertex_jobs_collect_state.json
+faits_distilles.json
+*_input.txt
+tools/llama.cpp/
+
+# ── Débris de déploiement sur le Deck (rapatriés dans .gitignore le 2026-08-07) ──
+# Reliquats de l'ancienne procédure de copie manuelle fichier par fichier.
+_pre_codedeploy_*/
+.deploy_meta.json
+*.bak
+data/*_state.json
+*.bak_*
+*.bak.*
+*.avant-*
+
+# ── Artefacts entraînés en production (binaires, régénérables) ──
+models/*.pkl
+models/ml_router_meta.json
+checkpoints/dreamcoder_results/
+
+# Instantané de l'inventaire des modèles offerts par les API (#T243) — état runtime
+data/model_inventory.json
+
+# Rapport de veille modèles & tarifs (tools/veille_catalogue.py) — état runtime
+data/veille_catalogue.json
+
+# État du planificateur de veille (core/veille_scheduler.py) — état runtime
+data/veille_scheduler_state.json
+
+# Compteur de rendement DreamCoder (core/rendement_dreamcoder.py) — état runtime
+data/rendement_dreamcoder.json
+
+# État runtime de l'auditeur (écrit par core/auditor_agent.py à chaque cycle) et
+# brouillons de plan des agents. Même piège que skills.json (#T404) : un fichier
+# réécrit chaque nuit par le moteur fait échouer le `git pull` du déploiement
+# du lendemain sur le Deck.
+checkpoints/auditor_state.json
+checkpoints/auditor_reports/
+plan_correction_antigravity.json
+
+# Dossier de travail de l'IDE Qoder, posé dans chaque dépôt ouvert. Mesuré le
+# 24/08 : 9 tâches Tab5 sur 14 abandonnées parce que l'agent le ramassait dans
+# son diff et que la porte d'arborescence le refusait — la branche était déjà
+# poussée. Un fichier ignoré ne peut plus faire échouer un livrable.
+.qoder/

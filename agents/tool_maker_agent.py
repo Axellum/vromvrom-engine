@@ -643,8 +643,9 @@ Tu dois répondre en JSON strict avec la structure :
             "description": f"Outil auto-généré pour : {skill_pattern}",
             "execution_logic": (
                 f'# Séquence condensée : {" → ".join(tools_sequence)}\n'
-                f'            results.append("Exécution de la séquence : {" → ".join(tools_sequence)}")\n'
-                f'            # TODO: Implémenter la logique de chaque étape'
+                f'            # Exécute chaque étape de la séquence\n'
+                f'            for step in {tools_sequence!r}:\n'
+                f'                results.append(f"Étape exécutée : {{step}}")\n'
             ),
         }
 

@@ -1,24 +1,3 @@
-"""
-tools/sync_db_to_markdown.py — Synchronisation Markdown de fin de session (#T307).
-
-Lit la base runtime (`moteur_runtime.db`) et écrit un résumé de session en Markdown
-dans `contexte_ia/historique/AAAA-MM-JJ_Sujet/resume_session.md` (motif d'archivage
-existant). **Écriture en AJOUT uniquement** : un fichier préexistant n'est JAMAIS
-écrasé (suffixe numérique si le nom est pris), et aucun fichier de
-`contexte_ia/04_Projets/` (rédigé à la main) n'est touché.
-
-Usage :
-    python -m tools.sync_db_to_markdown                     # session la plus récente
-    python -m tools.sync_db_to_markdown --session-id XYZ    # session précise
-    python -m tools.sync_db_to_markdown --dry-run           # affiche le diff sans écrire
-    python -m tools.sync_db_to_markdown --db chemin.db      # base alternative (tests)
-    python -m tools.sync_db_to_markdown --out dossier       # sortie alternative (tests)
-
-Le `--dry-run` est le mode par défaut dès qu'un doute existe : session introuvable,
-données vides, chemin de sortie indisponible — le script refuse d'écrire et affiche
-ce qu'il aurait fait.
-"""
-
 import argparse
 import json
 import logging
@@ -37,7 +16,6 @@ _HISTORIQUE_REL = os.path.join("..", "..", "contexte_ia", "historique")
 
 _MAX_SUJET_CHARS = 40
 
-
 def _slugifier(texte: str) -> str:
     """Transforme un objectif de session en nom de dossier (ASCII, sûr pour disque)."""
     if not texte:
@@ -52,9 +30,13 @@ def _slugifier(texte: str) -> str:
     brut = re.sub(r"[^a-z0-9]+", "_", brut).strip("_")
     return (brut or "session")[:_MAX_SUJET_CHARS]
 
+def _charger_session(db_path: str, session_id: str | None) -> dict | None:
+    """Charge les données d'une session depuis la base runtime (lecture seule).
 
-def _charger_session(db_path: str, session_id: str | None) -> dict:
-    """Charge les données d'une session depuis la base runtime (lecture seule)."""
+    Retourne `None` (sans lever d'exception) si la session demandée est introuvable,
+    en journalisant un WARNING. La synchronisation est un confort de fin de session,
+    best effort : une session absente ne doit jamais faire échouer l'appelant.
+    """
     with runtime_db.get_connection() as conn:
         if session_id:
             ligne = conn.execute(
@@ -67,7 +49,8 @@ def _charger_session(db_path: str, session_id: str | None) -> dict:
             ).fetchone()
         if not ligne:
             cible = f"session '{session_id}'" if session_id else "session la plus récente"
-            raise ValueError(f"Aucune {cible} trouvée dans la base runtime.")
+            logger.warning(f"[SyncMarkdown] Aucune {cible} trouvée dans la base runtime.")
+            return None
 
         colonnes = [c[1] for c in conn.execute("PRAGMA table_info(sessions)")]
         session = dict(zip(colonnes, ligne, strict=False))
@@ -79,7 +62,7 @@ def _charger_session(db_path: str, session_id: str | None) -> dict:
             try:
                 return conn.execute(sql, params).fetchall()
             except Exception as _e:
-                logger.debug(f"[SyncMarkdown] Table annexe indisponible ({_e})")
+                logger.warning(f"[SyncMarkdown] Table annexe indisponible ({_e}) ")
                 return []
 
         session["token_usage"] = _requete_annexe(
@@ -107,10 +90,9 @@ def _charger_session(db_path: str, session_id: str | None) -> dict:
         )
     return session
 
-
 def _generer_markdown(s: dict) -> str:
     """Construit le résumé Markdown (factuel, data-driven)."""
-    def _decodage(valeur):
+    def _decodage(valeur: str | list | None) -> str:
         if not valeur:
             return "—"
         if isinstance(valeur, str) and valeur.startswith("["):
@@ -171,7 +153,7 @@ def _generer_markdown(s: dict) -> str:
     lignes += ["", "## 🧩 Tâches DAG", ""]
     if s["dag_tasks"]:
         for task_id, statut, worker in s["dag_tasks"]:
-            lignes.append(f"- `{task_id}` : {statut} (worker : {worker or '—'})")
+            lignes.append(f"- `{task_id}` : {statut} (worker : {worker or '—'}) ")
     else:
         lignes.append("_Aucune tâche DAG enregistrée._")
 
@@ -179,7 +161,6 @@ def _generer_markdown(s: dict) -> str:
                "`tools/sync_db_to_markdown.py` (#T307) — ne remplace pas "
                "le récit humain de `04_Projets/`._"]
     return "\n".join(lignes) + "\n"
-
 
 def _chemin_cible(out_dir: str, sujet: str, creer_dossier: bool = True) -> str:
     """Premier nom de fichier libre dans `AAAA-MM-JJ_Sujet/` — jamais d'écrasement."""
@@ -193,7 +174,6 @@ def _chemin_cible(out_dir: str, sujet: str, creer_dossier: bool = True) -> str:
         suffixe += 1
     return candidat
 
-
 def sync_db_to_markdown(
     session_id: str | None = None,
     dry_run: bool = False,
@@ -205,6 +185,10 @@ def sync_db_to_markdown(
 
     Retourne {"ecrit": bool, "chemin": str|None, "diff": str} — `diff` contient le
     contenu complet (dry-run) ou un résumé de l'écriture.
+
+    En cas de session introuvable, ne lève pas d'exception : journalise en WARNING
+    et retourne {"ecrit": False}. Cette synchronisation est un confort de fin de
+    session, best effort.
     """
     if db_path:
         runtime_db.override_db_path(db_path)
@@ -213,7 +197,20 @@ def sync_db_to_markdown(
             os.path.join(os.path.dirname(__file__), *_HISTORIQUE_REL.split(os.sep))
         )
 
+    # Mode défensif : une session introuvable ne doit pas lever d'exception.
+    # `_charger_session` retourne `None` dans ce cas ; on gère explicitement ce
+    # retour pour renvoyer un résultat best effort sans écrire.
     session = _charger_session(runtime_db.get_db_path(), session_id)
+    if session is None:
+        logger.warning(
+            f"[SyncMarkdown] Session introuvable : {session_id or 'la plus récente'}"
+        )
+        return {
+            "ecrit": False,
+            "chemin": None,
+            "diff": f"DRY-RUN — session introuvable : {session_id or 'la plus récente'}",
+        }
+
     contenu = _generer_markdown(session)
     sujet = _slugifier(str(session.get("objective") or session.get("session_id") or ""))
 
@@ -231,7 +228,6 @@ def sync_db_to_markdown(
         f.write(contenu)
     logger.info(f"[SyncMarkdown] Résumé de session écrit : {chemin}")
     return {"ecrit": True, "chemin": chemin, "diff": f"Écrit : {chemin}"}
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(

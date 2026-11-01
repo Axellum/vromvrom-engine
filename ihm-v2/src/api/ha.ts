@@ -65,7 +65,17 @@ export interface VocalStats {
   total_events: number;
   total_exchanges: number;
   tts_enabled_events: number;
-  latency_ms: { avg: number | null; min: number | null; max: number | null };
+  latency_ms: {
+    avg: number | null;
+    min: number | null;
+    max: number | null;
+    /** Médiane et 90e centile (absents sur un moteur ancien). */
+    p50?: number | null;
+    p90?: number | null;
+    /** Nombre d'échanges dont la latence a vraiment été mesurée. */
+    echantillon?: number;
+    non_mesurees?: number;
+  };
   by_mode: Array<{ source_mode: string | null; n: number; avg_ms: number | null }>;
   by_device: Array<{ device_id: string; n: number }>;
   by_routing: Array<{ routing_type: string; n: number }>;

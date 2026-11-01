@@ -1,0 +1,23 @@
+{
+  "_documentation": "Profil llama-server AJEAN pour les workflows du moteur. Mesuré #T353 (17/08/2026). Le moteur ne lance pas ce binaire : `ajean.exe start` (logon Windows) ou la ligne argv. Écoute 0.0.0.0:8080 obligatoire pour le Deck. Ne pas remplacer le GGUF 14B sur ce port (vocal Tab).",
+  "provider_ids": ["ajean_pc", "ajean_deck"],
+  "model": "Qwen2.5-14B-Instruct-1M-Q4_K_M",
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "pc_lan": "192.168.1.10"
+  },
+  "llama_server": {
+    "n_gpu_layers": 999,
+    "ctx_size": 32768,
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "jinja": true
+  },
+  "moteur": {
+    "timeouts_s": [2.0, 120.0],
+    "json_prompt_only": true,
+    "temperature_workflow": 0.0
+  },
+  "lancement_windows": "C:\\ProgramData\\ajean\\bin\\ajean.exe start"
+}

@@ -47,10 +47,17 @@ TABLE DES TIMEOUTS PAR FAMILLE (source de vérité : core/llm_timeouts.py) :
 | anthropic          | 5.0     | 180.0  | llm_timeouts.py:26                      | AnthropicNativeProvider |
 | claude_cli         | —       | 240.0  | llm_timeouts.py:27                      | ClaudeCLIProvider |
 | ollama_pc (explicite) | 2.0  | 15.0   | llm_gateway.py:492                      | ollama_pc seul (LAN) |
+| ajean_pc / ajean_deck (réglage) | 2.0 | 120.0 | config.json → provider_timeouts (20/08) | llama local (leger en tête) |
 | deck_ollama        | 2.0     | 60.0   | core/llm/providers/deepseek.py:276-277  | OllamaDeckProvider (endpoint local Deck) |
 
 Surcharge possible via `config.json` (`provider_timeouts`), lue par
-`get_timeout` (core/llm_timeouts.py:47-50).
+`get_timeout` (core/llm_timeouts.py:47-50) et par `_make_compat`
+(core/llm_gateway.py, clé `provider_timeouts.<provider_id>`) pour les
+providers openai-compat : [#20/08] le llama local (ajean_pc) portait (2, 15)
+en dur — un read de 15 s tuait les longues générations d'executor
+(`httpx.ReadTimeout`, message vide en log). Le réglage porte désormais
+(2, 120) : connect court (bascule rapide si l'hôte est éteint), read long
+(générations locales lentes).
 """
 
 
@@ -166,10 +173,14 @@ def test_aucun_provider_httpx_n_utilise_la_famille_lmstudio(gateway_cles_factice
     """#T169-B : la famille lmstudio n'alimente que LMStudioProvider (local).
     Aucun autre provider instancié ne porte le tuple lmstudio (2, 120) — les
     distants portent le défaut de leur famille (openai_compat (5, 120),
-    anthropic (5, 180)), jamais le réglage local connect-court."""
+    anthropic (5, 180)), jamais le réglage local connect-court.
+    [#20/08] ajean_pc/ajean_deck (llama local) portent (2, 120) par RÉGLAGE
+    (config.json provider_timeouts), pas par la famille lmstudio : ils sont
+    des locaux légitimes au même titre que LMStudioProvider."""
+    locaux_legitimes = {"local", "ajean_pc", "ajean_deck"}
     for nom, provider in gateway_cles_factices.providers.items():
-        if nom == "local":
-            continue  # LMStudioProvider — le seul légitime porteur de (2, 120)
+        if nom in locaux_legitimes:
+            continue  # LMStudioProvider + llama local — seuls légitimes porteurs de (2, 120)
         timeout = getattr(provider, "timeout", None)
         if timeout is None:
             continue  # providers natifs (CLI Gemini/Claude, deck_ollama…)
@@ -177,6 +188,28 @@ def test_aucun_provider_httpx_n_utilise_la_famille_lmstudio(gateway_cles_factice
             f"{nom} porte le tuple lmstudio (2.0, 120.0) : héritage du réglage "
             f"local par un provider qui n'est pas LMStudioProvider — à corriger."
         )
+
+
+def test_ajean_pc_porte_le_reglage_provider_timeouts(gateway_cles_factices):
+    """#T169-B : le llama local (ajean_pc) porte le timeout du RÉGLAGE
+    config.json → provider_timeouts.ajean_pc = (2, 120) — plus le (2, 15) en dur
+    qui tuait les générations longues d'executor (httpx.ReadTimeout 15 s,
+    message vide en log). Connect court conservé : hôte local éteint → bascule
+    rapide sur le cloud."""
+    from core.llm_gateway import load_config
+
+    cfg = load_config()
+    reglage = (cfg.get("provider_timeouts") or {}).get("ajean_pc")
+    attendu = tuple(float(v) for v in reglage) if reglage else None
+    for nom in ("ajean_pc", "ajean_deck"):
+        provider = gateway_cles_factices.providers[nom]
+        assert provider.timeout == attendu, (
+            f"{nom} doit porter le réglage provider_timeouts ({attendu}) — "
+            f"reçu : {provider.timeout}"
+        )
+    assert attendu is not None and attendu[1] > 15.0, (
+        f"le read du llama local doit dépasser l'ancien plafond de 15 s — reçu : {attendu}"
+    )
 
 
 def test_lmstudio_provider_utilise_bien_la_famille_lmstudio():

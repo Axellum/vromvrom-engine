@@ -12,6 +12,8 @@ import {
 } from "../api/models";
 import type { ModelInfo, BulkStatusResult } from "../api/models";
 import { CustomModelModal } from "../components/openfox_prep/CustomModelModal";
+import { ExplicationPage } from "../components/guide/GuideHeader";
+import { Terme } from "../components/guide/Terme";
 
 /** Libellés du sélecteur de capacité (routing_tier, cf. #T185). */
 const ROUTING_TIERS: { value: "leger" | "moyen" | "fort" | ""; label: string }[] = [
@@ -321,15 +323,17 @@ export function LLMRegistry() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 pb-20">
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-100">Registre LLM</h1>
+      {/* Titre aligné sur le menu ; la barre d'outils passe dessous et se replie sous 1280 px
+          (en ligne dès 768 px, elle écrasait le titre sur une colonne de quelques mots). */}
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+        <div className="shrink-0">
+          <h1 className="text-2xl font-bold text-slate-100">Modèles & routage</h1>
           <p className="text-sm text-slate-400">
-            Catalogue dynamique, capacité de routage (léger/moyen/fort) et Circuit Breakers
+            Catalogue des modèles, niveaux de routage (léger, moyen, fort) et circuits de protection
           </p>
         </div>
 
-        <div className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/50 p-2">
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/50 p-2">
           <input
             type="text"
             placeholder="Rechercher…"
@@ -385,6 +389,30 @@ export function LLMRegistry() {
           </button>
         </div>
       </div>
+
+      <ExplicationPage
+        cle="modeles"
+        className=""
+        objectif="Choisir quels modèles de langage le moteur peut utiliser, et pour quel genre de demande."
+        comprendre={
+          <>
+            <p>
+              Chaque carte est un modèle proposé par un <Terme id="fournisseur">fournisseur</Terme>. Le{" "}
+              <Terme id="tier">niveau de routage</Terme> (léger, moyen, fort) range les modèles selon la difficulté de la
+              demande : un modèle léger répond vite et coûte peu, un modèle fort sert aux tâches difficiles.
+            </p>
+            <p>
+              Quand une demande arrive, la <Terme id="cascade">cascade</Terme> essaie les modèles dans l’ordre jusqu’à
+              obtenir une réponse. Un <Terme id="circuit-breaker">circuit breaker</Terme> ouvert met de côté un fournisseur qui
+              échoue sans cesse. Désactiver un modèle l’empêche d’être choisi.
+            </p>
+          </>
+        }
+        sources={[
+          { route: "GET /api/models/registry", role: "catalogue des modèles" },
+          { route: "GET /api/models/inventory", role: "inventaire des fournisseurs" },
+        ]}
+      />
 
       {/* Inventaire live (#T243) — état et rafraîchissement explicite : interroger une
           douzaine d'API à chaque affichage du registre serait inacceptable. */}

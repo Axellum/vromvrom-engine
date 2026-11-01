@@ -6,6 +6,11 @@ Endpoints :
   GET  /api/chat/sessions/{chat_session_id}/messages  — récupère les messages d'une session
   GET  /api/chat/sessions                             — liste les sessions récentes
   DELETE /api/chat/sessions/{chat_session_id}         — supprime une session
+
+Note : ces routes sont déclarées en `def` simple (et non `async def`) car elles
+effectuent des opérations SQLite synchrones et bloquantes (get_connection,
+execute, commit). FastAPI les exécute alors dans un thread pool, ce qui évite
+de bloquer la boucle d'événements d'asyncio.
 """
 import json
 import sqlite3
@@ -50,8 +55,8 @@ class ChatSessionOut(BaseModel):
 
 def _upsert_session(conn: sqlite3.Connection, chat_session_id: str,
                     title: str | None, message_count: int) -> None:
+    """Met à jour ou insère la ligne de session dans la connexion fournie."""
     now = time.time()
-    # fetchone() peut être un tuple ou sqlite3.Row selon le contexte appelant
     existing = conn.execute(
         "SELECT 1 FROM chat_sessions WHERE chat_session_id = ?",
         (chat_session_id,)
@@ -76,7 +81,7 @@ def _upsert_session(conn: sqlite3.Connection, chat_session_id: str,
 
 
 @router.post("/sessions/{chat_session_id}/messages", status_code=201)
-async def save_messages(chat_session_id: str, body: SaveMessagesRequest):
+def save_messages(chat_session_id: str, body: SaveMessagesRequest):
     """Sauvegarde un ou plusieurs messages dans la session chat donnée."""
     if not body.messages:
         raise HTTPException(status_code=400, detail="Aucun message fourni.")
@@ -106,7 +111,7 @@ async def save_messages(chat_session_id: str, body: SaveMessagesRequest):
 
 
 @router.get("/sessions/{chat_session_id}/messages", response_model=list[ChatMessageOut])
-async def get_messages(chat_session_id: str, limit: int = 200):
+def get_messages(chat_session_id: str, limit: int = 200):
     """Récupère les messages d'une session chat (ordre chronologique)."""
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -134,7 +139,7 @@ async def get_messages(chat_session_id: str, limit: int = 200):
 
 
 @router.get("/sessions", response_model=list[ChatSessionOut])
-async def list_sessions(limit: int = 50):
+def list_sessions(limit: int = 50):
     """Liste les sessions chat récentes."""
     conn = get_connection()
     conn.row_factory = sqlite3.Row
@@ -159,7 +164,7 @@ async def list_sessions(limit: int = 50):
 
 
 @router.delete("/sessions/{chat_session_id}", status_code=200)
-async def delete_session(chat_session_id: str):
+def delete_session(chat_session_id: str):
     """Supprime une session chat et tous ses messages."""
     conn = get_connection()
     try:

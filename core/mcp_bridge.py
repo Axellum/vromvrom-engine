@@ -22,6 +22,61 @@ from tools.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+
+# [#T439] Outils MCP qui ÉCRIVENT. La liste est volontairement explicite : un
+# outil inconnu n'est pas bloqué, on ne casse pas un serveur MCP tiers par excès
+# de zèle — mais tout ce qui touche au système de fichiers y figure.
+_OUTILS_MCP_ECRITURE = {
+    "write_file", "edit_file", "create_directory", "move_file",
+    "delete_file", "remove_file", "copy_file", "append_file",
+}
+
+# Noms d'arguments qui portent un chemin de destination.
+_ARGS_CHEMIN = ("path", "file_path", "filepath", "destination", "dest", "target", "to")
+
+
+def _refus_ecriture_mcp_hors_depot(nom_outil: str, kwargs: dict) -> str | None:
+    """
+    Refuse une écriture MCP hors du dépôt de travail d'une tâche autonome.
+
+    Le confinement de `tools/system.py::write_file` (#T433) ne couvre que les
+    outils internes. Les serveurs MCP ont leur propre racine — ici tout
+    l'espace de travail plus un partage réseau — et un agent qui passe par eux
+    écrit où il veut. Mesuré le 21/08 sur la tâche 62 : trois agents ont tourné,
+    `mcp_filesystem_edit_file` a été appelé, la branche est restée vide.
+
+    Hors tâche autonome (aucune racine de travail posée), rien ne change.
+    """
+    import os
+
+    if nom_outil not in _OUTILS_MCP_ECRITURE:
+        return None
+    try:
+        from tools.system import racine_travail_courante
+    except Exception:
+        return None
+    racine = racine_travail_courante()
+    if not racine:
+        return None
+
+    racine_reelle = os.path.realpath(racine)
+    for cle in _ARGS_CHEMIN:
+        valeur = kwargs.get(cle)
+        if not isinstance(valeur, str) or not valeur.strip():
+            continue
+        cible = os.path.realpath(valeur)
+        if cible == racine_reelle or cible.startswith(racine_reelle + os.sep):
+            continue
+        return (
+            f"Erreur: écriture refusée hors du dépôt de travail. L'outil "
+            f"'{nom_outil}' visait '{valeur}', en dehors de '{racine}'. Un fichier "
+            f"écrit ailleurs n'entre dans aucun commit : il serait perdu et la tâche "
+            f"comptée en échec. Écris sous '{racine}' — la LECTURE reste ouverte au "
+            f"reste de l'espace de travail."
+        )
+    return None
+
+
 class MCPBridge:
     """
     Pont permettant d'intégrer des serveurs MCP locaux configurés dans mcp_config.json
@@ -206,6 +261,21 @@ class MCPBridge:
                                         kwargs[k] = "H:\\" + v[3:]
                                     elif v.lower().startswith("e:/"):
                                         kwargs[k] = "H:/" + v[3:]
+
+                            # [#T439] Les outils MCP contournaient le confinement des
+                            # écritures. `tools/system.py::write_file` refuse d'écrire hors
+                            # du dépôt de travail d'une tâche autonome (#T433) — mais
+                            # `mcp_filesystem_write_file` et `edit_file` passent par un
+                            # serveur externe, enraciné sur TOUT l'espace de travail et sur
+                            # un partage réseau. Mesuré le 21/08 sur la tâche 62 : trois
+                            # agents ont tourné, `mcp_filesystem_edit_file` a été appelé, et
+                            # la branche est restée vide — le fichier avait été écrit
+                            # ailleurs. Un garde-fou posé sur un seul des deux chemins ne
+                            # garde rien.
+                            refus = _refus_ecriture_mcp_hors_depot(orig_name, kwargs)
+                            if refus:
+                                logger.warning(f"[MCP Bridge] {refus}")
+                                return refus
 
                             logger.info(f"[MCP Bridge] Exécution outil MCP '{orig_name}' sur le serveur '{s_name}' avec {kwargs}")
                             try:

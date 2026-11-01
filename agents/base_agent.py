@@ -15,10 +15,13 @@ redeviendrait invisible dans la comptabilité, et c'est exactement le défaut
 qu'on corrige.
 """
 import functools
+import logging
 from abc import ABC, abstractmethod
 
 from core.agent_trace import poser_agent_courant, restaurer_agent_courant
 from core.state import StateUpdate, TaskPayload
+
+logger = logging.getLogger("base_agent")
 
 
 class BaseAgent(ABC):
@@ -64,10 +67,43 @@ class BaseAgent(ABC):
                     record_session_activity(_sid)
             except Exception:
                 pass
+            # [#T422] Trace pas-à-pas. La table `agent_steps` existait depuis
+            # l'origine — schéma, index, purge de rétention — et comptait
+            # 0 ligne sur la production au 19/08 : rien ne l'écrivait. Pour
+            # reconstituer la campagne autonome des 18–19/08, il a fallu croiser
+            # les branches Git, les rapports de cycle et le journal systemd.
+            # Posée ici pour la même raison que #T296 et #T298 : les quinze
+            # call-sites de `.invoke()` passent tous par cette enveloppe.
+            # Écriture hors boucle d'événements (`to_thread`) et best effort —
+            # une trace qui ferait échouer l'agent qu'elle observe serait pire
+            # que pas de trace.
+            import time as _time
+            _debut = _time.time()
+            _resultat = None
             try:
-                return await fonction(self, payload, *args, **kwargs_appel)
+                _resultat = await fonction(self, payload, *args, **kwargs_appel)
+                return _resultat
             finally:
                 restaurer_agent_courant(jeton)
+                try:
+                    _sid_trace = (payload.metadata or {}).get("session_id")
+                    if _sid_trace:
+                        import asyncio as _asyncio
+
+                        from core.agent_steps import enregistrer_etape
+                        await _asyncio.to_thread(
+                            enregistrer_etape,
+                            session_id=_sid_trace,
+                            agent_name=getattr(self, "name", cls.__name__),
+                            objectif=getattr(payload, "task_objective", ""),
+                            task_id=getattr(payload, "task_id", None),
+                            statut=getattr(_resultat, "status", "interrompu"),
+                            erreur=getattr(_resultat, "error_message", None),
+                            extrait_resultat=getattr(_resultat, "result_data", None),
+                            debut=_debut,
+                        )
+                except Exception as _err_trace:
+                    logger.debug(f"[BASE_AGENT] Trace d'étape non posée : {_err_trace}")
 
         invoke_trace._trace_agent_posee = True
         cls.invoke = invoke_trace

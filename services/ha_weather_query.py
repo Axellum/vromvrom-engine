@@ -100,7 +100,12 @@ _OUTDOOR_MARKER = "dehors"
 # orthographes sont listées parce que `_normalize` de ce module CONSERVE les
 # accents — c'est la cause racine de #T383, on ne la refait pas.
 _OUTDOOR_MARKERS = ("dehors", "exterieur", "extérieur", "exterieure", "extérieure")
-_TEMP_WORDS = ("temperature", "température", "degres", "degrés", "il fait combien")
+_TEMP_WORDS = (
+    "temperature", "température", "degres", "degrés", "il fait combien",
+    # « Combien fait-il dehors ? » (corpus du banc vocal) : `_normalize` garde
+    # le trait d'union, les deux graphies sont listées.
+    "combien fait-il", "combien fait il",
+)
 
 # Marqueurs d'horizon.
 _HORIZON_WEEKEND = ("week-end", "weekend", "ce week end", "ce weekend")
@@ -215,10 +220,24 @@ def _format_forecast_day(entry: dict, label: str) -> str:
     if templow is not None:
         phrase += f" au plus bas {templow}"
     phrase += "."
+    # `precipitation` est une HAUTEUR (unité `precipitation_unit` de l'entité,
+    # « mm » chez Météo-France), pas une probabilité : la lire ×100 faisait dire
+    # « 190% de risques de précipitations » pour 1,9 mm (prod, 19/10/2026). La
+    # probabilité, quand le fournisseur la donne, est `precipitation_probability`.
+    probabilite = entry.get("precipitation_probability")
     precipitation = entry.get("precipitation")
-    if isinstance(precipitation, (int, float)) and precipitation > 0:
-        phrase += f" {round(float(precipitation) * 100)}% de risques de précipitations."
+    if isinstance(probabilite, (int, float)) and probabilite > 0:
+        phrase += f" {round(float(probabilite))} % de risque de pluie."
+    elif isinstance(precipitation, (int, float)) and round(float(precipitation), 1) > 0:
+        phrase += f" {_format_millimetres(float(precipitation))} de précipitations."
     return phrase
+
+
+def _format_millimetres(valeur: float) -> str:
+    """1.9 → « 1,9 millimètre », 4.6 → « 4,6 millimètres », 12.0 → « 12 millimètres »."""
+    arrondi = round(valeur, 1)
+    texte = str(int(arrondi)) if arrondi == int(arrondi) else f"{arrondi:.1f}".replace(".", ",")
+    return f"{texte} millimètre{'s' if arrondi >= 2 else ''}"
 
 
 async def _get_daily_forecast() -> list[dict[str, Any]] | None:

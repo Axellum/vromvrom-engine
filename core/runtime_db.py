@@ -55,10 +55,16 @@ def get_connection() -> sqlite3.Connection:
     Usage : `with get_connection() as conn:` (context manager SQLite standard)
     """
     conn = sqlite3.connect(_DB_PATH, timeout=10.0)
-    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
-    _init_schema(conn)
+    # [#46] Deux ouvertures simultanées sur une base à l'ancien schéma lisaient
+    # toutes deux la colonne absente, puis faisaient chacune leur ALTER TABLE :
+    # la seconde levait « duplicate column name ». Le passage en WAL modifie
+    # l'en-tête du fichier et casse de la même façon (« database is locked »)
+    # sur une base neuve. Les deux se font donc sous le même verrou process.
+    with _db_lock:
+        conn.execute("PRAGMA journal_mode=WAL")
+        _init_schema(conn)
     return conn
 
 

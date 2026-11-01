@@ -372,7 +372,18 @@ class DAGRunner(MapReduceMixin, SubgraphMixin):
         initial_ready_ids = get_initial_ready_tasks(session_id)
 
         for t_id in initial_ready_ids:
-            payload = tasks_by_id[t_id]
+            # [#T431] Défense en profondeur : un identifiant venu de la base sans
+            # nœud correspondant ne doit pas tuer le pipeline. La cause est traitée
+            # en amont (élagage des dépendances fantômes dans le planner) ; ici on
+            # refuse seulement de mourir dessus. Un `tasks_by_id[t_id]` nu levait un
+            # KeyError dont le message ne contenait que le nom inventé par le modèle.
+            payload = tasks_by_id.get(t_id)
+            if payload is None:
+                logger.error(
+                    f"[DAG] Tâche prête '{t_id}' sans nœud correspondant : ignorée. "
+                    f"Le plan référence une étape qui n'existe pas."
+                )
+                continue
             priority = get_task_priority(payload)
             await queue.put((priority, t_id))
 
@@ -470,7 +481,15 @@ class DAGRunner(MapReduceMixin, SubgraphMixin):
                 tasks_status[t_id] = "running"
                 await _update_task_status_db(t_id, 'running', started_at=time.time())
 
-                task_payload = tasks_by_id[t_id]
+                task_payload = tasks_by_id.get(t_id)
+                if task_payload is None:
+                    # [#T431] Même garde qu'à l'amorçage : on saute, on ne meurt pas.
+                    logger.error(
+                        f"[DAG] Tâche '{t_id}' sans nœud correspondant : ignorée."
+                    )
+                    tasks_status[t_id] = "blocked"
+                    queue.task_done()
+                    continue
                 job = asyncio.create_task(
                     self._run_single_task(t_id, task_payload, on_event)
                 )
@@ -554,7 +573,15 @@ class DAGRunner(MapReduceMixin, SubgraphMixin):
                         newly_ready_ids = await _get_newly_ready_children(finished_id)
                         for child_id in newly_ready_ids:
                             if tasks_status.get(child_id) == "pending":
-                                child_payload = tasks_by_id[child_id]
+                                # Même filet que l'amorçage (#T431) : un identifiant
+                                # inventé par le planner ne doit pas tuer le DAG.
+                                child_payload = tasks_by_id.get(child_id)
+                                if child_payload is None:
+                                    logger.error(
+                                        "[DAG] Enfant '%s' prêt sans nœud correspondant : ignoré.",
+                                        child_id,
+                                    )
+                                    continue
                                 pr = child_payload.metadata.get("stage_id", 1)
                                 await queue.put((pr, child_id))
                                 self._new_task_event.set()

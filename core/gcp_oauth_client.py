@@ -132,6 +132,28 @@ class GCPOAuthClient:
             logger.error(f"[GCP OAuth] Erreur GET {url} : {e}")
             return None
 
+    def get_json_strict(self, url: str) -> dict:
+        """GET authentifié qui LÈVE au lieu de rendre None (vigie, #T480).
+
+        `_get` confond « rien à lire » et « API en panne » (None dans les deux
+        cas) : un appelant qui doit signaler une source en panne ne peut pas s'en
+        servir. Ici : RuntimeError avec le seul code HTTP (jamais le corps, qui
+        peut citer l'URL ou un identifiant) ; un 404 est distingué par
+        `FileNotFoundError` (message supprimé entre la liste et la lecture).
+        Lecture seule : aucune méthode d'écriture n'utilise ce chemin.
+        """
+        if not self._available:
+            raise RuntimeError("jeton Google absent ou incomplet (google_token.json)")
+        try:
+            resp = requests.get(url, headers=self._get_headers(), timeout=15)
+        except requests.RequestException as exc:
+            raise RuntimeError(f"réseau Google injoignable ({type(exc).__name__})") from None
+        if resp.status_code == 404:
+            raise FileNotFoundError("HTTP 404")
+        if resp.status_code != 200:
+            raise RuntimeError(f"API Google HTTP {resp.status_code}")
+        return resp.json()
+
     # ─── APIs de haut niveau ────────────────────────────────────
 
     def get_billing_accounts(self) -> list:

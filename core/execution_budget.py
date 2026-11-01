@@ -56,9 +56,15 @@ class ExecutionBudget:
                 config = load_config()
             except Exception:
                 config = {}
+        
+        # [#T440] Plafond par tentative pour DreamCoder (défaut 800k).
+        # On utilise max_session_tokens comme fallback si dreamcoder_max_tokens_par_tentative est absent.
+        max_tokens = int(config.get("dreamcoder_max_tokens_par_tentative", 
+                                    config.get("max_session_tokens", 500_000)) or 0)
+
         return cls(
             session_id,
-            max_tokens=int(config.get("max_session_tokens", 500_000) or 0),
+            max_tokens=max_tokens,
             max_duration_s=float(config.get("max_execution_seconds", 0) or 0),
             max_cost_usd=float(config.get("max_execution_cost_usd", 0) or 0),
             start_time=start_time,

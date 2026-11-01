@@ -50,10 +50,31 @@ def test_cli_and_local_and_subscription_are_free():
     assert get_model_pricing("claude-opus-4-8") == free
 
 
+def _taux_eur_json(modele: str, champ: str) -> float:
+    """Lit un tarif EUR directement dans pricing_strategy.json.
+
+    Les tests ne hardcodent plus de valeur : le barème est mis à jour
+    régulièrement par la veille (`tools/veille_catalogue.py --appliquer`).
+    """
+    import json
+    import os
+
+    chemin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "pricing_strategy.json")
+    with open(chemin, encoding="utf-8") as fh:
+        data = json.load(fh)
+    for api in data.get("apis", []):
+        fiche = (api.get("rates") or {}).get(modele)
+        if fiche and champ in fiche:
+            return float(fiche[champ])
+    raise AssertionError(f"{modele}.{champ} introuvable dans pricing_strategy.json")
+
+
 def test_eur_rates_converted_to_usd():
     """Les tarifs GCP en EUR sont convertis en USD (× EUR_USD)."""
+    taux = _taux_eur_json("gemini-2.5-flash-paid", "input_cost_per_m_eur")
     p = get_model_pricing("gemini-2.5-flash-paid")
-    expected_in = 0.256515 * pricing.EUR_USD / 1_000_000
+    expected_in = taux * pricing.EUR_USD / 1_000_000
     assert abs(p["input"] - expected_in) < 1e-15
     assert p["output"] > 0  # tarif payant non nul
 
@@ -161,7 +182,8 @@ def test_deepseek_pricing_doubled_during_peak(monkeypatch):
     expected_gemini = 0.0  # ou son coût réel du JSON. Le test initial s'assurait que expected_in = 0.256515 * pricing.EUR_USD / 1_000_000
     # Dans test_eur_rates_converted_to_usd, gemini-2.5-flash-paid est utilisé. Utilisons celui-là.
     p_flash_paid = pricing.get_model_pricing("gemini-2.5-flash-paid")
-    expected_flash_paid = 0.256515 * pricing.EUR_USD / 1_000_000
+    taux = _taux_eur_json("gemini-2.5-flash-paid", "input_cost_per_m_eur")
+    expected_flash_paid = taux * pricing.EUR_USD / 1_000_000
     assert abs(p_flash_paid["input"] - expected_flash_paid) < 1e-15
 
 

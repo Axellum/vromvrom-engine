@@ -1,0 +1,23 @@
+# Unité systemd --user : sauvegarde des bases de vromvrom-engine.
+# Lancée par moteur-sauvegarde.timer (tous les jours à 04 h 30) ; à la main :
+# `systemctl --user start moteur-sauvegarde.service`.
+#
+# Exemple à adapter : dossier du dépôt (WorkingDirectory) et Python du venv créé par
+# scripts/install.sh. Installation et restauration : docs/guide/05_exploiter.md.
+#
+# La CLI (`python -m core.sauvegarde`) fait une copie à chaud cohérente des bases
+# SQLite, applique la rétention et sort en code 1 si une copie est altérée : l'unité
+# apparaît alors dans `systemctl --user --failed` — une sauvegarde qui échoue ne
+# doit pas être silencieuse.
+
+[Unit]
+Description=Sauvegarde des bases de vromvrom-engine
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/vromvrom-engine
+ExecStart=%h/vromvrom-engine/.venv/bin/python -m core.sauvegarde
+# Large marge : la copie de quelques dizaines de Mo prend quelques secondes, mais
+# un disque lent ne doit pas faire tuer l'unité à mi-copie.
+TimeoutStartSec=15min

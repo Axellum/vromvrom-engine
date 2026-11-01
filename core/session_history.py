@@ -345,6 +345,9 @@ def record_token_usage(
     La BDD permet des requêtes SQL (agrégations, filtres par date/modèle).
     """
     try:
+        # [#46] INSERT concurrents depuis le pool `asyncio.to_thread` des
+        # providers (`generate_async`). Un verrou process suffit : un seul
+        # gui_server écrit cette table.
         with _db_lock:
             conn = _get_connection()
             _ensure_token_table(conn)

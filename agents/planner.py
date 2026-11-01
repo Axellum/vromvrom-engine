@@ -9,6 +9,7 @@ consommé ensuite par `core/dag_runner.py`. Tier fort par défaut
 import asyncio
 import json
 import logging
+import re
 import time
 
 from agents.base_agent import BaseAgent
@@ -21,6 +22,170 @@ logger = logging.getLogger(__name__)
 
 # Instance singleton du pont workflow (chargé une fois, rechargeable via reload())
 _workflow_bridge = WorkflowBridge()
+
+
+# [#T440] Marqueur posé par le harnais DreamCoder dans le prompt d'une tâche
+# d'analyse (`consigne_de_livrable`), suivi du chemin ABSOLU du rapport attendu.
+_MARQUEUR_LIVRABLE = "[LIVRABLE ATTENDU"
+
+
+def _chemin_du_livrable_attendu(user_prompt: str) -> str | None:
+    """Extrait le chemin du rapport exigé, s'il y en a un dans le prompt."""
+    import re
+
+    if not user_prompt or _MARQUEUR_LIVRABLE not in user_prompt:
+        return None
+    # La consigne place le chemin seul sur sa ligne, indenté de quatre espaces.
+    apres = user_prompt.split(_MARQUEUR_LIVRABLE, 1)[1]
+    for ligne in apres.splitlines():
+        candidat = ligne.strip()
+        if not candidat:
+            continue
+        if re.match(r"^([A-Za-z]:[\\/]|/)", candidat) and candidat.lower().endswith(".md"):
+            return candidat
+    return None
+
+
+def _exiger_le_livrable_d_analyse(criteres: list, user_prompt: str) -> list:
+    """
+    Ajoute au contrat le critère « le rapport d'analyse existe ».
+
+    Sans lui, « terminé » n'implique pas « le rapport existe » : le Reviewer peut
+    juger un raisonnement satisfaisant alors qu'aucun fichier n'a été écrit, et
+    la branche part vide. Le critère est déterministe, pas laissé au modèle.
+
+    Idempotent : si le contrat mentionne déjà ce fichier, on n'ajoute rien.
+    """
+    chemin = _chemin_du_livrable_attendu(user_prompt or "")
+    if not chemin:
+        return criteres
+    # Le champ porte-chemin d'un `Critere` s'appelle `valeur`, et la liste est
+    # DÉJÀ normalisée à ce stade : y glisser un dict casse tout ce qui lit
+    # `critere.type` en aval — mesuré le 21/08, la tâche 62 est morte sur
+    # « 'dict' object has no attribute 'type' » aussitôt le critère ajouté.
+    from core.acceptance_contract import Critere
+
+    liste = list(criteres or [])
+    for c in liste:
+        valeur = getattr(c, "valeur", "") or ""
+        if str(valeur).strip().lower() == chemin.strip().lower():
+            return liste
+    liste.append(Critere(
+        type="fichier_existe",
+        valeur=chemin,
+        description="Le rapport d'analyse a bien été écrit dans le dépôt de travail.",
+    ))
+    logger.info(
+        f"[PLANNER] [CONTRAT] Livrable d'analyse ajouté au contrat d'acceptation : {chemin}"
+    )
+    return liste
+
+
+def elaguer_dependances_fantomes(plan: list) -> list:
+    """
+    Retire les `depends_on` qui désignent une étape ABSENTE du plan.
+
+    [#T431] Le modèle déclare régulièrement une dépendance vers une étape qu'il
+    n'a jamais définie. Mesuré les 20 et 21/08 sur quatre tâches autonomes :
+    `verify_fix`, `verify_implementation`, `read_backlog_logic`, `ecrire_tests`
+    — aucun de ces identifiants n'existait ailleurs que dans un `depends_on`.
+    En aval, `core/dag_runner.py` indexe `tasks_by_id[t_id]` : une arête vers un
+    nœud inexistant y lève un `KeyError` qui tue TOUT le pipeline, et le message
+    ne contenait que le nom inventé.
+
+    La normalisation des identifiants ne suffit pas : ces noms sont déjà des
+    slugs valides. C'est leur CIBLE qui manque, pas leur forme.
+
+    Une dépendance fantôme est coupée, jamais silencieusement : elle est
+    journalisée. Le plan reste exécutable — l'étape part au stage 1 au lieu
+    d'attendre quelque chose qui n'arrivera jamais.
+    """
+    connus = {etape.get("task_id", "") for etape in plan}
+    elague = []
+    fantomes: list[str] = []
+    for etape in plan:
+        copie = dict(etape)
+        deps = etape.get("depends_on", []) or []
+        gardees = [d for d in deps if d in connus]
+        fantomes.extend(d for d in deps if d not in connus)
+        copie["depends_on"] = gardees
+        elague.append(copie)
+    if fantomes:
+        logger.warning(
+            f"[PLANNER] [DAG] {len(fantomes)} dépendance(s) vers une étape "
+            f"inexistante coupée(s) : {', '.join(repr(f) for f in fantomes[:5])}. "
+            f"Le modèle a nommé une étape qu'il n'a pas créée."
+        )
+    return elague
+
+
+def normaliser_task_ids(plan: list) -> list:
+    """
+    Normalise les identifiants de tâches (`task_id`) d'un plan généré par le LLM.
+
+    Le modèle peut produire des identifiants contenant des espaces, des accents
+    ou des caractères spéciaux malgré la consigne du schéma. Ces identifiants
+    servent de clés pour les dépendances (`depends_on`) et le routage : une
+    valeur non normalisée casserait silencieusement le DAG.
+
+    Règles appliquées (slugification déterministe) :
+      1. minuscules ;
+      2. espaces et séparateurs → '_' ;
+      3. suppression des caractères non alphanumériques (hors '_') ;
+      4. unicité garantie : en cas de collision, suffixe numérique '_2', '_3', …
+      5. les références `depends_on` sont réécrites vers les identifiants
+         normalisés correspondants.
+
+    Retourne une NOUVELLE liste de dictionnaires (le plan d'origine n'est pas
+    muté) afin de rester déterministe et vérifiable.
+    """
+    # Étape 1 : slugification brute de chaque identifiant.
+    def _slugifier(identifiant: str) -> str:
+        # Minuscules puis remplacement des espaces/tirets par '_'.
+        brut = str(identifiant).strip().lower().replace(" ", "_").replace("-", "_")
+        # Suppression de tout caractère non alphanumérique ou '_'.
+        net = re.sub(r"[^a-z0-9_]", "", brut)
+        # Un identifiant vide après nettoyage reçoit un repli explicite.
+        return net or "tache"
+
+    # Étape 2 : construction de la table de correspondance ancien -> nouveau,
+    # avec garantie d'unicité.
+    correspondance = {}
+    compteurs = {}
+    for etape in plan:
+        ancien = etape.get("task_id", "")
+        base = _slugifier(ancien)
+        if base in compteurs:
+            compteurs[base] += 1
+            nouveau = f"{base}_{compteurs[base]}"
+        else:
+            compteurs[base] = 1
+            nouveau = base
+        correspondance[ancien] = nouveau
+
+    # Étape 3 : réécriture du plan avec les identifiants normalisés et les
+    # dépendances mises à jour.
+    plan_normalise = []
+    for etape in plan:
+        copie = dict(etape)
+        ancien_id = etape.get("task_id", "")
+        copie["task_id"] = correspondance.get(ancien_id, _slugifier(ancien_id))
+        # Réécriture des dépendances vers les identifiants normalisés.
+        deps = etape.get("depends_on", [])
+        copie["depends_on"] = [
+            correspondance.get(dep, _slugifier(dep)) for dep in deps
+        ]
+        plan_normalise.append(copie)
+
+    # Journalisation des éventuelles réécritures (utile au diagnostic).
+    reecrites = [a for a, n in correspondance.items() if a != n]
+    if reecrites:
+        logger.info(
+            f"[PLANNER] [NORMALISATION] {len(reecrites)} task_id réécrit(s) : "
+            + ", ".join(f"{a!r} -> {correspondance[a]!r}" for a in reecrites[:5])
+        )
+    return plan_normalise
+
 
 class PlannerAgent(BaseAgent):
     """
@@ -272,9 +437,28 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                     f"({fenetre_planner:.0f}s, cascade comprise)."
                 ) from expiration
 
+            # [#FIX 20/08] Défense en profondeur : un provider peut renvoyer une
+            # LISTE (JSON array) au lieu de l'objet attendu. Le crash obscur
+            # `'list' object has no attribute 'get'` observé sur la task_38 en
+            # prod devient une erreur claire, rejouable par le pipeline.
+            if not isinstance(response_json, dict):
+                raise ValueError(
+                    "Le Planner a généré une réponse non-objet "
+                    f"({type(response_json).__name__}) — plan rejeté."
+                )
             plan = response_json.get("plan", [])
             if not plan:
                 raise ValueError("Le Planner a généré un DAG vide (plan: []).")
+
+            # [NORMALISATION] Les task_id produits par le LLM peuvent contenir des
+            # espaces, accents ou caractères spéciaux. On les normalise (slug) et
+            # on réécrit les depends_on AVANT tout calcul de stage_id, afin que le
+            # DAG reste cohérent et routable.
+            plan = normaliser_task_ids(plan)
+            # [#T431] Après la normalisation : une dépendance peut désigner une
+            # étape que le modèle n'a jamais créée. Coupée ici, sinon le DAG
+            # lève un KeyError qui emporte tout le pipeline.
+            plan = elaguer_dependances_fantomes(plan)
 
             new_tasks = []
 
@@ -377,6 +561,18 @@ Tu dois UNIQUEMENT renvoyer un objet JSON contenant une liste d'étapes ('plan')
                 normaliser_criteres,
             )
             criteres = normaliser_criteres(response_json.get("criteres_acceptation"))
+
+            # [#T440] Une tâche d'ANALYSE doit finir par un fichier écrit. Le
+            # prompt le dit (#T424), mais une consigne textuelle ne contraint
+            # rien : mesuré le 21/08 sur la tâche 62 — l'agent a lu le fichier
+            # visé, interrogé un modèle local, et s'est arrêté là. Le Reviewer a
+            # jugé le travail satisfaisant, le pipeline s'est déclaré terminé, et
+            # la branche est restée vide. Aucun critère n'exigeait le livrable.
+            #
+            # Le critère est ajouté ICI, déterministe, plutôt que laissé au
+            # jugement du modèle : c'est le seul moyen que « terminé » implique
+            # « le rapport existe ».
+            criteres = _exiger_le_livrable_d_analyse(criteres, user_prompt)
 
             # [Incident du 17/08] Constat de l'état des critères fichier À LA
             # POSE DU PLAN, donc avant tout travail du lot : à l'évaluation,

@@ -21,7 +21,6 @@ cette porte.
 
 import asyncio
 import difflib
-import glob
 import json
 import logging
 import os
@@ -51,6 +50,151 @@ priority: 1=urgent (bug réel/sécurité), 2=normal, 3=bas (cosmétique/mineur).
 Ne propose que des findings concrets et actionnables, avec preuve dans le code fourni —
 pas de généralités ni de suppositions sur du code que tu n'as pas vu. Si rien d'actionnable
 n'est trouvé dans cet extrait, retourne findings=[]."""
+
+
+# ──────────────────────────────────────────────────────────────────
+# [#T420] Pré-vol : un constat mécaniquement vérifiable l'est ici, gratuitement
+# ──────────────────────────────────────────────────────────────────
+
+# Vocabulaire du constat « ce fichier ne compile pas ». C'est la seule famille
+# de findings qu'on peut réfuter sans LLM, en quelques millisecondes — et c'est
+# aussi celle qui a menti deux fois :
+#
+#   #47 (18/08) « Erreur de syntaxe critique (code tronqué) dans
+#       core/budget_guard.py » — le fichier fait 642 lignes et `ast.parse` passe.
+#       3 tentatives brûlées, tâche abandonnée.
+#   #59 (19/08) « Erreur de syntaxe fatale (SyntaxError) en fin de fichier »
+#       dans agents/executor.py, citant `…{e"` — la ligne 715 est complète
+#       (`{e}`) et le fichier parse.
+#
+# Un audit qui se trompe sur un fait binaire ne mérite pas trois tentatives d'un
+# agent de code : il mérite d'être jeté avant d'entrer dans le backlog.
+_MOTS_SYNTAXE = (
+    "syntaxerror", "erreur de syntaxe", "syntaxe invalide", "syntaxe fatale",
+    "code tronque", "code tronqué", "fichier tronque", "fichier tronqué",
+    "ligne tronquee", "ligne tronquée", "se termine brusquement",
+    "ne parse pas", "ne compile pas", "impossible d'importer le module",
+)
+
+
+def _constat_de_syntaxe(titre: str, description: str) -> bool:
+    """Le finding prétend-il que le fichier ne compile pas ?"""
+    texte = f"{titre} {description}".lower()
+    return any(mot in texte for mot in _MOTS_SYNTAXE)
+
+
+def _fichier_python_valide(file_ref: str, racine: str | None = None) -> bool | None:
+    """
+    Le fichier Python cité compile-t-il ?
+
+    Rend `True`/`False`, ou `None` quand la question n'a pas de sens ici :
+    pas un `.py`, chemin absent du dépôt, lecture impossible. `None` veut dire
+    « je ne sais pas » et ne doit JAMAIS servir à rejeter un finding — on ne
+    tue un constat que sur une preuve, pas sur une incertitude.
+    """
+    if not file_ref or not file_ref.endswith(".py"):
+        return None
+    chemin = os.path.join(racine or _ENGINE_ROOT, file_ref.replace("\\", "/"))
+    if not os.path.isfile(chemin):
+        return None
+    try:
+        import ast
+        ast.parse(Path(chemin).read_text(encoding="utf-8"))
+        return True
+    except SyntaxError:
+        return False
+    except Exception:
+        return None
+
+
+def _constat_refute(titre: str, description: str, file_ref: str,
+                    racine: str | None = None) -> str | None:
+    """
+    Motif de réfutation du finding, ou `None` s'il tient (ou qu'on ne sait pas).
+    """
+    if not _constat_de_syntaxe(titre, description):
+        return None
+    valide = _fichier_python_valide(file_ref, racine)
+    if valide is True:
+        return (f"constat de syntaxe réfuté : '{file_ref}' compile "
+                f"(ast.parse) au moment de l'audit")
+    return None
+
+
+# ──────────────────────────────────────────────────────────────────
+# [#T420] Contrat de délégation : ce qui sépare 55 % de réussite de 12 %
+# ──────────────────────────────────────────────────────────────────
+#
+# Relevé sur les 81 tentatives autonomes des 18–19/08, par forme de consigne :
+#
+#   contrat « 1 fichier visé + 1 fichier de test + VÉRIFIER D'ABORD »  6/11 = 55 %
+#   contrat « Zone : <étiquette du board> »                           11/35 = 31 %
+#   constat brut de l'auditeur, sans contrat                           1/8  = 12 %
+#
+# L'auditeur produisait la troisième forme : `add_task(titre, "[fichier] constat")`.
+# Il a pourtant la matière de la première — il nomme le fichier exact. Ce qui
+# manquait n'était pas l'information, c'était sa mise en forme.
+#
+# L'ingrédient décisif est l'étape 2 : le constat vient d'un LLM qui n'a vu
+# qu'un extrait, il peut être faux, et un agent à qui on ordonne de corriger
+# corrige — même ce qui n'existe pas. Dire explicitement que « constat non
+# reproduit » est une RÉUSSITE ferme cette porte.
+
+
+def _fichier_de_test_suggere(file_ref: str) -> str:
+    """Fichier de test conventionnel du module visé (`tests/unit/test_<stem>.py`)."""
+    stem = Path(file_ref.replace("\\", "/")).stem if file_ref else "module"
+    return f"tests/unit/test_{stem}.py"
+
+
+def _contrat_delegation(titre: str, description: str, file_ref: str) -> str:
+    """
+    Enrobe un finding d'audit dans le contrat qui a le meilleur rendement.
+
+    Sans `file_ref`, on n'a pas de périmètre à donner : le constat part tel
+    quel, précédé du seul avertissement qui compte (il peut être faux).
+    """
+    entete = (
+        "Contexte d'exécution : tu travailles de façon autonome dans un clone "
+        "Git isolé. Ce contrat tient lieu de consigne unique.\n\n"
+    )
+    avertissement = (
+        "**VÉRIFIER AVANT DE CORRIGER — cette étape passe avant tout le reste**\n"
+        "Le constat ci-dessous vient d'un audit LLM qui n'a vu qu'un extrait du "
+        "code. Il peut être FAUX. Ouvre le fichier, cite les lignes concernées, "
+        "et établis si le constat tient.\n"
+        "- S'il tient : corrige, et prouve-le par un test qui échoue sur le code "
+        "d'avant.\n"
+        "- S'il ne tient pas : n'invente AUCUN correctif. Rends un résumé qui dit "
+        "« constat non reproduit », cite les lignes qui le réfutent, et arrête-toi "
+        "là. **C'est une réussite, pas un échec.**\n\n"
+    )
+    if not file_ref:
+        return f"{entete}{avertissement}**CONSTAT À VÉRIFIER**\n{description}\n"
+
+    fichier_test = _fichier_de_test_suggere(file_ref)
+    return (
+        f"{entete}"
+        f"**1. PÉRIMÈTRE (ne touche QUE cela)**\n"
+        f"- Fichier visé : {file_ref}\n"
+        f"- Fichier de test : {fichier_test} — ou le fichier de test existant qui "
+        f"couvre déjà ce module, si tu en trouves un.\n"
+        f"- Rien d'autre. Toute modification annexe qui te semble nécessaire doit "
+        f"être SIGNALÉE dans le résumé, pas faite.\n\n"
+        f"**2. {avertissement[2:]}"
+        f"**3. CONSTAT À VÉRIFIER**\n"
+        f"{description}\n\n"
+        f"**4. VALIDATION OBLIGATOIRE**\n"
+        f"- Exécute `python -m pytest {fichier_test} -q` et n'annonce le succès "
+        f"que s'il est vert.\n"
+        f"- Exécute `ruff check {file_ref}` et corrige ce que tu as introduit.\n"
+        f"- Si la validation échoue, n'essaie pas de la contourner : échoue "
+        f"proprement et décris pourquoi.\n\n"
+        f"**5. CONTRAT DE SORTIE**\n"
+        f"- Termine par un résumé court : verdict sur le constat (tenu / non "
+        f"reproduit), fichiers modifiés, validations exécutées avec leur "
+        f"résultat, risques restants.\n"
+    )
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -199,6 +343,10 @@ async def run_auditor_cycle(pa_config: dict) -> dict[str, Any]:
         "confidence": None,
         "findings_proposed": 0,
         "findings_skipped_duplicate": 0,
+        # [#T420] Findings réfutés mécaniquement avant d'entrer au backlog.
+        # Compté explicitement : un écart silencieux se lit comme « l'audit
+        # n'a rien trouvé », ce qui n'est pas la même chose.
+        "findings_skipped_refute": 0,
         "cost_usd": 0.0,
         "status": "ok",
     }
@@ -268,8 +416,22 @@ async def run_auditor_cycle(pa_config: dict) -> dict[str, Any]:
                 priority = priority if priority in (1, 2, 3) else 3
                 description = finding.get("description", "")
                 file_ref = finding.get("file", "")
+
+                # [#T420] Pré-vol : un constat de syntaxe se réfute en 3 ms.
+                # Deux fois de suite, l'auditeur a annoncé un fichier tronqué
+                # qui compilait — et l'agent a brûlé ses 3 tentatives dessus.
+                motif = _constat_refute(title, description, file_ref)
+                if motif:
+                    logger.info(f"[AUDITOR] Finding écarté — {motif} : '{title}'")
+                    report["findings_skipped_refute"] = (
+                        report.get("findings_skipped_refute", 0) + 1)
+                    continue
+
                 if file_ref:
                     description = f"[{file_ref}] {description}"
+                # [#T420] Le constat devient un contrat : périmètre, « vérifier
+                # avant de corriger », validation, format de sortie.
+                description = _contrat_delegation(title, description, file_ref)
 
                 await add_task(title, description, priority=priority)
                 active_titles.append(title)  # évite les doublons intra-cycle

@@ -159,10 +159,16 @@ class TestModelsDB:
         assert cost.get("cost_cached_per_m") == 0.003
 
     def test_routing_score_local(self):
-        """Le score de routing pour un modèle local est 1.0."""
+        """Le score de routing d'un modèle local suit la priorité de son provider.
+
+        Depuis le 20/08/2026, `qwen2.5-14b-instruct-1m` n'est plus servi par le
+        zoo LM Studio (`local`, priorité 1.0) mais par AJEAN (`ajean_pc`,
+        priorité 1.1, alignée sur `ollama_local`). Le score suit le provider,
+        pas le modèle : c'est la priorité de cascade d'AJEAN qui est mesurée ici.
+        """
         from core.models_db import get_routing_score
         score = get_routing_score("qwen2.5-14b-instruct-1m")
-        assert score == 1.0, f"Attendu 1.0 pour local, reçu {score}"
+        assert score == 1.1, f"Attendu 1.1 pour ajean_pc, reçu {score}"
 
     def test_routing_score_gemini_free(self):
         """Le score de routing pour Gemini Free est 2.0."""

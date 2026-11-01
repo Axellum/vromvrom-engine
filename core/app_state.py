@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -86,6 +87,31 @@ MSG_PLAFOND_CONCURRENCE = (
     "Réessayez dans quelques instants."
 )
 
+# ── Nettoyage des entrées obsolètes du registre d'exécution ─────────────
+# Durée de vie maximale d'une entrée du registre (en secondes). Au-delà,
+# l'entrée est considérée comme orpheline (exécution crashée sans passage par
+# end_execution) et purgée par _cleanup_stale_entries() au début de
+# begin_execution(). Variable d'environnement :
+# MOTEUR_EXECUTION_STALE_TTL_SECONDS (défaut 1800 = 30 minutes).
+def _stale_ttl_seconds() -> int:
+    brut = os.environ.get("MOTEUR_EXECUTION_STALE_TTL_SECONDS")
+    if brut:
+        try:
+            demande = int(brut)
+        except ValueError:
+            logger.warning(
+                f"[cleanup] MOTEUR_EXECUTION_STALE_TTL_SECONDS illisible ({brut!r}) — défaut 1800 retenu."
+            )
+            return 1800
+        if demande < 1:
+            logger.warning(
+                f"[cleanup] MOTEUR_EXECUTION_STALE_TTL_SECONDS={demande} invalide (<1) — défaut 1800 retenu."
+            )
+            return 1800
+        return demande
+    return 1800
+
+
 # Import conditionnel de TTLCache (avec fallback dict)
 try:
     from cachetools import TTLCache
@@ -150,7 +176,12 @@ class AppState:
         # Une entrée est créée par begin_execution() et TOUJOURS retirée par
         # end_execution() (try/finally) : aucune fuite d'entrée, sinon la
         # session serait bloquée pour toujours.
+        # Chaque entrée porte un timestamp `started_at` (epoch secondes) qui
+        # permet le nettoyage des entrées orphelines (exécution crashée sans
+        # passage par end_execution) via _cleanup_stale_entries().
         self.execution_registry: dict[str, dict[str, Any]] = {}
+        # Durée de vie maximale d'une entrée du registre (secondes).
+        self.stale_ttl_seconds: int = _stale_ttl_seconds()
         # Compteur de REQUÊTES EN VOL, distinct du registre de concurrence
         # (#T344). Le plafond de concurrence ne protège que run_full_pipeline,
         # mais le dreamer doit rester silencieux pendant TOUTE activité
@@ -158,6 +189,13 @@ class AppState:
         # execution_state["status"] == "running" tant qu'une requête tourne,
         # sans jamais influencer le plafond de concurrence.
         self.active_requests: int = 0
+        # Dernier statut TERMINAL (success/error) et message d'erreur observés
+        # (#T344). Persistés même quand le système est encore "running" : si une
+        # tâche se termine en anomalie pendant qu'une autre requête tourne, son
+        # échec n'est PAS perdu — il sera réappliqué quand le système redevient
+        # idle. Évite le masquage d'un échec par un succès final.
+        self._last_terminal_status: str = "idle"
+        self._last_terminal_error: str | None = None
         # Plafond de concurrence global (variable d'environnement).
         self.max_concurrency: int = _max_concurrence()
         # Lock asyncio pour les écritures concurrentes sur execution_state et
@@ -297,10 +335,78 @@ class AppState:
         silencieux pendant l'activité utilisateur.
         """
         if self.active_requests > 0 or self.execution_registry:
+            # Système encore actif : un ÉCHEC qui se termine pendant qu'une
+            # autre requête tourne serait jeté (on écrit "running" par-dessus).
+            # On le mémorise pour le réappliquer quand le système redevient
+            # idle. Un succès, lui, n'a rien à mémoriser : mémoriser les deux
+            # ferait qu'un "success" antérieur écraserait l'"error" suivante —
+            # exactement le masquage que cette règle corrige, dans l'autre sens.
+            if status == "error":
+                self._last_terminal_status = "error"
+                self._last_terminal_error = error_message
             self.execution_state["status"] = "running"
             return
-        self.execution_state["status"] = status
-        self.execution_state["error_message"] = error_message
+        # Système redevenu idle : un échec mémorisé prime sur le statut du
+        # dernier appelant, qui est "success" par défaut.
+        if self._last_terminal_status == "error":
+            self.execution_state["status"] = "error"
+            self.execution_state["error_message"] = (
+                self._last_terminal_error or error_message
+            )
+        else:
+            self.execution_state["status"] = status
+            self.execution_state["error_message"] = error_message
+        # Mémoire consommée : le cycle suivant repart d'une page blanche.
+        self._last_terminal_status = "idle"
+        self._last_terminal_error = None
+
+    def _cleanup_stale_entries_locked(self) -> None:
+        """Purge les entrées orphelines du registre (appelé sous execution_lock).
+
+        Une entrée est considérée comme obsolète si son timestamp `started_at`
+        est antérieur à `now - stale_ttl_seconds`. Cela couvre le cas d'une
+        exécution crashée sans passage par `end_execution()` (exception non
+        interceptée, process tué, redémarrage partiel…) : sans ce nettoyage,
+        la session resterait bloquée en doublon 409 pour toujours.
+
+        Les entrées purgées sont journalisées en warning pour faciliter le
+        diagnostic. La vue agrégée est rafraîchie si le registre se vide.
+        """
+        if not self.execution_registry:
+            return
+        maintenant = time.time()
+        seuil = maintenant - self.stale_ttl_seconds
+
+        def _est_orpheline(entree: dict) -> bool:
+            """
+            Vrai seulement si l'entrée est PROUVÉE trop vieille.
+
+            `get("started_at", 0)` repliait sur 0 — donc `0 < seuil` était
+            toujours vrai, et **toute entrée sans horodatage était purgée
+            au premier passage**, y compris une exécution bien vivante posée
+            par un appelant qui ne renseigne pas le champ. Même règle de
+            prudence que `_branche_distante_existe` : quand on ne peut pas
+            prouver que c'est mort, on ne détruit pas.
+            """
+            debut = entree.get("started_at")
+            if not isinstance(debut, (int, float)):
+                return False
+            return debut < seuil
+
+        cles_orphelines = [
+            cle for cle, entree in self.execution_registry.items()
+            if _est_orpheline(entree)
+        ]
+        for cle in cles_orphelines:
+            logger.warning(
+                f"[cleanup] Entrée orpheline purgée du registre d'exécution : "
+                f"session={cle!r} (dépassée de {int(maintenant - self.execution_registry[cle].get('started_at', 0))}s)."
+            )
+            self.execution_registry.pop(cle, None)
+        if cles_orphelines:
+            # Rafraîchit la vue agrégée : si le registre s'est vidé, on retombe
+            # sur le statut terminal/idle au lieu de rester "running" à tort.
+            self._refresh_aggregate_locked(status="idle")
 
     async def check_duplicate(self, session_key: str) -> dict | None:
         """Vérifie le doublon de session SANS consommer de créneau (#T344).
@@ -319,7 +425,7 @@ class AppState:
             return None
 
     async def begin_execution(self, session_key: str, objective: str) -> dict | None:
-        """Tente de démarrer une exécution pour la session.
+        """Tente de démarer une exécution pour la session.
 
         Args:
             session_key : Clé de session (#T324) — identité de concurrence.
@@ -331,6 +437,10 @@ class AppState:
             "detail": ...} — doublon de session ou plafond atteint.
         """
         async with self.execution_lock:
+            # Nettoyage préalable des entrées orphelines : une exécution
+            # crashée sans passage par end_execution() ne doit pas bloquer la
+            # session pour toujours. On purge avant de vérifier le doublon.
+            self._cleanup_stale_entries_locked()
             if session_key in self.execution_registry:
                 return {"status_code": 409, "detail": MSG_DOUBLON_SESSION}
             if len(self.execution_registry) >= self.max_concurrency:
@@ -340,6 +450,9 @@ class AppState:
                 "objective": objective,
                 "engine_state": None,
                 "error_message": None,
+                # Timestamp de création (epoch secondes) : permet le nettoyage
+                # des entrées obsolètes par _cleanup_stale_entries_locked().
+                "started_at": time.time(),
             }
             self.execution_state.update({
                 "status": "running",
@@ -424,6 +537,11 @@ class AppState:
             self.execution_state["status"] = status
             if error_message is not None:
                 self.execution_state["error_message"] = error_message
+            # Réinitialise la mémoire du dernier statut terminal : un arrêt
+            # global (stop/abort) doit repartir d'une page blanche, sans
+            # resurgir un échec antérieur mémorisé (#T344).
+            self._last_terminal_status = "idle"
+            self._last_terminal_error = None
 
 
 # ──────────────────────────────────────────────────────────────────

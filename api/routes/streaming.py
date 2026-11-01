@@ -142,6 +142,7 @@ async def _execute_stream_generator(
                     tier_override=tier,
                     model_override=model,
                     conversation_id=conv_id,
+                    source_type=request_source.type.value,
                 ):
                     yield sse_line
                     if sse_line.startswith("data:"):
@@ -204,6 +205,7 @@ async def _execute_stream_generator(
                 model_override=model,
                 system_prompt_suffix=suffix,
                 inject_project_context=True,
+                source_type=request_source.type.value,
             )
             if execution_key:
                 await state.set_execution_status(execution_key, "success")

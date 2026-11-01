@@ -45,6 +45,7 @@ Measured on the author's installation (one household, in French, with Home Assis
 | Part | State | Evidence |
 |---|---|---|
 | Home commands and questions without a model | ✅ Used every day | 110 to 196 ms on the engine side for a sentence of the catalog. The full voice pass takes about 4 s, most of it speech recognition in Home Assistant. |
+| Learning from your own voice log | ✅ By hand | Every voice request is logged with the path it took. Over 30 days in the author's home: 67 real sentences, 4 sent down the wrong path, then fixed ([below](#️-teach-it-your-own-words)). |
 | Chat with a model, several providers, fallback | ✅ Used every day | Cascade sorted by cost, Elo and quota; a circuit breaker per provider; a health probe that turns failing models off. 48 voice answers in 7 days: median 0.86 s, 90 % under 4.6 s (chat included). |
 | Cost | ✅ | 86 real calls in 30 days cost $0.81 in all. |
 | OpenAI-compatible endpoint (`/v1/chat/completions`, `/v1/models`) | ✅ In the code, tested | Streaming; three test files. Plug an IDE (Cursor, Cline, Continue) or any OpenAI client into it. |
@@ -71,6 +72,29 @@ Measured on the author's installation (one household, in French, with Home Assis
   the "Understand the engine" page; a figure it does not know shows "—", never 0.
 - **French first.** The phrase catalog, the docs and the comments are in French, with an English guide.
 
+## 🗣️ Teach it your own words
+
+A voice assistant meets the words of one house: the names of its rooms, a way of talking, and the mistakes of speech
+recognition. The engine keeps what you need to learn them, and turns them into direct routes:
+
+- **A log of every voice request**: the text as Home Assistant recognized it, the path taken (a direct rule, a state
+  question, or a fall into the chat) and the latency (`GET /api/vocal/audit`, `GET /api/vocal/stats`, and the
+  "Understand the engine" page).
+- **A dry run**: `POST /api/vocal/simulate` tells which path a sentence would take, without doing anything.
+- **A cleaner for French transcriptions** (`core/vocal_stt_normalize.py`): it fixes the usual mistakes of speech
+  recognition before matching ("est-elle" heard for "éteins", turn off; "de la somme" for "de la chambre", of the
+  bedroom), and "cline" is read as "clim" (air conditioning).
+- **The phrase catalog** (`ha_commands.json`): a sentence that comes back often becomes a direct route, answered in a
+  fifth of a second without a model.
+
+How it was done in the author's home: read 30 days of the voice log (67 real sentences, 4 sent down the wrong path),
+then add what was missing. The fixes, all in this repository: the speech-recognition variants of "clim"; a question
+on a temperature answered by a rule instead of the chat; the live sensor chosen over a dead duplicate; a single word
+("Coupe.", "Chambre.") that no longer turns a light on.
+
+**Not automatic yet**: reading the log and writing the new rules is done by hand, or with an AI assistant that reads
+the log for you. The engine does not propose new routes by itself.
+
 ## Where it falls short
 
 - **One user, one API key.** No accounts, roles, single sign-on or budget per person: team gateways such as
@@ -81,6 +105,8 @@ Measured on the author's installation (one household, in French, with Home Assis
 - **Many providers, not all alive.** On the author's instance, the health probe turned off 42 models out of 76: dead
   providers stay listed.
 - **The multi-agent part is the least mature**, and the least used.
+- **Learning new routes is manual.** The engine logs and simulates, but does not yet propose new rules from
+  the log by itself.
 - **Made for a developer first.** The dashboard is rich but dense; the code, its comments and many of its names are
   in French; about half of the code is covered by the tests (54 % on 2026-11-01).
 - **One maintainer**, code written largely with AI, no promise of support.

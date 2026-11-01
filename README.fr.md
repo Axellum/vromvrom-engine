@@ -46,6 +46,7 @@ Mesuré sur l'installation de l'auteur (un foyer, en français, avec Home Assist
 | Partie | État | Preuve |
 |---|---|---|
 | Commandes et questions de la maison sans modèle | ✅ Utilisé tous les jours | 110 à 196 ms côté moteur pour une phrase du catalogue. Le passage vocal complet prend environ 4 s, surtout à cause de la reconnaissance vocale dans Home Assistant. |
+| Apprendre de votre journal vocal | ✅ À la main | Chaque demande vocale est enregistrée avec le chemin qu'elle a pris. Sur 30 jours chez l'auteur : 67 vraies phrases, 4 mal aiguillées, puis corrigées ([plus bas](#️-apprenez-lui-vos-mots)). |
 | Discussion avec un modèle, plusieurs fournisseurs, bascule | ✅ Utilisé tous les jours | Cascade triée par coût, Elo et quota ; un disjoncteur par fournisseur ; une sonde de santé qui coupe les modèles en panne. 48 réponses vocales en 7 jours : médiane 0,86 s, 90 % sous 4,6 s (discussion comprise). |
 | Coût | ✅ | 86 vrais appels en 30 jours ont coûté 0,81 $ en tout. |
 | Point d'accès compatible OpenAI (`/v1/chat/completions`, `/v1/models`) | ✅ Dans le code, testé | Streaming ; trois fichiers de tests. Branchez-y un éditeur (Cursor, Cline, Continue) ou n'importe quel client OpenAI. |
@@ -73,6 +74,29 @@ Mesuré sur l'installation de l'auteur (un foyer, en français, avec Home Assist
 - **Le français d'abord.** Le catalogue de phrases, la documentation et les commentaires sont en français, avec un
   guide en anglais.
 
+## 🗣️ Apprenez-lui vos mots
+
+Un assistant vocal rencontre les mots d'une maison : le nom de ses pièces, une façon de parler, et les erreurs de la
+reconnaissance vocale. Le moteur garde ce qu'il faut pour les apprendre, et en faire des routes directes :
+
+- **Un journal de chaque demande vocale** : le texte tel que Home Assistant l'a reconnu, le chemin pris (une règle
+  directe, une question d'état, ou une chute en discussion) et la latence (`GET /api/vocal/audit`,
+  `GET /api/vocal/stats`, et la page « Comprendre le moteur »).
+- **Un essai à blanc** : `POST /api/vocal/simulate` dit quel chemin une phrase prendrait, sans rien exécuter.
+- **Un nettoyeur des transcriptions en français** (`core/vocal_stt_normalize.py`) : il corrige les erreurs habituelles
+  de la reconnaissance vocale avant la recherche de règle (« est-elle » entendu pour « éteins », « de la somme » pour
+  « de la chambre »), et « cline » est lu comme « clim ».
+- **Le catalogue de phrases** (`ha_commands.json`) : une phrase qui revient souvent devient une route directe, servie en
+  un cinquième de seconde sans modèle.
+
+Comme ça a été fait chez l'auteur : relire 30 jours du journal vocal (67 vraies phrases, 4 mal aiguillées), puis
+ajouter ce qui manquait. Les correctifs, tous dans ce dépôt : les variantes de « clim » entendues par la reconnaissance
+vocale ; une question de température servie par une règle au lieu de la discussion ; le capteur vivant choisi plutôt
+qu'un doublon mort ; un mot seul (« Coupe. », « Chambre. ») qui n'allume plus une lumière.
+
+**Pas encore automatique** : relire le journal et écrire les nouvelles règles se fait à la main, ou avec un assistant
+IA qui lit le journal pour vous. Le moteur ne propose pas encore de lui-même de nouvelles routes.
+
 ## Ses limites
 
 - **Un seul utilisateur, une seule clé d'API.** Ni comptes, ni rôles, ni connexion unique, ni budget par personne :
@@ -83,6 +107,8 @@ Mesuré sur l'installation de l'auteur (un foyer, en français, avec Home Assist
 - **Beaucoup de fournisseurs, pas tous vivants.** Sur l'instance de l'auteur, la sonde de santé a coupé 42 modèles sur
   76 : les fournisseurs morts restent listés.
 - **La partie multi-agents est la moins aboutie**, et la moins utilisée.
+- **Apprendre de nouvelles routes se fait à la main.** Le moteur enregistre et simule, mais ne propose pas encore
+  de lui-même de nouvelles règles à partir du journal.
 - **Fait d'abord pour un développeur.** L'interface est riche mais dense ; le code, ses commentaires et beaucoup de ses
   noms sont en français ; environ la moitié du code est couverte par les tests (54 % le 01/11/2026).
 - **Un seul mainteneur**, un code écrit en grande partie avec l'IA, aucune promesse de support.

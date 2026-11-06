@@ -4,11 +4,11 @@
 # ─────────────────────────────────────────────────────────────────────────
 
 # ── Tests ──
-pytest>=9.1.1
-pytest-asyncio>=1.4.0      # mode asyncio_mode=auto (pyproject.toml)
+pytest>=9.2.0
+pytest-asyncio>=1.4.1.post1      # mode asyncio_mode=auto (pyproject.toml)
 pytest-cov>=7.1.0            # couverture (--cov configuré dans pyproject.toml)
 paramiko>=5.1.0             # requis par test_failover (failover_manager SSH)
 
 # ── Qualité / lint ──
-ruff>=0.17.2                # linter + isort (config dans pyproject.toml)
-mypy>=2.4.0               # typage statique (config dans pyproject.toml)
+ruff>=0.17.3                # linter + isort (config dans pyproject.toml)
+mypy>=2.4.1               # typage statique (config dans pyproject.toml)

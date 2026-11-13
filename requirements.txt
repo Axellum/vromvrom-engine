@@ -5,10 +5,10 @@
 # ─────────────────────────────────────────────────────────────────────────
 
 # ── Core / API ──
-fastapi>=0.162.0
+fastapi>=0.162.3
 uvicorn>=0.54.0
 starlette>=1.10.0
-pydantic>=2.14.1
+pydantic>=2.14.3
 jinja2>=3.1.6
 python-dotenv>=1.2.4
 
@@ -24,20 +24,20 @@ aiosqlite>=0.22.1          # accès SQLite async (DAG runner)
 # Plafonné à <2.0.0 : mcp 2.0.0 (28/07/2026) supprime mcp.server.fastmcp
 # et casse la CI de toutes les PR dependabot en aval. Migration vers l'API v2
 # à traiter séparément.
-mcp>=1.30.0,<2.0.0
+mcp>=2.3.0,<3.0.0
 
 # ── Mémoire vectorielle / RAG ──
 chromadb>=1.5.9
 numpy>=2.5.4
 scikit-learn>=1.9.1        # ML Router (couche 2 du routage) — installé sur le Deck 2026-06-17
-onnxruntime>=1.31.0        # backend embeddings ChromaDB (all-MiniLM-L6-v2)
+onnxruntime>=1.31.1        # backend embeddings ChromaDB (all-MiniLM-L6-v2)
 
 # ── Utilitaires ──
-cachetools>=7.2.4
+cachetools>=8.0.0
 jsonschema>=4.26.0
 PyYAML>=6.0.3
-paho-mqtt>=2.1.0,<3.0      # failover_manager (MQTT)
-filelock>=4.2.4             # verrous sur fichiers partagés (config.json, BDD)
+paho-mqtt>=2.2.0,<3.0      # failover_manager (MQTT)
+filelock>=4.2.10             # verrous sur fichiers partagés (config.json, BDD)
 cryptography>=50.0.2         # chiffrement au repos de google_token.json (Fernet, MCP_TOKEN_KEY)
 
 # ─────────────────────────────────────────────────────────────────────────
